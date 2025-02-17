@@ -107,6 +107,18 @@
 #define HnswPtrPointer(hp) (hp).ptr
 #define HnswPtrOffset(hp) relptr_offset((hp).relptr)
 
+
+#define ORIGINAL_PAGE 1
+#define EXTENDED_PAGE 2
+#define DELETED_PAGE 3
+#define SPARE_PAGE 4
+
+#define MAX_INSERT_POOL_SIZE 300  // 일단 추가.. 나중에 수정
+
+#define HnswGetPartition(membername, ptr) pairingheap_container(HnswPartition, membername, ptr)
+#define HnswGetPartitionConst(membername, ptr) pairingheap_const_container(HnswPartition, membername, ptr)
+
+
 /* Variables */
 extern int	hnsw_ef_search;
 extern int	hnsw_iterative_scan;
@@ -124,6 +136,9 @@ typedef enum HnswIterativeScanMode
 typedef struct HnswElementData HnswElementData;
 typedef struct HnswNeighborArray HnswNeighborArray;
 
+typedef struct HnswPartition HnswPartition;
+typedef struct HnswPartitionState HnswPartitionState;
+
 #define HnswPtrDeclare(type, relptrtype, ptrtype) \
 	relptr_declare(type, relptrtype); \
 	typedef union { type *ptr; relptrtype relptr; } ptrtype;
@@ -135,8 +150,13 @@ HnswPtrDeclare(HnswNeighborArray, HnswNeighborArrayRelptr, HnswNeighborArrayPtr)
 HnswPtrDeclare(HnswNeighborArrayPtr, HnswNeighborsRelptr, HnswNeighborsPtr);
 HnswPtrDeclare(char, DatumRelptr, DatumPtr);
 
+HnswPtrDeclare(HnswPartition, HnswPartitionRelptr, HnswPartitionPtr);
+HnswPtrDeclare(HnswPartitionState, HnswPartitionStateRelptr, HnswPartitionStatePtr);
+
 struct HnswElementData
 {
+    int pid;
+
 	HnswElementPtr next;
 	ItemPointerData heaptids[HNSW_HEAPTIDS];
 	uint8		heaptidsLength;
@@ -152,6 +172,59 @@ struct HnswElementData
 	DatumPtr	value;
 	LWLock		lock;
 };
+
+// build
+struct HnswPartition
+{
+    pairingheap_node heapNode;
+    int pid;
+    int size;               /* 현재 파티션에 포함된 노드 수 */
+    int capacity;           /* 파티션 최대 용량 */
+    HnswElementPtr *nodes;
+} ;
+
+struct HnswPartitionState
+{
+    int numPartitions;    /* 파티션 개수 */
+    HnswPartition *partitions;
+} ;
+
+// insert
+/* Structure to track page information */
+typedef struct HnswPageNeighborCount
+{
+    BlockNumber blkno;
+    int neighborCount;
+    int pageType;  /* ORIGINAL_PAGE or INSERTED_PAGE */
+    int pid;
+} HnswPageNeighborCount;
+
+typedef struct HnswInsertPageCandidateData
+{
+    int			length;
+    HnswPageNeighborCount items[HNSW_DEFAULT_M * 2 + MAX_INSERT_POOL_SIZE];
+} HnswInsertPageCandidateData;
+
+typedef HnswInsertPageCandidateData * HnswInsertPageCandidate;
+
+// insert page pool 관련
+typedef struct HnswInsertPageEntry
+{
+//    BlockNumber originalPage;  /* 기존 페이지 */
+    BlockNumber extendedPage; /* 확장된 페이지 */
+
+    int pid;
+} HnswInsertPageEntry;
+
+typedef struct HnswInsertPagePoolData
+{
+    int poolSize;
+    HnswInsertPageEntry items[MAX_INSERT_POOL_SIZE];
+} HnswInsertPagePoolData;
+
+typedef HnswInsertPagePoolData * HnswInsertPagePool;
+
+
 
 typedef HnswElementData * HnswElement;
 
@@ -312,6 +385,9 @@ typedef struct HnswMetaPageData
 	OffsetNumber entryOffno;
 	int16		entryLevel;
 	BlockNumber insertPage;
+
+    int poolSize;
+    HnswInsertPageEntry items[MAX_INSERT_POOL_SIZE];
 }			HnswMetaPageData;
 
 typedef HnswMetaPageData * HnswMetaPage;
@@ -327,6 +403,9 @@ typedef HnswPageOpaqueData * HnswPageOpaque;
 
 typedef struct HnswElementTupleData
 {
+
+    int pid;
+
 	uint8		type;
 	uint8		level;
 	uint8		deleted;
@@ -441,6 +520,10 @@ bool		HnswLoadNeighborTids(HnswElement element, ItemPointerData *indextids, Rela
 void		HnswInitLockTranche(void);
 const		HnswTypeInfo *HnswGetTypeInfo(Relation index);
 PGDLLEXPORT void HnswParallelBuildMain(dsm_segment *seg, shm_toc *toc);
+
+void		HnswUpdateMetaPageWithPartition(Relation index, int updateEntry, HnswElement entryPoint, BlockNumber insertPage, ForkNumber forkNum, bool building, HnswInsertPagePool insertPagePool);
+void        HnswGetMetaPageInfoWithPartition(Relation index, int *m, HnswElement * entryPoint, HnswInsertPagePool * insertPagePool);
+bool        HnswInsertTupleOnDiskWithPartition(Relation index, HnswSupport * support, Datum value, ItemPointer heaptid, bool building);
 
 /* Index access methods */
 IndexBuildResult *hnswbuild(Relation heap, Relation index, IndexInfo *indexInfo);

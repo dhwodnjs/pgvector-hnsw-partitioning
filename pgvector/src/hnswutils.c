@@ -258,6 +258,8 @@ HnswInitElement(char *base, ItemPointer heaptid, int m, double ml, int maxLevel,
 
 	HnswPtrStore(base, element->value, (Pointer) NULL);
 
+    element->pid = -1;
+
 	return element;
 }
 
@@ -320,6 +322,58 @@ HnswGetMetaPageInfo(Relation index, int *m, HnswElement * entryPoint)
 
 	UnlockReleaseBuffer(buf);
 }
+
+
+/*
+ * Get the metapage info
+ */
+void
+HnswGetMetaPageInfoWithPartition(Relation index, int *m, HnswElement * entryPoint, HnswInsertPagePool *insertPagePool)
+{
+    Buffer		buf;
+    Page		page;
+    HnswMetaPage metap;
+
+    buf = ReadBuffer(index, HNSW_METAPAGE_BLKNO);
+    LockBuffer(buf, BUFFER_LOCK_SHARE);
+    page = BufferGetPage(buf);
+    metap = HnswPageGetMeta(page);
+
+    if (unlikely(metap->magicNumber != HNSW_MAGIC_NUMBER))
+        elog(ERROR, "hnsw index is not valid");
+
+    if (m != NULL)
+        *m = metap->m;
+
+    if (entryPoint != NULL)
+    {
+        if (BlockNumberIsValid(metap->entryBlkno))
+        {
+            *entryPoint = HnswInitElementFromBlock(metap->entryBlkno, metap->entryOffno);
+            (*entryPoint)->level = metap->entryLevel;
+        }
+        else
+            *entryPoint = NULL;
+    }
+
+    // 이 부분 추가
+    if (insertPagePool != NULL){
+
+        HnswInsertPagePool ipp = palloc(sizeof(HnswInsertPagePoolData) + (MAX_INSERT_POOL_SIZE * sizeof(HnswInsertPageEntry)));
+        ipp->poolSize = metap->poolSize;
+
+        for (int i = 0; i < MAX_INSERT_POOL_SIZE; i++) {
+//            ipp->items[i].originalPage = metap->items[i].originalPage;
+            ipp->items[i].extendedPage = metap->items[i].extendedPage;
+            ipp->items[i].pid = metap->items[i].pid;
+        }
+
+        *insertPagePool = ipp;
+    }
+
+    UnlockReleaseBuffer(buf);
+}
+
 
 /*
  * Get the entry point
@@ -394,6 +448,88 @@ HnswUpdateMetaPage(Relation index, int updateEntry, HnswElement entryPoint, Bloc
 	UnlockReleaseBuffer(buf);
 }
 
+
+/*
+ * Update the metapage info
+ */
+static void
+HnswUpdateMetaPageInfoWithPartition(Page page, int updateEntry, HnswElement entryPoint, BlockNumber insertPage, HnswInsertPagePool insertPagePool)
+{
+    HnswMetaPage metap = HnswPageGetMeta(page);
+
+    if (updateEntry)
+    {
+        if (entryPoint == NULL)
+        {
+            metap->entryBlkno = InvalidBlockNumber;
+            metap->entryOffno = InvalidOffsetNumber;
+            metap->entryLevel = -1;
+        }
+        else if (entryPoint->level > metap->entryLevel || updateEntry == HNSW_UPDATE_ENTRY_ALWAYS)
+        {
+            metap->entryBlkno = entryPoint->blkno;
+            metap->entryOffno = entryPoint->offno;
+            metap->entryLevel = entryPoint->level;
+        }
+    }
+
+    if (BlockNumberIsValid(insertPage))
+        metap->insertPage = insertPage;
+
+    if (insertPagePool == NULL){
+        // build 시에 기본 페이지 하나 추가
+//        elog(WARNING, "InsertPagepool is null");
+//        metap->items[0].originalPage = InvalidBlockNumber;
+        metap->items[0].pid = -2;
+        metap->items[0].extendedPage = insertPage;
+        metap->poolSize++;
+    } else {
+        // 다음에는 다 바꿔주기
+//        elog(WARNING, "InsertPagepool update");
+        for (int i = 0; i < MAX_INSERT_POOL_SIZE; i++){
+//            metap->items[i].originalPage = insertPagePool->items[i].originalPage;
+            metap->items[i].extendedPage = insertPagePool->items[i].extendedPage;
+            metap->items[i].pid = insertPagePool->items[i].pid;
+        }
+        metap->poolSize = insertPagePool->poolSize;
+    }
+
+}
+
+/*
+ * Update the metapage
+ */
+void
+HnswUpdateMetaPageWithPartition(Relation index, int updateEntry, HnswElement entryPoint, BlockNumber insertPage, ForkNumber forkNum, bool building, HnswInsertPagePool insertPagePool)
+{
+    Buffer		buf;
+    Page		page;
+    GenericXLogState *state;
+
+    buf = ReadBufferExtended(index, forkNum, HNSW_METAPAGE_BLKNO, RBM_NORMAL, NULL);
+    LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+    if (building)
+    {
+        state = NULL;
+        page = BufferGetPage(buf);
+    }
+    else
+    {
+        state = GenericXLogStart(index);
+        page = GenericXLogRegisterBuffer(state, buf, 0);
+    }
+
+    HnswUpdateMetaPageInfoWithPartition(page, updateEntry, entryPoint, insertPage, insertPagePool);
+
+    if (building)
+        MarkBufferDirty(buf);
+    else
+        GenericXLogFinish(state);
+    UnlockReleaseBuffer(buf);
+}
+
+
+
 /*
  * Form index value
  */
@@ -441,6 +577,8 @@ HnswSetElementTuple(char *base, HnswElementTuple etup, HnswElement element)
 			ItemPointerSetInvalid(&etup->heaptids[i]);
 	}
 	memcpy(&etup->data, valuePtr, VARSIZE_ANY(valuePtr));
+
+    etup->pid = element->pid;
 }
 
 /*
@@ -490,6 +628,8 @@ HnswLoadElementFromTuple(HnswElement element, HnswElementTuple etup, bool loadHe
 	element->neighborPage = ItemPointerGetBlockNumber(&etup->neighbortid);
 	element->neighborOffno = ItemPointerGetOffsetNumber(&etup->neighbortid);
 	element->heaptidsLength = 0;
+
+    element->pid = etup->pid;
 
 	if (loadHeaptids)
 	{
