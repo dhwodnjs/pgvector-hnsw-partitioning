@@ -401,6 +401,188 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
 }
 
 
+static void
+CreateGraphPagesWithPartitionsLikeOnDisk(HnswBuildState * buildstate)
+{
+    elog(WARNING, "CreateGraphPagesWithPartitionsLikeOnDisk");
+
+    Relation	index = buildstate->index;
+    ForkNumber	forkNum = buildstate->forkNum;
+    Size		maxSize;
+    HnswElementTuple etup;
+    HnswNeighborTuple ntup;
+    BlockNumber insertPage;
+    HnswElement entryPoint;
+    Buffer		buf;
+    Page		page;
+//    HnswElementPtr iter = buildstate->graph->head;
+    char	   *base = buildstate->hnswarea;
+    HnswPartitionState *partitionstate;
+
+    /* Calculate sizes */
+    maxSize = HNSW_MAX_SIZE;
+
+    /* Allocate once */
+    etup = palloc0(HNSW_TUPLE_ALLOC_SIZE);
+    ntup = palloc0(HNSW_TUPLE_ALLOC_SIZE);
+
+    /* Prepare first page */
+    buf = HnswNewBuffer(index, forkNum);
+    page = BufferGetPage(buf);
+    HnswInitPage(buf, page);
+
+    partitionstate = buildstate->partitionstate;
+
+
+    /* Iterate through partitions */
+    for (unsigned i = 0; i < partitionstate->numPartitions; i++) {
+        HnswPartition *partition = &partitionstate->partitions[i];
+
+        for (unsigned j = 0; j < partition->size; j++) {
+
+            HnswElement element = HnswPtrAccess(base, partition->nodes[j]);
+            Size etupSize;
+            Size ntupSize;
+            Size combinedSize;
+            Pointer valuePtr = HnswPtrAccess(base, element->value);
+
+            /* Zero memory for each element */
+            MemSet(etup, 0, HNSW_TUPLE_ALLOC_SIZE);
+
+            /* Calculate sizes */
+            etupSize = HNSW_ELEMENT_TUPLE_SIZE(VARSIZE_ANY(valuePtr));
+            ntupSize = HNSW_NEIGHBOR_TUPLE_SIZE(element->level, buildstate->m);
+            combinedSize = etupSize + ntupSize + sizeof(ItemIdData);
+
+            /* Initial size check */
+            if (etupSize > HNSW_TUPLE_ALLOC_SIZE)
+                ereport(ERROR,
+                        (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+                                errmsg("index tuple too large")));
+
+            HnswSetElementTuple(base, etup, element);
+
+            /* Keep element and neighbors on the same page if possible */
+            if (PageGetFreeSpace(page) < etupSize || (combinedSize <= maxSize && PageGetFreeSpace(page) < combinedSize)){
+//                element_per_page_counter > 8 || element_per_page_counter > 10 ||
+                HnswBuildAppendPage(index, &buf, &page, forkNum);
+            }
+
+            /* Calculate offsets */
+            element->blkno = BufferGetBlockNumber(buf);
+            element->offno = OffsetNumberNext(PageGetMaxOffsetNumber(page));
+            if (combinedSize <= maxSize) {
+                element->neighborPage = element->blkno;
+                element->neighborOffno = OffsetNumberNext(element->offno);
+            } else {
+                element->neighborPage = element->blkno + 1;
+                element->neighborOffno = FirstOffsetNumber;
+            }
+
+            ItemPointerSet(&etup->neighbortid, element->neighborPage, element->neighborOffno);
+
+            /* Add element */
+            if (PageAddItem(page, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != element->offno)
+                elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+
+            /* Add new page if needed */
+            if (PageGetFreeSpace(page) < ntupSize)
+                HnswBuildAppendPage(index, &buf, &page, forkNum);
+
+            /* Add placeholder for neighbors */
+            if (PageAddItem(page, (Item) ntup, ntupSize, InvalidOffsetNumber, false, false) != element->neighborOffno)
+                elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+        }
+    }
+
+    if (buildstate->insertPartitionstate != NULL){
+
+        elog(WARNING, "buildstate->insertPartitionstate != NULL");
+
+        /* Iterate through partitions */
+        for (unsigned i = 0; i <= MAX_INSERT_POOL_SIZE; i++) {
+            HnswPartition *partition = &buildstate->insertPartitionstate->partitions[i];
+            HnswBuildAppendPage(index, &buf, &page, forkNum);
+
+            for (unsigned j = 0; j < partition->size; j++) {
+
+                HnswElement element = HnswPtrAccess(base, partition->nodes[j]);
+                Size etupSize;
+                Size ntupSize;
+                Size combinedSize;
+                Pointer valuePtr = HnswPtrAccess(base, element->value);
+
+                /* Zero memory for each element */
+                MemSet(etup, 0, HNSW_TUPLE_ALLOC_SIZE);
+
+                /* Calculate sizes */
+                etupSize = HNSW_ELEMENT_TUPLE_SIZE(VARSIZE_ANY(valuePtr));
+                ntupSize = HNSW_NEIGHBOR_TUPLE_SIZE(element->level, buildstate->m);
+                combinedSize = etupSize + ntupSize + sizeof(ItemIdData);
+
+                /* Initial size check */
+                if (etupSize > HNSW_TUPLE_ALLOC_SIZE)
+                    ereport(ERROR,
+                            (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+                                    errmsg("index tuple too large")));
+
+                HnswSetElementTuple(base, etup, element);
+
+                /* Keep element and neighbors on the same page if possible */
+                if (PageGetFreeSpace(page) < etupSize || (combinedSize <= maxSize && PageGetFreeSpace(page) < combinedSize)){
+//                element_per_page_counter > 8 || element_per_page_counter > 10 ||
+                    HnswBuildAppendPage(index, &buf, &page, forkNum);
+                }
+
+                /* Calculate offsets */
+                element->blkno = BufferGetBlockNumber(buf);
+                element->offno = OffsetNumberNext(PageGetMaxOffsetNumber(page));
+                if (combinedSize <= maxSize) {
+                    element->neighborPage = element->blkno;
+                    element->neighborOffno = OffsetNumberNext(element->offno);
+                } else {
+                    element->neighborPage = element->blkno + 1;
+                    element->neighborOffno = FirstOffsetNumber;
+                }
+
+                ItemPointerSet(&etup->neighbortid, element->neighborPage, element->neighborOffno);
+
+                /* Add element */
+                if (PageAddItem(page, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != element->offno)
+                    elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+
+                /* Add new page if needed */
+                if (PageGetFreeSpace(page) < ntupSize)
+                    HnswBuildAppendPage(index, &buf, &page, forkNum);
+
+                /* Add placeholder for neighbors */
+                if (PageAddItem(page, (Item) ntup, ntupSize, InvalidOffsetNumber, false, false) != element->neighborOffno)
+                    elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+            }
+        }
+
+    }
+
+
+    insertPage = BufferGetBlockNumber(buf);
+
+    /* Commit */
+    MarkBufferDirty(buf);
+    UnlockReleaseBuffer(buf);
+
+    entryPoint = HnswPtrAccess(base, buildstate->graph->entryPoint);
+//    HnswInsertPagePool insertPagePool = NULL;
+
+//    HnswUpdateMetaPageWithPartition(index, HNSW_UPDATE_ENTRY_ALWAYS, entryPoint, insertPage, forkNum, true, insertPagePool);
+    HnswUpdateMetaPage(index, HNSW_UPDATE_ENTRY_ALWAYS, entryPoint, insertPage, forkNum, true);
+
+    elog(INFO, "CreateGraphPagesWithPartitions done");
+
+    pfree(etup);
+    pfree(ntup);
+}
+
+
 /*
  * Write neighbor tuples
  */
@@ -512,6 +694,110 @@ WriteNeighborTuplesWithPartitions(HnswBuildState * buildstate, HnswPartitionStat
 }
 
 
+/*
+ * Write neighbor tuples
+ */
+static void
+WriteNeighborTuplesWithPartitionsLikeOnDisk(HnswBuildState * buildstate)
+{
+    elog(WARNING, "CreateGraphPagesWithPartitionsLikeOnDisk");
+
+    Relation	index = buildstate->index;
+    ForkNumber	forkNum = buildstate->forkNum;
+    int			m = buildstate->m;
+//    HnswElementPtr iter = buildstate->graph->head;
+    char	   *base = buildstate->hnswarea;
+    HnswNeighborTuple ntup;
+    HnswPartitionState *partitionstate;
+
+    /* Allocate once */
+    ntup = palloc0(HNSW_TUPLE_ALLOC_SIZE);
+
+    partitionstate = buildstate->partitionstate;
+
+    /* Iterate through partitions */
+    for (unsigned i = 0; i < partitionstate->numPartitions; i++)
+    {
+        HnswPartition *partition = &partitionstate->partitions[i];
+
+        for (unsigned j = 0; j < partition->size; j++)
+        {
+            HnswElement element = HnswPtrAccess(base, partition->nodes[j]);
+            Buffer buf;
+            Page page;
+            Size ntupSize = HNSW_NEIGHBOR_TUPLE_SIZE(element->level, m);
+
+            /* Update iterator */
+//            iter = element->next;
+
+            /* Zero memory for each element */
+            MemSet(ntup, 0, HNSW_TUPLE_ALLOC_SIZE);
+
+            /* Can take a while, so ensure we can interrupt */
+            /* Needs to be called when no buffer locks are held */
+            CHECK_FOR_INTERRUPTS();
+
+            buf = ReadBufferExtended(index, forkNum, element->neighborPage, RBM_NORMAL, NULL);
+            LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+            page = BufferGetPage(buf);
+
+            HnswSetNeighborTuple(base, ntup, element, m);
+
+            if (!PageIndexTupleOverwrite(page, element->neighborOffno, (Item) ntup, ntupSize))
+                elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+
+            /* Commit */
+            MarkBufferDirty(buf);
+            UnlockReleaseBuffer(buf);
+        }
+    }
+
+    if (buildstate->insertPartitionstate != NULL){
+        /* Iterate through partitions */
+        elog(WARNING, "buildstate->insertPartitionstate != NULL");
+
+        for (unsigned i = 0; i <= MAX_INSERT_POOL_SIZE; i++){
+            HnswPartition *partition = &buildstate->insertPartitionstate->partitions[i];
+
+            for (unsigned j = 0; j < partition->size; j++)
+            {
+                HnswElement element = HnswPtrAccess(base, partition->nodes[j]);
+                Buffer buf;
+                Page page;
+                Size ntupSize = HNSW_NEIGHBOR_TUPLE_SIZE(element->level, m);
+
+                /* Update iterator */
+//            iter = element->next;
+
+                /* Zero memory for each element */
+                MemSet(ntup, 0, HNSW_TUPLE_ALLOC_SIZE);
+
+                /* Can take a while, so ensure we can interrupt */
+                /* Needs to be called when no buffer locks are held */
+                CHECK_FOR_INTERRUPTS();
+
+                buf = ReadBufferExtended(index, forkNum, element->neighborPage, RBM_NORMAL, NULL);
+                LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+                page = BufferGetPage(buf);
+
+                HnswSetNeighborTuple(base, ntup, element, m);
+
+                if (!PageIndexTupleOverwrite(page, element->neighborOffno, (Item) ntup, ntupSize))
+                    elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+
+                /* Commit */
+                MarkBufferDirty(buf);
+                UnlockReleaseBuffer(buf);
+            }
+        }
+    }
+
+    pfree(ntup);
+
+    elog(INFO, "WriteNeighborTuplesWithPartitions done");
+}
+
+
 
 /*
  * Flush pages
@@ -539,7 +825,7 @@ FlushPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *partit
 #endif
 
     CreateMetaPage(buildstate); // insert pool !!!
-    CreateMetaPageWithPartition(buildstate, countPartitionstate);
+//    CreateMetaPageWithPartition(buildstate, countPartitionstate);
     CreateGraphPagesWithPartitions(buildstate, partitionstate);
     WriteNeighborTuplesWithPartitions(buildstate, partitionstate);
 
@@ -548,6 +834,26 @@ FlushPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *partit
 
     elog(INFO, "FlushPagesWithPartitions done");
 }
+
+
+static void
+FlushPagesWithPartitionsLikeOnDisk(HnswBuildState * buildstate)
+{
+#ifdef HNSW_MEMORY
+    elog(INFO, "memory: %zu MB", buildstate->graph->memoryUsed / (1024 * 1024));
+#endif
+
+    CreateMetaPage(buildstate); // insert pool !!!
+//    CreateMetaPageWithPartition(buildstate, countPartitionstate);
+    CreateGraphPagesWithPartitionsLikeOnDisk(buildstate);
+    WriteNeighborTuplesWithPartitionsLikeOnDisk(buildstate);
+
+    buildstate->graph->flushed = true;
+    MemoryContextReset(buildstate->graphCtx);
+
+    elog(INFO, "FlushPagesWithPartitions done");
+}
+
 
 
 
@@ -577,7 +883,8 @@ InitPartitionState(HnswBuildState *buildstate, int maxNodesPerPartition, HnswAll
         partition->pid = i;
 
         /* 각 파티션 내부의 nodes 배열을 상대 포인터로 할당 */
-        partition->nodes = HnswAlloc(allocator, sizeof(HnswElementPtr) * maxNodesPerPartition);
+//        partition->nodes = HnswAlloc(allocator, sizeof(HnswElementPtr) * maxNodesPerPartition);
+        partition->nodes = malloc(sizeof(HnswElementPtr) * maxNodesPerPartition);
     }
 
     return partitionstate;
@@ -721,7 +1028,7 @@ static HnswPartitionState *
 HnswPartitionGraph(HnswBuildState *buildstate)
 {
     int maxNodesPerPartition = 64;
-    int numIterations = 60;
+    int numIterations = 61;
     HnswAllocator *allocator = &buildstate->allocator;
     elog(INFO, "maxNodesPerPartition: %d", maxNodesPerPartition);
 
@@ -807,10 +1114,12 @@ HnswPartitionGraph(HnswBuildState *buildstate)
         TimestampTz end_time = GetCurrentTimestamp();
         double elapsed_ms = (end_time - start_time) / 1000.0;
 
-//        elog(WARNING, "LDG iteration %u completed in %.3f ms", iteration + 1, elapsed_ms);
+        elog(WARNING, "LDG iteration %u completed in %.3f ms", iteration + 1, elapsed_ms);
 
         partitionstate = newPartitionstate;
     }
+
+    graph->partitioned = true;
 
     return partitionstate;
 }
@@ -1103,6 +1412,147 @@ InsertTupleInMemory(HnswBuildState * buildstate, HnswElement element)
 	LWLockRelease(entryLock);
 }
 
+
+static int
+ComparePageNeighbors(const void *a, const void *b)
+{
+    return ((HnswPageNeighborCount *)b)->neighborCount - ((HnswPageNeighborCount *)a)->neighborCount;
+}
+
+
+static void
+InsertTupleInMemoryLikeOnDisk(HnswBuildState * buildstate, HnswElement element)
+{
+    HnswGraph  *graph = buildstate->graph;
+    HnswSupport *support = &buildstate->support;
+    HnswElement entryPoint;
+    LWLock	   *entryLock = &graph->entryLock;
+    LWLock	   *entryWaitLock = &graph->entryWaitLock;
+    int			efConstruction = buildstate->efConstruction;
+    int			m = buildstate->m;
+    char	   *base = buildstate->hnswarea;
+
+    int pidE;
+    HnswPartition *partition;
+
+    /* Wait if another process needs exclusive lock on entry lock */
+    LWLockAcquire(entryWaitLock, LW_EXCLUSIVE);
+    LWLockRelease(entryWaitLock);
+
+    /* Get entry point */
+    LWLockAcquire(entryLock, LW_SHARED);
+    entryPoint = HnswPtrAccess(base, graph->entryPoint);
+
+    /* Prevent concurrent inserts when likely updating entry point */
+    if (entryPoint == NULL || element->level > entryPoint->level)
+    {
+        /* Release shared lock */
+        LWLockRelease(entryLock);
+
+        /* Tell other processes to wait and get exclusive lock */
+        LWLockAcquire(entryWaitLock, LW_EXCLUSIVE);
+        LWLockAcquire(entryLock, LW_EXCLUSIVE);
+        LWLockRelease(entryWaitLock);
+
+        /* Get latest entry point after lock is acquired */
+        entryPoint = HnswPtrAccess(base, graph->entryPoint);
+    }
+
+    /* Find neighbors for element */
+    HnswFindElementNeighbors(base, element, entryPoint, NULL, support, m, efConstruction, false);
+
+    /* Update graph in memory */
+    UpdateGraphInMemory(support, element, m, efConstruction, entryPoint, buildstate);
+
+    /* Release entry lock */
+    LWLockRelease(entryLock);
+
+
+    // 여기서 그냥 partition 배정만 해주면 될듯??? -> on-disk와 동일하게, neighbor count 하고, 복잡하게 할 필요 있나 .>?
+    HnswInsertPageCandidate pageCandidates = CalculatePartitionNeighborCount(element);
+
+    // spare page 하나 추가
+    pageCandidates->items[pageCandidates->length].pid = -2;
+    pageCandidates->items[pageCandidates->length].neighborCount = 0;
+    pageCandidates->items[pageCandidates->length].pageType = SPARE_PAGE;
+    pageCandidates->length++;
+
+    // 각 insertpage entry에 대해 pagecandidate 확인해서 pageCandidate 업데이트
+    for (int i = 0; i < MAX_INSERT_POOL_SIZE - 1; i++)
+    {
+        // i번째 partition
+        int pid = buildstate->countPartitionstate->partitions[i].pid;
+
+        /* Replace classic page with its inserted page */
+        for (int j = 0; j < pageCandidates->length; j++) {
+            // page candidate의 originalPage, extendedPage 존재 여부 확인
+            if (pageCandidates->items[j].pid == pid) {
+                pageCandidates->items[j].pageType = EXTENDED_PAGE;
+                pageCandidates->items[j].blkno = (BlockNumber) i;
+            }
+        }
+    }
+
+    qsort(pageCandidates->items, pageCandidates->length, sizeof(HnswPageNeighborCount), ComparePageNeighbors);
+
+//    elog(WARNING, "Insert Page Pool (Size: %d)");
+//    for (int i = 0; i < MAX_INSERT_POOL_SIZE; i++) {
+//        elog(WARNING, "[Pool Entry %d] pid: %d",
+//             i,
+//             buildstate->countPartitionstate->partitions[i].pid);
+//    }
+//
+//    elog(WARNING, "Page Candidates (Total: %d)", pageCandidates->length);
+//    for (int i = 0; i < pageCandidates->length; i++) {
+//        elog(WARNING, "[Candidate %d] pid: %d, neighborCount: %d, pageType: %d",
+//             i,
+//             pageCandidates->items[i].pid,
+//             pageCandidates->items[i].neighborCount,
+//             pageCandidates->items[i].pageType);
+//    }
+
+    for (int i = 0; i < pageCandidates->length; i++) {
+
+        int tempPid = pageCandidates->items[i].pid;
+
+        if (pageCandidates->items[i].pageType == ORIGINAL_PAGE) {
+            continue;
+        } else if (pageCandidates->items[i].pageType == EXTENDED_PAGE) {
+//            elog(WARNING, "Page type: EXTENDED ");
+            // pool에 존재 -> 해당 파티션에 배정
+            // insert 되는 애들 담아둘 자료구조 필요
+            partition = &buildstate->insertPartitionstate->partitions[pageCandidates->items[i].blkno];
+
+            if (partition->size == partition->capacity){
+                partition->capacity *= 2;
+
+                HnswElementPtr *tempPartition = malloc(sizeof(HnswElementPtr) * partition->capacity);
+
+//                memcpy(tempPartition, partition->nodes, sizeof(HnswElementPtr) * partition->capacity/2);
+                for (int k=0; k<partition->size; k++){
+                    tempPartition[k] = partition->nodes[k];
+                }
+//                pfree(partition->nodes);
+
+                partition->nodes = tempPartition;
+            }
+
+            HnswPtrStore(base, partition->nodes[partition->size], element);
+            partition->size++;
+            break;
+
+        } else {
+//            elog(WARNING, "Page type: SPARE ");
+            // pool에 존재X -> spare에 배정
+            partition = &buildstate->insertPartitionstate->partitions[MAX_INSERT_POOL_SIZE];
+            HnswPtrStore(base, partition->nodes[partition->size], element);
+            partition->size++;
+            break;
+        }
+    }
+
+}
+
 /*
  * Insert tuple
  */
@@ -1129,6 +1579,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid, Hn
 	/* Ensure graph not flushed when inserting */
 	LWLockAcquire(flushLock, LW_SHARED);
 
+//    elog(WARNING, "graph->indtuples: %f", graph->indtuples);
 	/* Are we in the on-disk phase? */
 	if (graph->flushed)
 	{
@@ -1162,13 +1613,13 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid, Hn
 					 errhint("Increase maintenance_work_mem to speed up builds.")));
 
 
-//    /* LDG 기반 그래프 파티셔닝 */
-            HnswPartitionState *partitionstate;
-            partitionstate = HnswPartitionGraph(buildstate);
-
-            // insert pool 구성?
-            HnswPartitionState *countPartitionstate;
-            countPartitionstate = CountPartitionSizeForInsert(buildstate, partitionstate);
+////    /* LDG 기반 그래프 파티셔닝 */
+//            HnswPartitionState *partitionstate;
+//            partitionstate = HnswPartitionGraph(buildstate);
+//
+//            // insert pool 구성?
+//            HnswPartitionState *countPartitionstate;
+//            countPartitionstate = CountPartitionSizeForInsert(buildstate, partitionstate);
 
             // countPartitionstate -> 이 결과를 ... 넣어보자 ..!!
 
@@ -1198,6 +1649,53 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid, Hn
 
 	/* Create a lock for the element */
 	LWLockInitialize(&element->lock, hnsw_lock_tranche_id);
+
+
+    /* Are we in the in-memory insert phase? */
+    if (graph->partitioned)
+    {
+        InsertTupleInMemoryLikeOnDisk(buildstate, element);
+
+        /* Release flush lock */
+        LWLockRelease(flushLock);
+        return true;
+    }
+
+    if (graph->indtuples > 50000) // heap size 따라서 결정
+    {
+        if (!graph->partitioned)
+        {
+//            LWLockAcquire(&graph->partitionLock, LW_EXCLUSIVE);
+
+            /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
+            HnswPartitionState *partitionstate;
+            partitionstate = HnswPartitionGraph(buildstate);
+
+            HnswPartitionState *countPartitionstate;
+            countPartitionstate = CountOverlapRatioForInsert(buildstate, partitionstate);
+
+            HnswPartitionState *insertPartitionState;
+            insertPartitionState = InitPartitionState(buildstate, partitionstate->partitions[0].capacity, allocator);
+
+            for (int i=0; i<MAX_INSERT_POOL_SIZE; i++){
+                insertPartitionState->partitions[i].pid = countPartitionstate->partitions[i].pid;
+            }
+
+            buildstate->partitionstate = partitionstate;
+            buildstate->countPartitionstate = countPartitionstate;
+            buildstate->insertPartitionstate = insertPartitionState;
+
+            elog(WARNING, "set partitions done");
+
+//            LWLockRelease(&graph->partitionLock);
+        }
+        InsertTupleInMemoryLikeOnDisk(buildstate, element);
+
+        /* Release flush lock */
+        LWLockRelease(flushLock);
+
+        return true;
+    }
 
 	/* Insert tuple */
 	InsertTupleInMemory(buildstate, element);
@@ -1260,6 +1758,9 @@ InitGraph(HnswGraph * graph, char *base, Size memoryTotal)
 	LWLockInitialize(&graph->entryWaitLock, hnsw_lock_tranche_id);
 	LWLockInitialize(&graph->allocatorLock, hnsw_lock_tranche_id);
 	LWLockInitialize(&graph->flushLock, hnsw_lock_tranche_id);
+    LWLockInitialize(&graph->partitionLock, hnsw_lock_tranche_id);
+
+    graph->partitioned = false;
 }
 
 /*
@@ -1363,6 +1864,10 @@ InitBuildState(HnswBuildState * buildstate, Relation heap, Relation index, Index
 	buildstate->hnswleader = NULL;
 	buildstate->hnswshared = NULL;
 	buildstate->hnswarea = NULL;
+
+    buildstate->partitionstate = NULL;
+    buildstate->countPartitionstate = NULL;
+    buildstate->insertPartitionstate = NULL;
 }
 
 /*
@@ -1745,16 +2250,19 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
 {
     int			parallel_workers = 0;
 
+    elog(WARNING, "build with partition");
+
     pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PROGRESS_HNSW_PHASE_LOAD);
 
-    /* Calculate parallel workers */
-    if (buildstate->heap != NULL)
-        parallel_workers = ComputeParallelWorkers(buildstate->heap, buildstate->index);
+//    /* Calculate parallel workers */
+//    if (buildstate->heap != NULL)
+//        parallel_workers = ComputeParallelWorkers(buildstate->heap, buildstate->index);
+//
+//    /* Attempt to launch parallel worker scan when required */
+//    if (parallel_workers > 0)
+//        HnswBeginParallel(buildstate, buildstate->indexInfo->ii_Concurrent, parallel_workers);
 
-    /* Attempt to launch parallel worker scan when required */
-    if (parallel_workers > 0)
-        HnswBeginParallel(buildstate, buildstate->indexInfo->ii_Concurrent, parallel_workers);
-
+    elog(WARNING, "workers: %d", parallel_workers);
     /* Add tuples to graph */
     if (buildstate->heap != NULL)
     {
@@ -1771,21 +2279,30 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
     if (!buildstate->graph->flushed)
     {
 
+        if (!buildstate->graph->partitioned)
+        {
+            /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
+            HnswPartitionState *partitionstate;
+            partitionstate = HnswPartitionGraph(buildstate);
 
-//    /* LDG 기반 그래프 파티셔닝 */
-        HnswPartitionState *partitionstate;
-        partitionstate = HnswPartitionGraph(buildstate);
+//            HnswPartitionState *countPartitionstate;
+//            countPartitionstate = CountOverlapRatioForInsert(buildstate, partitionstate);
+//
+//            HnswPartitionState *insertPartitionState;
+//            insertPartitionState = InitPartitionState(buildstate, partitionstate->partitions[0].capacity, &buildstate->allocator);
+//
+//            for (int i=0; i<MAX_INSERT_POOL_SIZE; i++){
+//                insertPartitionState->partitions[i].pid = countPartitionstate->partitions[i].pid;
+//            }
 
-        // insert pool 구성?
-        HnswPartitionState *countPartitionstate;
-//        countPartitionstate = CountPartitionSizeForInsert(buildstate, partitionstate);
-        countPartitionstate = CountOverlapRatioForInsert(buildstate, partitionstate);
-
-        // countPartitionstate -> 이 결과를 ... 넣어보자 ..!!
-
+            buildstate->partitionstate = partitionstate;
+            buildstate->countPartitionstate = NULL;
+            buildstate->insertPartitionstate = NULL;
+        }
 
         /* Partition 기반으로 FlushPages 호출 */
-        FlushPagesWithPartitions(buildstate, partitionstate, countPartitionstate);
+//        FlushPagesWithPartitions(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
+        FlushPagesWithPartitionsLikeOnDisk(buildstate);
     }
 
     /* End parallel build */
@@ -1806,8 +2323,8 @@ BuildIndex(Relation heap, Relation index, IndexInfo *indexInfo,
 
 	InitBuildState(buildstate, heap, index, indexInfo, forkNum);
 
-	BuildGraph(buildstate, forkNum);
-//    BuildGraphWithPartition(buildstate, forkNum);
+//	BuildGraph(buildstate, forkNum);
+    BuildGraphWithPartition(buildstate, forkNum);
 
 	if (RelationNeedsWAL(index) || forkNum == INIT_FORKNUM)
 		log_newpage_range(index, forkNum, 0, RelationGetNumberOfBlocksInFork(index, forkNum), true);
