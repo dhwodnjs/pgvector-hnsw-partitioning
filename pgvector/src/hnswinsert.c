@@ -360,7 +360,7 @@ ComparePageNeighbors(const void *a, const void *b)
 
 
 /* 페이지 neighbor count 분석 */
-static HnswInsertPageCandidate
+HnswInsertPageCandidate
 CalculatePartitionNeighborCount(HnswElement element)
 {
 //    HnswInsertPageCandidate *pageCandidates;

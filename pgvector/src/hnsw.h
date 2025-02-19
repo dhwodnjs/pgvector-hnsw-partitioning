@@ -113,7 +113,7 @@
 #define DELETED_PAGE 3
 #define SPARE_PAGE 4
 
-#define MAX_INSERT_POOL_SIZE 300  // 일단 추가.. 나중에 수정
+#define MAX_INSERT_POOL_SIZE 390
 
 #define HnswGetPartition(membername, ptr) pairingheap_container(HnswPartition, membername, ptr)
 #define HnswGetPartitionConst(membername, ptr) pairingheap_const_container(HnswPartition, membername, ptr)
@@ -278,6 +278,9 @@ typedef struct HnswGraph
 	/* Flushed state */
 	LWLock		flushLock;
 	bool		flushed;
+
+    LWLock      partitionLock;
+    bool        partitioned;
 }			HnswGraph;
 
 typedef struct HnswShared
@@ -372,6 +375,11 @@ typedef struct HnswBuildState
 	HnswLeader *hnswleader;
 	HnswShared *hnswshared;
 	char	   *hnswarea;
+
+    HnswPartitionState *partitionstate;
+    HnswPartitionState *countPartitionstate;
+    HnswPartitionState *insertPartitionstate;
+
 }			HnswBuildState;
 
 typedef struct HnswMetaPageData
@@ -525,6 +533,7 @@ PGDLLEXPORT void HnswParallelBuildMain(dsm_segment *seg, shm_toc *toc);
 void		HnswUpdateMetaPageWithPartition(Relation index, int updateEntry, HnswElement entryPoint, BlockNumber insertPage, ForkNumber forkNum, bool building, HnswInsertPagePool insertPagePool);
 void        HnswGetMetaPageInfoWithPartition(Relation index, int *m, HnswElement * entryPoint, HnswInsertPagePool * insertPagePool);
 bool        HnswInsertTupleOnDiskWithPartition(Relation index, HnswSupport * support, Datum value, ItemPointer heaptid, bool building);
+HnswInsertPageCandidate CalculatePartitionNeighborCount(HnswElement element);
 
 /* Index access methods */
 IndexBuildResult *hnswbuild(Relation heap, Relation index, IndexInfo *indexInfo);
