@@ -824,8 +824,8 @@ FlushPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *partit
     elog(INFO, "memory: %zu MB", buildstate->graph->memoryUsed / (1024 * 1024));
 #endif
 
-    CreateMetaPage(buildstate); // insert pool !!!
-//    CreateMetaPageWithPartition(buildstate, countPartitionstate);
+//    CreateMetaPage(buildstate); // insert pool !!!
+    CreateMetaPageWithPartition(buildstate, countPartitionstate);
     CreateGraphPagesWithPartitions(buildstate, partitionstate);
     WriteNeighborTuplesWithPartitions(buildstate, partitionstate);
 
@@ -1230,7 +1230,9 @@ CountOverlapRatioForInsert(HnswBuildState *buildstate, HnswPartitionState *parti
             }
         }
 
-        countPartitionstate->partitions[i].size /= currentPartition->size;
+        countPartitionstate->partitions[i].size = (currentPartition->size > 0) ?
+                                                  countPartitionstate->partitions[i].size / currentPartition->size : 0;
+
     }
 
     qsort(countPartitionstate->partitions, countPartitionstate->numPartitions, sizeof(HnswPartition), ComparePartitionSizeDesc);
@@ -1526,15 +1528,16 @@ InsertTupleInMemoryLikeOnDisk(HnswBuildState * buildstate, HnswElement element)
             if (partition->size == partition->capacity){
                 partition->capacity *= 2;
 
-                HnswElementPtr *tempPartition = malloc(sizeof(HnswElementPtr) * partition->capacity);
+                partition->nodes = realloc(partition->nodes, sizeof(HnswElementPtr) * partition->capacity);
+
+//                HnswElementPtr *tempPartition = malloc(sizeof(HnswElementPtr) * partition->capacity);
 
 //                memcpy(tempPartition, partition->nodes, sizeof(HnswElementPtr) * partition->capacity/2);
-                for (int k=0; k<partition->size; k++){
-                    tempPartition[k] = partition->nodes[k];
-                }
-//                pfree(partition->nodes);
+//                for (int k=0; k<partition->size; k++){
+//                    tempPartition[k] = partition->nodes[k];
+//                }
 
-                partition->nodes = tempPartition;
+//                partition->nodes = tempPartition;
             }
 
             HnswPtrStore(base, partition->nodes[partition->size], element);
@@ -1579,7 +1582,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid, Hn
 	/* Ensure graph not flushed when inserting */
 	LWLockAcquire(flushLock, LW_SHARED);
 
-//    elog(WARNING, "graph->indtuples: %f", graph->indtuples);
+
 	/* Are we in the on-disk phase? */
 	if (graph->flushed)
 	{
@@ -1632,6 +1635,10 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid, Hn
 		return HnswInsertTupleOnDisk(index, support, value, heaptid, true);
 	}
 
+    if ((int)graph->indtuples % 100 == 0){
+        elog(WARNING, "graph->indtuples: %d", (int) graph->indtuples);
+    }
+
 	/* Ok, we can proceed to allocate the element */
 	element = HnswInitElement(base, heaptid, buildstate->m, buildstate->ml, buildstate->maxLevel, allocator);
 	valuePtr = HnswAlloc(allocator, valueSize);
@@ -1651,51 +1658,51 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid, Hn
 	LWLockInitialize(&element->lock, hnsw_lock_tranche_id);
 
 
-    /* Are we in the in-memory insert phase? */
-    if (graph->partitioned)
-    {
-        InsertTupleInMemoryLikeOnDisk(buildstate, element);
-
-        /* Release flush lock */
-        LWLockRelease(flushLock);
-        return true;
-    }
-
-    if (graph->indtuples > 50000) // heap size 따라서 결정
-    {
-        if (!graph->partitioned)
-        {
-//            LWLockAcquire(&graph->partitionLock, LW_EXCLUSIVE);
-
-            /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
-            HnswPartitionState *partitionstate;
-            partitionstate = HnswPartitionGraph(buildstate);
-
-            HnswPartitionState *countPartitionstate;
-            countPartitionstate = CountOverlapRatioForInsert(buildstate, partitionstate);
-
-            HnswPartitionState *insertPartitionState;
-            insertPartitionState = InitPartitionState(buildstate, partitionstate->partitions[0].capacity, allocator);
-
-            for (int i=0; i<MAX_INSERT_POOL_SIZE; i++){
-                insertPartitionState->partitions[i].pid = countPartitionstate->partitions[i].pid;
-            }
-
-            buildstate->partitionstate = partitionstate;
-            buildstate->countPartitionstate = countPartitionstate;
-            buildstate->insertPartitionstate = insertPartitionState;
-
-            elog(WARNING, "set partitions done");
-
-//            LWLockRelease(&graph->partitionLock);
-        }
-        InsertTupleInMemoryLikeOnDisk(buildstate, element);
-
-        /* Release flush lock */
-        LWLockRelease(flushLock);
-
-        return true;
-    }
+//    /* Are we in the in-memory insert phase? */
+//    if (graph->partitioned)
+//    {
+//        InsertTupleInMemoryLikeOnDisk(buildstate, element);
+//
+//        /* Release flush lock */
+//        LWLockRelease(flushLock);
+//        return true;
+//    }
+//
+//    if (graph->indtuples > 10000)
+//    {
+//        if (!graph->partitioned)
+//        {
+////            LWLockAcquire(&graph->partitionLock, LW_EXCLUSIVE);
+//
+//            /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
+//            HnswPartitionState *partitionstate;
+//            partitionstate = HnswPartitionGraph(buildstate);
+//
+//            HnswPartitionState *countPartitionstate;
+//            countPartitionstate = CountOverlapRatioForInsert(buildstate, partitionstate);
+//
+//            HnswPartitionState *insertPartitionState;
+//            insertPartitionState = InitPartitionState(buildstate, partitionstate->partitions[0].capacity, allocator);
+//
+//            for (int i=0; i<MAX_INSERT_POOL_SIZE; i++){
+//                insertPartitionState->partitions[i].pid = countPartitionstate->partitions[i].pid;
+//            }
+//
+//            buildstate->partitionstate = partitionstate;
+//            buildstate->countPartitionstate = countPartitionstate;
+//            buildstate->insertPartitionstate = insertPartitionState;
+//
+//            elog(WARNING, "set partitions done");
+//
+////            LWLockRelease(&graph->partitionLock);
+//        }
+//        InsertTupleInMemoryLikeOnDisk(buildstate, element);
+//
+//        /* Release flush lock */
+//        LWLockRelease(flushLock);
+//
+//        return true;
+//    }
 
 	/* Insert tuple */
 	InsertTupleInMemory(buildstate, element);
@@ -2254,13 +2261,13 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
 
     pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PROGRESS_HNSW_PHASE_LOAD);
 
-//    /* Calculate parallel workers */
-//    if (buildstate->heap != NULL)
-//        parallel_workers = ComputeParallelWorkers(buildstate->heap, buildstate->index);
-//
-//    /* Attempt to launch parallel worker scan when required */
-//    if (parallel_workers > 0)
-//        HnswBeginParallel(buildstate, buildstate->indexInfo->ii_Concurrent, parallel_workers);
+    /* Calculate parallel workers */
+    if (buildstate->heap != NULL)
+        parallel_workers = ComputeParallelWorkers(buildstate->heap, buildstate->index);
+
+    /* Attempt to launch parallel worker scan when required */
+    if (parallel_workers > 0)
+        HnswBeginParallel(buildstate, buildstate->indexInfo->ii_Concurrent, parallel_workers);
 
     elog(WARNING, "workers: %d", parallel_workers);
     /* Add tuples to graph */
@@ -2275,34 +2282,33 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
         buildstate->indtuples = buildstate->graph->indtuples;
     }
 
+    elog(WARNING, "start flush");
     /* Flush pages */
     if (!buildstate->graph->flushed)
     {
 
-        if (!buildstate->graph->partitioned)
-        {
-            /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
-            HnswPartitionState *partitionstate;
-            partitionstate = HnswPartitionGraph(buildstate);
+        elog(WARNING, "start flush");
+        /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
+        HnswPartitionState *partitionstate;
+        partitionstate = HnswPartitionGraph(buildstate);
 
-//            HnswPartitionState *countPartitionstate;
-//            countPartitionstate = CountOverlapRatioForInsert(buildstate, partitionstate);
-//
-//            HnswPartitionState *insertPartitionState;
-//            insertPartitionState = InitPartitionState(buildstate, partitionstate->partitions[0].capacity, &buildstate->allocator);
-//
-//            for (int i=0; i<MAX_INSERT_POOL_SIZE; i++){
-//                insertPartitionState->partitions[i].pid = countPartitionstate->partitions[i].pid;
-//            }
+        HnswPartitionState *countPartitionstate;
+        countPartitionstate = CountOverlapRatioForInsert(buildstate, partitionstate);
+    //
+    //            HnswPartitionState *insertPartitionState;
+    //            insertPartitionState = InitPartitionState(buildstate, partitionstate->partitions[0].capacity, &buildstate->allocator);
+    //
+    //            for (int i=0; i<MAX_INSERT_POOL_SIZE; i++){
+    //                insertPartitionState->partitions[i].pid = countPartitionstate->partitions[i].pid;
+    //            }
 
-            buildstate->partitionstate = partitionstate;
-            buildstate->countPartitionstate = NULL;
-            buildstate->insertPartitionstate = NULL;
-        }
+        buildstate->partitionstate = partitionstate;
+        buildstate->countPartitionstate = countPartitionstate;
+        buildstate->insertPartitionstate = NULL;
 
         /* Partition 기반으로 FlushPages 호출 */
-//        FlushPagesWithPartitions(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
-        FlushPagesWithPartitionsLikeOnDisk(buildstate);
+        FlushPagesWithPartitions(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
+//        FlushPagesWithPartitionsLikeOnDisk(buildstate);
     }
 
     /* End parallel build */
