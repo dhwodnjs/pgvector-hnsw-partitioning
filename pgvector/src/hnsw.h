@@ -378,7 +378,7 @@ typedef struct HnswBuildState
 
     HnswPartitionState *partitionstate;
     HnswPartitionState *countPartitionstate;
-    HnswPartitionState *insertPartitionstate;
+
 
 }			HnswBuildState;
 
