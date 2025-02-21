@@ -1111,29 +1111,29 @@ AddElementOnDiskWithPartitionCount(Relation index, HnswElement e, int m, BlockNu
 //    elog(WARNING, "          ****             ");
 
 
+////
+//// insertPagePool 정보 로그 출력
+//    elog(WARNING, "Insert Page Pool (Size: %d)", insertPagePool->poolSize);
+//    for (int p = 0; p < insertPagePool->poolSize; p++) {
+//        int pid = insertPagePool->items[p].pid;
+//        BlockNumber ep = insertPagePool->items[p].extendedPage;
 //
-// insertPagePool 정보 로그 출력
-    elog(WARNING, "Insert Page Pool (Size: %d)", insertPagePool->poolSize);
-    for (int p = 0; p < insertPagePool->poolSize; p++) {
-        int pid = insertPagePool->items[p].pid;
-        BlockNumber ep = insertPagePool->items[p].extendedPage;
-
-        elog(WARNING, "[Pool Entry %d] pid: %d, extendedPage: %u",
-             p,
-             pid,
-             ep);
-    }
-
-    // pageCandidates 정보 로그 출력
-    elog(WARNING, "Page Candidates (Total: %d)", pageCandidates->length);
-    for (int i = 0; i < pageCandidates->length; i++) {
-        elog(WARNING, "[Candidate %d] pid: %d, neighborCount: %d, pageType: %d, extendedPage: %u",
-             i,
-             pageCandidates->items[i].pid,
-             pageCandidates->items[i].neighborCount,
-             pageCandidates->items[i].pageType,
-             pageCandidates->items[i].blkno);
-    }
+//        elog(WARNING, "[Pool Entry %d] pid: %d, extendedPage: %u",
+//             p,
+//             pid,
+//             ep);
+//    }
+//
+//    // pageCandidates 정보 로그 출력
+//    elog(WARNING, "Page Candidates (Total: %d)", pageCandidates->length);
+//    for (int i = 0; i < pageCandidates->length; i++) {
+//        elog(WARNING, "[Candidate %d] pid: %d, neighborCount: %d, pageType: %d, extendedPage: %u",
+//             i,
+//             pageCandidates->items[i].pid,
+//             pageCandidates->items[i].neighborCount,
+//             pageCandidates->items[i].pageType,
+//             pageCandidates->items[i].blkno);
+//    }
 
 
     bool useTempBuf = false;
@@ -1156,7 +1156,7 @@ AddElementOnDiskWithPartitionCount(Relation index, HnswElement e, int m, BlockNu
         }
 
         if (tempPageNo == InvalidBlockNumber) {
-            elog(WARNING, "Page type: EXTENDED (new)");
+//            elog(WARNING, "Page type: EXTENDED (new)");
 
 
             Buffer newbuf;
@@ -1229,29 +1229,29 @@ AddElementOnDiskWithPartitionCount(Relation index, HnswElement e, int m, BlockNu
         }
 
         if (pageCandidates->items[i].pageType == EXTENDED_PAGE){
-            elog(WARNING, "Page type: EXTENDED ");
+//            elog(WARNING, "Page type: EXTENDED ");
         } else{
-            elog(WARNING, "Page type: SPARE ");
+//            elog(WARNING, "Page type: SPARE ");
         }
 
         if (PageGetFreeSpace(tempPage) >= combinedSize) {
-            elog(WARNING, "[INSERT] free space (%zu) > combined size (%zu)",
-                 PageGetFreeSpace(tempPage), combinedSize);
+//            elog(WARNING, "[INSERT] free space (%zu) > combined size (%zu)",
+//                 PageGetFreeSpace(tempPage), combinedSize);
 
-            elog(WARNING, "INSERT");
+//            elog(WARNING, "INSERT");
             nbuf = tempBuf;
             npage = tempPage;
             found = true;
             break;
 
         } else {
-            elog(WARNING, "[EXTEND] free space (%zu) < combined size (%zu)",
-                 PageGetFreeSpace(tempPage), combinedSize);
+//            elog(WARNING, "[EXTEND] free space (%zu) < combined size (%zu)",
+//                 PageGetFreeSpace(tempPage), combinedSize);
 
             // 자리 없다는 의미니까 ,, pool에서 없애버려야 됨.. -> 업데이트만 해주면 됨.
             // 새로 하나 만들어서,,
             // max_pool 상태 아니라면 extended page 만들고 metap 업데이트
-            elog(WARNING, "EXTEND");
+//            elog(WARNING, "EXTEND");
 
             Buffer newbuf;
             Page newpage;
@@ -1335,11 +1335,11 @@ AddElementOnDiskWithPartitionCount(Relation index, HnswElement e, int m, BlockNu
 
     }
 
-    elog(WARNING, "Attempting to add element at offno: %u on page: %u",
-         e->offno, e->blkno);
-
-    elog(WARNING, "Attempting to add neighbor at neighborOffno: %u on page: %u",
-         e->neighborOffno, e->neighborPage);
+//    elog(WARNING, "Attempting to add element at offno: %u on page: %u",
+//         e->offno, e->blkno);
+//
+//    elog(WARNING, "Attempting to add neighbor at neighborOffno: %u on page: %u",
+//         e->neighborOffno, e->neighborPage);
 
 
     ItemPointerSet(&etup->neighbortid, e->neighborPage, e->neighborOffno);
@@ -1759,7 +1759,7 @@ UpdateGraphOnDiskWithPartition(Relation index, HnswSupport * support, HnswElemen
 //    AddElementOnDisk(index, element, m, GetInsertPage(index), &newInsertPage, building);
 //    AddElementOnDiskWithPool(index, element, m, GetInsertPage(index), &newInsertPage, building, insertPagePool);
 
-    AddElementOnDiskWithPartition(index, element, m, GetInsertPage(index), &newInsertPage, building, insertPagePool, &newInsertPagePool);
+//    AddElementOnDiskWithPartition(index, element, m, GetInsertPage(index), &newInsertPage, building, insertPagePool, &newInsertPagePool);
     AddElementOnDiskWithPartitionCount(index, element, m, GetInsertPage(index), &newInsertPage, building, insertPagePool, &newInsertPagePool);
 
 //    elog(WARNING, "poolSize: %d", newInsertPagePool->poolSize);
