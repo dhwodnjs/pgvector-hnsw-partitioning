@@ -125,6 +125,8 @@ CreateMetaPageWithPartition(HnswBuildState * buildstate, HnswPartitionState *cou
     Buffer		buf;
     Page		page;
     HnswMetaPage metap;
+    int partitionPageCount;
+    int partitionCount;
 
     buf = HnswNewBuffer(index, forkNum);
     page = BufferGetPage(buf);
@@ -150,6 +152,18 @@ CreateMetaPageWithPartition(HnswBuildState * buildstate, HnswPartitionState *cou
         metap->items[i].pid = countPartitionstate->partitions[i-1].pid;
     }
 
+    // 여기에서 필요한 partitionpage 수를 계산하자
+    // 필요한 Partition page 수 = ( 전체 heap tuple 개수 / 64 : 파티션 수) * 0.3 : Inser 페이지 수 / 1000 : 한 페이지에 저장 가능
+    // buildstate->indtuples는 일단 현재 build 한거로 계산 .. 바꾸는 거는 나중에 생각하자
+
+    partitionCount = ((int)buildstate->graph->indtuples + MAX_NODES_PER_PARTITION - 1) / MAX_NODES_PER_PARTITION;
+    partitionPageCount = (int)(partitionCount * INSERT_PAGE_PER_PARTITION + MAX_PARTITION_ENTRIES - 1) / MAX_PARTITION_ENTRIES;
+
+    metap->partitionPageCount = partitionPageCount;
+//    for (int i=0; i<partitionPageCount; i++){
+//        metap->partitionPages[i] = InvalidBlockNumber; // partitionpage들의 blocknumber 목록을 저장
+//    }
+
     ((PageHeader) page)->pd_lower =
             ((char *) metap + sizeof(HnswMetaPageData)) - (char *) page;
 
@@ -157,32 +171,138 @@ CreateMetaPageWithPartition(HnswBuildState * buildstate, HnswPartitionState *cou
     UnlockReleaseBuffer(buf);
 }
 
+
 /*
  * Add a new page
  */
 static void
 HnswBuildAppendPage(Relation index, Buffer *buf, Page *page, ForkNumber forkNum)
 {
-	/* Add a new page */
-	Buffer		newbuf = HnswNewBuffer(index, forkNum);
+    /* Add a new page */
+    Buffer		newbuf = HnswNewBuffer(index, forkNum);
 
-	/* Update previous page */
-	HnswPageGetOpaque(*page)->nextblkno = BufferGetBlockNumber(newbuf);
+    /* Update previous page */
+    HnswPageGetOpaque(*page)->nextblkno = BufferGetBlockNumber(newbuf);
 
-	/* Commit */
-	MarkBufferDirty(*buf);
-	UnlockReleaseBuffer(*buf);
+    /* Commit */
+    MarkBufferDirty(*buf);
+    UnlockReleaseBuffer(*buf);
 
-	/* Can take a while, so ensure we can interrupt */
-	/* Needs to be called when no buffer locks are held */
-	LockBuffer(newbuf, BUFFER_LOCK_UNLOCK);
-	CHECK_FOR_INTERRUPTS();
-	LockBuffer(newbuf, BUFFER_LOCK_EXCLUSIVE);
+    /* Can take a while, so ensure we can interrupt */
+    /* Needs to be called when no buffer locks are held */
+    LockBuffer(newbuf, BUFFER_LOCK_UNLOCK);
+    CHECK_FOR_INTERRUPTS();
+    LockBuffer(newbuf, BUFFER_LOCK_EXCLUSIVE);
 
-	/* Prepare new page */
-	*buf = newbuf;
-	*page = BufferGetPage(*buf);
-	HnswInitPage(*buf, *page);
+    /* Prepare new page */
+    *buf = newbuf;
+    *page = BufferGetPage(*buf);
+    HnswInitPage(*buf, *page);
+
+//    elog(WARNING, "[DEBUG] Appending new page at block: %u", BufferGetBlockNumber(*buf));
+//    if (HnswPageGetOpaque(*page)->nextblkno == InvalidBlockNumber){
+//        elog(WARNING, "invalid nxt blk");
+//    } else {
+//        elog(WARNING, "valid nxt blk : %d", (int)HnswPageGetOpaque(*page)->nextblkno);
+//    }
+}
+
+
+
+static void
+CreatePartitionPages(HnswBuildState * buildstate, HnswPartitionState *countPartitionstate)
+{
+    elog(WARNING, "DEBUGGING");
+    Relation	index = buildstate->index;
+    ForkNumber	forkNum = buildstate->forkNum;
+
+    Buffer		buf;
+    Page		page;
+    HnswPartitionPage partPage;
+
+    int partIndex = 0;
+    int partitionPageIndex = 0;
+
+    int partitionCount;
+    int partitionPageCount;
+//    BlockNumber *partitionPageArray;
+
+    buf = HnswNewBuffer(index, forkNum);
+    page = BufferGetPage(buf);
+    HnswInitPage(buf, page);
+
+
+    partitionCount = ((int)buildstate->graph->indtuples + MAX_NODES_PER_PARTITION - 1) / MAX_NODES_PER_PARTITION;
+    partitionPageCount = (int)(partitionCount * INSERT_PAGE_PER_PARTITION + MAX_PARTITION_ENTRIES - 1) / MAX_PARTITION_ENTRIES;
+
+//    BlockNumber partitionPageArray[partitionPageCount];
+
+//    partitionPageArray = (BlockNumber *) palloc0(partitionPageCount * sizeof(BlockNumber));
+    elog(WARNING, "[DEBUG] aaa log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+
+
+    /* 첫 페이지 BlockNumber 저장 */
+//    partitionPageArray[partitionPageIndex] = BufferGetBlockNumber(buf);
+    partitionPageIndex++;
+
+    elog(WARNING, "blkno: %d", (int)BufferGetBlockNumber(buf));
+
+    partPage = (HnswPartitionPageData *) PageGetContents(page);
+    partPage->numEntries = 0;
+
+    // 첫번쨰 원소는 Partition id -2로 저장하고, extended를 현재 insertpage로 업데이트 필요
+    partPage->entries[partPage->numEntries].pid = -2;
+    partPage->entries[partPage->numEntries].extendedPage = InvalidBlockNumber;
+    partPage->numEntries++;
+
+    // 전체 파티션 * Insert_page_per_partition 과 numpartition보다 작은 수만큼 entry로 저장
+    while ((partIndex < countPartitionstate->numPartitions) && (partIndex < partitionCount * INSERT_PAGE_PER_PARTITION)) // 총 저장할 pid-blocknum의 조합 수
+    {
+
+        // 각 Partitionpage는 max_partition_entry size로 저장하고, numentry로 실제 개수 확인
+        /* 현재 페이지가 가득 찼으면 새로운 페이지 생성 */
+        if (partPage->numEntries >= MAX_PARTITION_ENTRIES)
+        {
+            ((PageHeader) page)->pd_lower =
+                    ((char *) partPage + sizeof(HnswPartitionPageData)) - (char *) page; // array size 체크 다시 잘 해주기
+
+            HnswBuildAppendPage(index, &buf, &page, forkNum);
+
+//            partitionPageArray[partitionPageIndex] = BufferGetBlockNumber(buf);
+            partitionPageIndex++;
+            elog(WARNING, "blkno: %d", (int)BufferGetBlockNumber(buf));
+
+            partPage = (HnswPartitionPageData *) PageGetContents(page);
+            partPage->numEntries = 0;
+        }
+
+        /* Partition 정보 저장 */
+        partPage->entries[partPage->numEntries].pid = countPartitionstate->partitions[partIndex].pid;
+        partPage->entries[partPage->numEntries].extendedPage = InvalidBlockNumber;
+        partPage->numEntries++;
+
+        partIndex++;
+    }
+
+    /* ✅ 마지막 페이지의 `pd_lower` 설정 */
+    ((PageHeader) page)->pd_lower =
+            ((char *) partPage + sizeof(HnswPartitionPageData)) - (char *) page;
+
+    elog(WARNING, "[DEBUG] a log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+
+    // partitionPageArray로 metapage partitionpage update 해줘야됨
+    // 이거 그냥 Partitioncount udpate해주는걸로 바꾸기
+
+    HnswUpdateMetaPagePartitionPage(index, HNSW_UPDATE_ENTRY_ALWAYS, forkNum, 0, true, partitionPageIndex);
+    elog(WARNING, "[DEBUG] b log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+
+
+//    pfree(partitionPageArray);
+
+    elog(WARNING, "flush partition page");
+
+    MarkBufferDirty(buf);
+    UnlockReleaseBuffer(buf);
 }
 
 /*
@@ -276,6 +396,7 @@ CreateGraphPages(HnswBuildState * buildstate)
 	}
 
 	insertPage = BufferGetBlockNumber(buf);
+    elog(WARNING, "insertpage: %d", (int)insertPage);
 
 	/* Commit */
 	MarkBufferDirty(buf);
@@ -316,6 +437,8 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
     HnswInitPage(buf, page);
 
     int element_per_page_counter = 0;
+
+    elog(WARNING, "blkno: %d", (int)BufferGetBlockNumber(buf));
 
     /* Iterate through partitions */
     for (unsigned i = 0; i < partitionstate->numPartitions; i++) {
@@ -367,14 +490,33 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
             }
 
             ItemPointerSet(&etup->neighbortid, element->neighborPage, element->neighborOffno);
+//
+//            /* Add element */
+//            if (PageAddItem(page, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != element->offno)
+//                elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+//
+//            /* Add new page if needed */
+//            if (PageGetFreeSpace(page) < ntupSize)
+//                HnswBuildAppendPage(index, &buf, &page, forkNum);
+/* Add element */
+//            elog(WARNING, "[DEBUG] Attempting to add element at offno: %u on page: %u", element->offno, BufferGetBlockNumber(buf));
+//            elog(WARNING, "[DEBUG] Page free space before insert: %zu bytes", PageGetFreeSpace(page));
 
-            /* Add element */
-            if (PageAddItem(page, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != element->offno)
-                elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+            if (PageAddItem(page, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != element->offno) {
+//                elog(ERROR, "[ERROR] Failed to add index item to \"%s\" at block %u, offno %u",
+//                     RelationGetRelationName(index), BufferGetBlockNumber(buf), element->offno);
+            }
 
-            /* Add new page if needed */
-            if (PageGetFreeSpace(page) < ntupSize)
+/* Add new page if needed */
+            Size freeSpaceAfterInsert = PageGetFreeSpace(page);
+//            elog(WARNING, "[DEBUG] Page free space after insert: %zu bytes", freeSpaceAfterInsert);
+
+            if (freeSpaceAfterInsert < ntupSize) {
+//                elog(WARNING, "[DEBUG] Free space (%zu) is less than neighbor tuple size (%zu), appending new page...",
+//                     freeSpaceAfterInsert, ntupSize);
                 HnswBuildAppendPage(index, &buf, &page, forkNum);
+            }
+
 
             /* Add placeholder for neighbors */
             if (PageAddItem(page, (Item) ntup, ntupSize, InvalidOffsetNumber, false, false) != element->neighborOffno)
@@ -384,15 +526,31 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
 
     insertPage = BufferGetBlockNumber(buf);
 
+    elog(WARNING, "insertpage: %d", (int)insertPage);
+//
+//    if (HnswPageGetOpaque(page)->nextblkno == InvalidBlockNumber){
+//        elog(WARNING, "invalid nxt blk");
+//    } else {
+//        elog(WARNING, "valid nxt blk : %d", (int)HnswPageGetOpaque(page)->nextblkno);
+//    }
+
     /* Commit */
     MarkBufferDirty(buf);
     UnlockReleaseBuffer(buf);
 
     entryPoint = HnswPtrAccess(base, buildstate->graph->entryPoint);
-    HnswInsertPagePool insertPagePool = NULL;
+//    HnswInsertPagePool insertPagePool = NULL;
+//    BlockNumber *partitionPageArray = NULL;
 
-    HnswUpdateMetaPageWithPartition(index, HNSW_UPDATE_ENTRY_ALWAYS, entryPoint, insertPage, forkNum, true, insertPagePool);
-//    HnswUpdateMetaPage(index, HNSW_UPDATE_ENTRY_ALWAYS, entryPoint, insertPage, forkNum, true);
+//    HnswUpdateMetaPageWithPartition(index, HNSW_UPDATE_ENTRY_ALWAYS, entryPoint, insertPage, forkNum, true, insertPagePool);
+    elog(WARNING, "[DEBUG] 1 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+
+
+    HnswUpdateMetaPagePartitionPage(index, HNSW_UPDATE_ENTRY_ALWAYS, forkNum, insertPage, true, -1);
+    elog(WARNING, "[DEBUG] 2 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+
+    HnswUpdateMetaPage(index, HNSW_UPDATE_ENTRY_ALWAYS, entryPoint, insertPage, forkNum, true);
+    elog(WARNING, "[DEBUG] 3 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
 
     elog(INFO, "CreateGraphPagesWithPartitions done");
 
@@ -499,6 +657,14 @@ WriteNeighborTuplesWithPartitions(HnswBuildState * buildstate, HnswPartitionStat
             if (!PageIndexTupleOverwrite(page, element->neighborOffno, (Item) ntup, ntupSize))
                 elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
 
+
+//            if (HnswPageGetOpaque(page)->nextblkno == InvalidBlockNumber){
+//                elog(WARNING, "invalid nxt blk");
+//            } else {
+//                elog(WARNING, "valid nxt blk : %d", (int)HnswPageGetOpaque(page)->nextblkno);
+//            }
+
+
             /* Commit */
             MarkBufferDirty(buf);
             UnlockReleaseBuffer(buf);
@@ -522,10 +688,13 @@ FlushPages(HnswBuildState * buildstate)
 #ifdef HNSW_MEMORY
 	elog(INFO, "memory: %zu MB", buildstate->graph->memoryUsed / (1024 * 1024));
 #endif
-
+    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 	CreateMetaPage(buildstate);
+    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 	CreateGraphPages(buildstate);
+    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 	WriteNeighborTuples(buildstate);
+    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 
 	buildstate->graph->flushed = true;
 	MemoryContextReset(buildstate->graphCtx);
@@ -542,6 +711,34 @@ FlushPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *partit
     CreateMetaPageWithPartition(buildstate, countPartitionstate);
     CreateGraphPagesWithPartitions(buildstate, partitionstate);
     WriteNeighborTuplesWithPartitions(buildstate, partitionstate);
+
+    buildstate->graph->flushed = true;
+    MemoryContextReset(buildstate->graphCtx);
+
+    elog(INFO, "FlushPagesWithPartitions done");
+}
+
+
+static void
+FlushPagesWithPartitionsPage(HnswBuildState * buildstate, HnswPartitionState *partitionstate, HnswPartitionState *countPartitionstate)
+{
+#ifdef HNSW_MEMORY
+    elog(INFO, "memory: %zu MB", buildstate->graph->memoryUsed / (1024 * 1024));
+#endif
+
+    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+
+    CreateMetaPageWithPartition(buildstate, countPartitionstate);
+    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+
+    CreatePartitionPages(buildstate, countPartitionstate);
+    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+
+    CreateGraphPagesWithPartitions(buildstate, partitionstate);
+    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+
+    WriteNeighborTuplesWithPartitions(buildstate, partitionstate);
+    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 
     buildstate->graph->flushed = true;
     MemoryContextReset(buildstate->graphCtx);
@@ -720,13 +917,12 @@ HnswPartitionGraphLDG(HnswBuildState *buildstate, HnswPartitionState *oldPartiti
 static HnswPartitionState *
 HnswPartitionGraph(HnswBuildState *buildstate)
 {
-    int maxNodesPerPartition = 64;
     int numIterations = 61;
     HnswAllocator *allocator = &buildstate->allocator;
-    elog(INFO, "maxNodesPerPartition: %d", maxNodesPerPartition);
+    elog(INFO, "maxNodesPerPartition: %d", MAX_NODES_PER_PARTITION);
 
     /* 파티션 상태 초기화 */
-    HnswPartitionState *partitionstate = InitPartitionState(buildstate, maxNodesPerPartition, allocator);
+    HnswPartitionState *partitionstate = InitPartitionState(buildstate, MAX_NODES_PER_PARTITION, allocator);
 
     HnswGraph *graph = buildstate->graph;
     char *base = buildstate->hnswarea;
@@ -801,7 +997,7 @@ HnswPartitionGraph(HnswBuildState *buildstate)
         TimestampTz start_time = GetCurrentTimestamp();
 
 //        PartitionStatistic(partitionstate, buildstate);
-        newPartitionstate = InitPartitionState(buildstate, maxNodesPerPartition, allocator);
+        newPartitionstate = InitPartitionState(buildstate, MAX_NODES_PER_PARTITION, allocator);
         HnswPartitionGraphLDG(buildstate, partitionstate, newPartitionstate);
 
         TimestampTz end_time = GetCurrentTimestamp();
@@ -1192,7 +1388,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid, Hn
 		return HnswInsertTupleOnDisk(index, support, value, heaptid, true);
 	}
 
-    if ((int)graph->indtuples % 100 == 0){
+    if ((int)graph->indtuples % 1000 == 0){
         elog(WARNING, "graph->indtuples: %d", (int) graph->indtuples);
     }
 
@@ -1799,7 +1995,6 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
     if (!buildstate->graph->flushed)
     {
 
-        elog(WARNING, "start flush");
         /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
         HnswPartitionState *partitionstate;
         partitionstate = HnswPartitionGraph(buildstate);
@@ -1812,7 +2007,8 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
 
 
         /* Partition 기반으로 FlushPages 호출 */
-        FlushPagesWithPartitions(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
+//        FlushPagesWithPartitions(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
+        FlushPagesWithPartitionsPage(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
 
     }
 
@@ -1837,8 +2033,12 @@ BuildIndex(Relation heap, Relation index, IndexInfo *indexInfo,
 //	BuildGraph(buildstate, forkNum);
     BuildGraphWithPartition(buildstate, forkNum);
 
+    elog(WARNING, "[DEBUG]");
+    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+
 	if (RelationNeedsWAL(index) || forkNum == INIT_FORKNUM)
 		log_newpage_range(index, forkNum, 0, RelationGetNumberOfBlocksInFork(index, forkNum), true);
+
 
 	FreeBuildState(buildstate);
 }

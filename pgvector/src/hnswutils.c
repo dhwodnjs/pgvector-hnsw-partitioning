@@ -375,6 +375,49 @@ HnswGetMetaPageInfoWithPartition(Relation index, int *m, HnswElement * entryPoin
 }
 
 
+void
+HnswGetMetaPageInfoWithPartitionPage(Relation index, int *m, HnswElement * entryPoint, int *partitionPageCount)
+{
+    Buffer		buf;
+    Page		page;
+    HnswMetaPage metap;
+    BlockNumber *partitionPageArray;
+
+    buf = ReadBuffer(index, HNSW_METAPAGE_BLKNO);
+    LockBuffer(buf, BUFFER_LOCK_SHARE);
+    page = BufferGetPage(buf);
+    metap = HnswPageGetMeta(page);
+
+    if (unlikely(metap->magicNumber != HNSW_MAGIC_NUMBER))
+        elog(ERROR, "hnsw index is not valid");
+
+    if (m != NULL)
+        *m = metap->m;
+
+    if (entryPoint != NULL)
+    {
+        if (BlockNumberIsValid(metap->entryBlkno))
+        {
+            *entryPoint = HnswInitElementFromBlock(metap->entryBlkno, metap->entryOffno);
+            (*entryPoint)->level = metap->entryLevel;
+        }
+        else
+            *entryPoint = NULL;
+    }
+
+    *partitionPageCount = metap->partitionPageCount;
+//    partitionPageArray = (BlockNumber *) palloc0(sizeof(BlockNumber) * (metap->partitionPageCount));
+//    for (int i=0; i<metap->partitionPageCount; i++){
+//        partitionPageArray[i] = metap->partitionPages[i];
+//    }
+
+
+    UnlockReleaseBuffer(buf);
+
+//    return partitionPageArray;
+}
+
+
 /*
  * Get the entry point
  */
@@ -526,6 +569,130 @@ HnswUpdateMetaPageWithPartition(Relation index, int updateEntry, HnswElement ent
     else
         GenericXLogFinish(state);
     UnlockReleaseBuffer(buf);
+}
+
+
+
+/*
+ * Update the metapage
+ */
+void
+HnswUpdateMetaPagePartitionPage(Relation index, int updateEntry, ForkNumber forkNum, BlockNumber insertPage, bool building, int partitionPageIndex)
+{
+    Buffer		buf;
+    Page		page;
+    GenericXLogState *state;
+    HnswMetaPage metap;
+    elog(WARNING, "[DEBUG] 111 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+
+    buf = ReadBufferExtended(index, forkNum, HNSW_METAPAGE_BLKNO, RBM_NORMAL, NULL);
+    LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+    if (building)
+    {
+        state = NULL;
+        page = BufferGetPage(buf);
+    }
+    else
+    {
+        state = GenericXLogStart(index);
+        page = GenericXLogRegisterBuffer(state, buf, 0);
+    }
+
+    elog(WARNING, "[DEBUG] 222 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+
+
+    metap = HnswPageGetMeta(page);
+
+    if (partitionPageIndex == -1){
+        HnswUpdatePartitionPage(index, building, forkNum, 1, 0, insertPage);
+    } else {
+        metap->partitionPageCount = partitionPageIndex;
+    }
+//
+//    if (partitionPageArray == NULL){
+//
+//        elog(WARNING, "[DEBUG] 1212 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+//
+//        // 첫 페이지 열어서 insert page 첫번째 요소 업데이트 해줘야 됨
+//        HnswUpdatePartitionPage(index, building, forkNum, 1, 0, insertPage);
+//    } else {
+//
+//        elog(WARNING, "[DEBUG] 2323 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+//
+//        /* partitionPageArray 값을 metap->partitionPages에 저장 */
+//        for (int i = 1; i < metap->partitionPageCount; i++) {
+//            metap->partitionPages[i] = partitionPageArray[i-1];
+//        }
+//    }
+
+    elog(WARNING, "[DEBUG] 333 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+
+
+//
+//    /* 남은 공간이 있으면 InvalidBlockNumber로 초기화 */
+//    for (int i = 5; i < 50; i++) {
+//        metap->partitionPages[i] = InvalidBlockNumber;
+//    }
+
+//
+//    /* partitionPageArray 값을 metap->partitionPages에 저장 */
+//    for (int i = 0; i < numPartitionPages && i < MAX_PARTITION_PAGES; i++) {
+//        metap->partitionPages[i] = partitionPageArray[i];
+//    }
+//
+//    /* 남은 공간이 있으면 InvalidBlockNumber로 초기화 */
+//    for (int i = numPartitionPages; i < MAX_PARTITION_PAGES; i++) {
+//        metap->partitionPages[i] = InvalidBlockNumber;
+//    }
+
+    if (building)
+        MarkBufferDirty(buf);
+    else
+        GenericXLogFinish(state);
+    UnlockReleaseBuffer(buf);
+}
+
+
+/*
+ * Update the metapage
+ */
+void
+HnswUpdatePartitionPage(Relation index, bool building, ForkNumber forkNum, BlockNumber partBlkno, int partArrIdx, BlockNumber newExtendedPage)
+{
+
+    Buffer		buf;
+    Page		page;
+    GenericXLogState *state;
+    HnswPartitionPage partPage;
+//    elog(WARNING, "[DEBUG] 1Before ReadBufferExtended - Last Block: %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+    buf = ReadBufferExtended(index, forkNum, partBlkno, RBM_NORMAL, NULL);
+    LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+//    elog(WARNING, "[DEBUG] 2Before ReadBufferExtended - Last Block: %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+    if (building)
+    {
+        state = NULL;
+        page = BufferGetPage(buf);
+    }
+    else
+    {
+        state = GenericXLogStart(index);
+        page = GenericXLogRegisterBuffer(state, buf, 0);
+    }
+//    elog(WARNING, "[DEBUG] 3Before ReadBufferExtended - Last Block: %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+
+    partPage = (HnswPartitionPageData *) PageGetContents(page);
+
+//    elog(WARNING, "[DEBUG] 4Before ReadBufferExtended - Last Block: %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+    partPage->entries[partArrIdx].extendedPage = newExtendedPage;
+//    elog(WARNING, "[DEBUG] 5Before ReadBufferExtended - Last Block: %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+
+    if (building)
+        MarkBufferDirty(buf);
+    else
+        GenericXLogFinish(state);
+//    elog(WARNING, "[DEBUG] 6Before ReadBufferExtended - Last Block: %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+    UnlockReleaseBuffer(buf);
+//    elog(WARNING, "[DEBUG] 7Before ReadBufferExtended - Last Block: %d", RelationGetNumberOfBlocksInFork(index, forkNum));
 }
 
 

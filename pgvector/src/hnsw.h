@@ -26,7 +26,7 @@
 
 /* Preserved page numbers */
 #define HNSW_METAPAGE_BLKNO	0
-#define HNSW_HEAD_BLKNO		1	/* first element page */
+#define HNSW_HEAD_BLKNO		1	/* first element page 수정 */
 
 /* Must correspond to page numbers since page lock is used */
 #define HNSW_UPDATE_LOCK 	0
@@ -114,6 +114,9 @@
 #define SPARE_PAGE 4
 
 #define MAX_INSERT_POOL_SIZE 390
+#define MAX_PARTITION_ENTRIES 800  // 한 페이지에 저장할 Pid-blocknum 의 조합 수
+#define MAX_NODES_PER_PARTITION 64
+#define INSERT_PAGE_PER_PARTITION 0.3
 
 #define HnswGetPartition(membername, ptr) pairingheap_container(HnswPartition, membername, ptr)
 #define HnswGetPartitionConst(membername, ptr) pairingheap_const_container(HnswPartition, membername, ptr)
@@ -197,6 +200,9 @@ typedef struct HnswPageNeighborCount
     int neighborCount;
     int pageType;  /* ORIGINAL_PAGE or INSERTED_PAGE */
     int pid;
+
+    BlockNumber partBlkno;
+    int partArrIdx;
 } HnswPageNeighborCount;
 
 typedef struct HnswInsertPageCandidateData
@@ -212,9 +218,9 @@ typedef struct HnswInsertPageEntry
 {
 //    BlockNumber originalPage;  /* 기존 페이지 */
     BlockNumber extendedPage; /* 확장된 페이지 */
-
     int pid;
 } HnswInsertPageEntry;
+
 
 typedef struct HnswInsertPagePoolData
 {
@@ -223,6 +229,16 @@ typedef struct HnswInsertPagePoolData
 } HnswInsertPagePoolData;
 
 typedef HnswInsertPagePoolData * HnswInsertPagePool;
+
+
+
+typedef struct HnswPartitionPageData
+{
+    int numEntries;  /* 현재 페이지에 저장된 PartitionEntry 개수 */
+    HnswInsertPageEntry entries[MAX_PARTITION_ENTRIES];  /* Partition 목록 */
+} HnswPartitionPageData;
+
+typedef HnswPartitionPageData *HnswPartitionPage;
 
 
 
@@ -396,6 +412,10 @@ typedef struct HnswMetaPageData
 
     int poolSize;
     HnswInsertPageEntry items[MAX_INSERT_POOL_SIZE];
+
+    int partitionPageCount;
+//    BlockNumber partitionPages[FLEXIBLE_ARRAY_MEMBER];
+
 }			HnswMetaPageData;
 
 typedef HnswMetaPageData * HnswMetaPage;
@@ -533,6 +553,10 @@ void		HnswUpdateMetaPageWithPartition(Relation index, int updateEntry, HnswEleme
 void        HnswGetMetaPageInfoWithPartition(Relation index, int *m, HnswElement * entryPoint, HnswInsertPagePool * insertPagePool);
 bool        HnswInsertTupleOnDiskWithPartition(Relation index, HnswSupport * support, Datum value, ItemPointer heaptid, bool building);
 HnswInsertPageCandidate CalculatePartitionNeighborCount(HnswElement element);
+void        HnswUpdateMetaPagePartitionPage(Relation index, int updateEntry, ForkNumber forkNum, BlockNumber insertPage, bool building, int partitionPageIndex);
+void        HnswUpdatePartitionPage(Relation index, bool building, ForkNumber forkNum, BlockNumber partBlkno, int partArrIdx, BlockNumber newExtendedPage);
+void        HnswGetMetaPageInfoWithPartitionPage(Relation index, int *m, HnswElement * entryPoint, int *partitionPageCount);
+bool        HnswInsertTupleOnDiskWithPartitionPage(Relation index, HnswSupport * support, Datum value, ItemPointer heaptid, bool building);
 
 /* Index access methods */
 IndexBuildResult *hnswbuild(Relation heap, Relation index, IndexInfo *indexInfo);
