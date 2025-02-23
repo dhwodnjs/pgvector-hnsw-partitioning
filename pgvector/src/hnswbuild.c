@@ -212,7 +212,7 @@ HnswBuildAppendPage(Relation index, Buffer *buf, Page *page, ForkNumber forkNum)
 static void
 CreatePartitionPages(HnswBuildState * buildstate, HnswPartitionState *countPartitionstate)
 {
-    elog(WARNING, "DEBUGGING");
+//    elog(WARNING, "DEBUGGING");
     Relation	index = buildstate->index;
     ForkNumber	forkNum = buildstate->forkNum;
 
@@ -238,14 +238,14 @@ CreatePartitionPages(HnswBuildState * buildstate, HnswPartitionState *countParti
 //    BlockNumber partitionPageArray[partitionPageCount];
 
 //    partitionPageArray = (BlockNumber *) palloc0(partitionPageCount * sizeof(BlockNumber));
-    elog(WARNING, "[DEBUG] aaa log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+//    elog(WARNING, "[DEBUG] aaa log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
 
 
     /* 첫 페이지 BlockNumber 저장 */
 //    partitionPageArray[partitionPageIndex] = BufferGetBlockNumber(buf);
     partitionPageIndex++;
 
-    elog(WARNING, "blkno: %d", (int)BufferGetBlockNumber(buf));
+//    elog(WARNING, "blkno: %d", (int)BufferGetBlockNumber(buf));
 
     partPage = (HnswPartitionPageData *) PageGetContents(page);
     partPage->numEntries = 0;
@@ -270,7 +270,7 @@ CreatePartitionPages(HnswBuildState * buildstate, HnswPartitionState *countParti
 
 //            partitionPageArray[partitionPageIndex] = BufferGetBlockNumber(buf);
             partitionPageIndex++;
-            elog(WARNING, "blkno: %d", (int)BufferGetBlockNumber(buf));
+//            elog(WARNING, "blkno: %d", (int)BufferGetBlockNumber(buf));
 
             partPage = (HnswPartitionPageData *) PageGetContents(page);
             partPage->numEntries = 0;
@@ -288,13 +288,13 @@ CreatePartitionPages(HnswBuildState * buildstate, HnswPartitionState *countParti
     ((PageHeader) page)->pd_lower =
             ((char *) partPage + sizeof(HnswPartitionPageData)) - (char *) page;
 
-    elog(WARNING, "[DEBUG] a log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+//    elog(WARNING, "[DEBUG] a log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
 
     // partitionPageArray로 metapage partitionpage update 해줘야됨
     // 이거 그냥 Partitioncount udpate해주는걸로 바꾸기
 
     HnswUpdateMetaPagePartitionPage(index, HNSW_UPDATE_ENTRY_ALWAYS, forkNum, 0, true, partitionPageIndex);
-    elog(WARNING, "[DEBUG] b log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+//    elog(WARNING, "[DEBUG] b log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
 
 
 //    pfree(partitionPageArray);
@@ -396,7 +396,7 @@ CreateGraphPages(HnswBuildState * buildstate)
 	}
 
 	insertPage = BufferGetBlockNumber(buf);
-    elog(WARNING, "insertpage: %d", (int)insertPage);
+//    elog(WARNING, "insertpage: %d", (int)insertPage);
 
 	/* Commit */
 	MarkBufferDirty(buf);
@@ -438,7 +438,7 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
 
     int element_per_page_counter = 0;
 
-    elog(WARNING, "blkno: %d", (int)BufferGetBlockNumber(buf));
+//    elog(WARNING, "blkno: %d", (int)BufferGetBlockNumber(buf));
 
     /* Iterate through partitions */
     for (unsigned i = 0; i < partitionstate->numPartitions; i++) {
@@ -526,7 +526,7 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
 
     insertPage = BufferGetBlockNumber(buf);
 
-    elog(WARNING, "insertpage: %d", (int)insertPage);
+//    elog(WARNING, "insertpage: %d", (int)insertPage);
 //
 //    if (HnswPageGetOpaque(page)->nextblkno == InvalidBlockNumber){
 //        elog(WARNING, "invalid nxt blk");
@@ -543,14 +543,14 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
 //    BlockNumber *partitionPageArray = NULL;
 
 //    HnswUpdateMetaPageWithPartition(index, HNSW_UPDATE_ENTRY_ALWAYS, entryPoint, insertPage, forkNum, true, insertPagePool);
-    elog(WARNING, "[DEBUG] 1 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+//    elog(WARNING, "[DEBUG] 1 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
 
 
     HnswUpdateMetaPagePartitionPage(index, HNSW_UPDATE_ENTRY_ALWAYS, forkNum, insertPage, true, -1);
-    elog(WARNING, "[DEBUG] 2 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+//    elog(WARNING, "[DEBUG] 2 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
 
     HnswUpdateMetaPage(index, HNSW_UPDATE_ENTRY_ALWAYS, entryPoint, insertPage, forkNum, true);
-    elog(WARNING, "[DEBUG] 3 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+//    elog(WARNING, "[DEBUG] 3 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
 
     elog(INFO, "CreateGraphPagesWithPartitions done");
 
@@ -688,13 +688,13 @@ FlushPages(HnswBuildState * buildstate)
 #ifdef HNSW_MEMORY
 	elog(INFO, "memory: %zu MB", buildstate->graph->memoryUsed / (1024 * 1024));
 #endif
-    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+//    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 	CreateMetaPage(buildstate);
-    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+//    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 	CreateGraphPages(buildstate);
-    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+//    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 	WriteNeighborTuples(buildstate);
-    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+//    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 
 	buildstate->graph->flushed = true;
 	MemoryContextReset(buildstate->graphCtx);
@@ -726,19 +726,19 @@ FlushPagesWithPartitionsPage(HnswBuildState * buildstate, HnswPartitionState *pa
     elog(INFO, "memory: %zu MB", buildstate->graph->memoryUsed / (1024 * 1024));
 #endif
 
-    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+//    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 
     CreateMetaPageWithPartition(buildstate, countPartitionstate);
-    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+//    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 
     CreatePartitionPages(buildstate, countPartitionstate);
-    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+//    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 
     CreateGraphPagesWithPartitions(buildstate, partitionstate);
-    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+//    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 
     WriteNeighborTuplesWithPartitions(buildstate, partitionstate);
-    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
+//    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(buildstate->index, buildstate->forkNum));
 
     buildstate->graph->flushed = true;
     MemoryContextReset(buildstate->graphCtx);
@@ -917,7 +917,7 @@ HnswPartitionGraphLDG(HnswBuildState *buildstate, HnswPartitionState *oldPartiti
 static HnswPartitionState *
 HnswPartitionGraph(HnswBuildState *buildstate)
 {
-    int numIterations = 61;
+//    int numIterations = 61;
     HnswAllocator *allocator = &buildstate->allocator;
     elog(INFO, "maxNodesPerPartition: %d", MAX_NODES_PER_PARTITION);
 
@@ -992,7 +992,7 @@ HnswPartitionGraph(HnswBuildState *buildstate)
     HnswPartitionState *newPartitionstate;
 
     /* LDG 반복 수행 */
-    for (unsigned iteration = 0; iteration < numIterations; iteration++)
+    for (unsigned iteration = 0; iteration < LDG_ITERATION; iteration++)
     {
         TimestampTz start_time = GetCurrentTimestamp();
 
@@ -1127,9 +1127,9 @@ CountOverlapRatioForInsert(HnswBuildState *buildstate, HnswPartitionState *parti
     qsort(countPartitionstate->partitions, countPartitionstate->numPartitions, sizeof(HnswPartition), ComparePartitionSizeDesc);
 
 //    /* 결과 출력 */
-//    elog(INFO, "Overlap Cnt results:");
+//    elog(WARNING, "Overlap Cnt results:");
 //    for (int i = 0; i < countPartitionstate->numPartitions; i++) {
-//        elog(INFO, "Partition %d OR: %d ", countPartitionstate->partitions[i].pid, countPartitionstate->partitions[i].size);
+//        elog(WARNING, "Partition %d OR: %d ", countPartitionstate->partitions[i].pid, countPartitionstate->partitions[i].size);
 //    }
 
     return countPartitionstate;
@@ -1388,7 +1388,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid, Hn
 		return HnswInsertTupleOnDisk(index, support, value, heaptid, true);
 	}
 
-    if ((int)graph->indtuples % 1000 == 0){
+    if ((int)graph->indtuples % 10000 == 0){
         elog(WARNING, "graph->indtuples: %d", (int) graph->indtuples);
     }
 
@@ -1965,7 +1965,7 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
 {
     int			parallel_workers = 0;
 
-    elog(WARNING, "build with partition");
+    elog(WARNING, "start build");
 
     pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PROGRESS_HNSW_PHASE_LOAD);
 
@@ -1977,7 +1977,7 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
     if (parallel_workers > 0)
         HnswBeginParallel(buildstate, buildstate->indexInfo->ii_Concurrent, parallel_workers);
 
-    elog(WARNING, "workers: %d", parallel_workers);
+//    elog(WARNING, "workers: %d", parallel_workers);
     /* Add tuples to graph */
     if (buildstate->heap != NULL)
     {
@@ -1990,7 +1990,7 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
         buildstate->indtuples = buildstate->graph->indtuples;
     }
 
-    elog(WARNING, "start flush");
+//    elog(WARNING, "start flush");
     /* Flush pages */
     if (!buildstate->graph->flushed)
     {
@@ -2033,8 +2033,8 @@ BuildIndex(Relation heap, Relation index, IndexInfo *indexInfo,
 //	BuildGraph(buildstate, forkNum);
     BuildGraphWithPartition(buildstate, forkNum);
 
-    elog(WARNING, "[DEBUG]");
-    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+//    elog(WARNING, "[DEBUG]");
+//    elog(WARNING, "[DEBUG] log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
 
 	if (RelationNeedsWAL(index) || forkNum == INIT_FORKNUM)
 		log_newpage_range(index, forkNum, 0, RelationGetNumberOfBlocksInFork(index, forkNum), true);
