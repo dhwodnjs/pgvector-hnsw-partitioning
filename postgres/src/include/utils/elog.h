@@ -238,6 +238,14 @@ extern int	getinternalerrposition(void);
 #define elog(elevel, ...)  \
 	ereport(elevel, errmsg_internal(__VA_ARGS__))
 
+// Define elogjb to only expand to elog when ENABLE_ELOGJB is defined
+// #define JB_DEBUG
+#ifdef JB_DEBUG
+#define elogjb(elevel, ...) elog(elevel, __VA_ARGS__)
+#else
+#define elogjb(elevel, ...) ((void)0)
+#endif
+
 
 /*----------
  * Support for reporting "soft" errors that don't require a full transaction
