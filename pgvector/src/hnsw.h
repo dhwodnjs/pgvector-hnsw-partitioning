@@ -114,7 +114,7 @@
 #define SPARE_PAGE 4
 
 #define MAX_INSERT_POOL_SIZE 390
-#define MAX_PARTITION_ENTRIES 800  // 한 페이지에 저장할 Pid-blocknum 의 조합 수
+#define MAX_PARTITION_ENTRIES 1000  // 한 페이지에 저장할 Pid-blocknum 의 조합 수
 #define MAX_NODES_PER_PARTITION 64
 #define INSERT_PAGE_PER_PARTITION 0.3
 #define LDG_ITERATION 20

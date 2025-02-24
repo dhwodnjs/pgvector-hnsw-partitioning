@@ -1519,7 +1519,7 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
 
 
     qsort(pageCandidates->items, pageCandidates->length, sizeof(HnswPageNeighborCount), ComparePageNeighbors);
-    elog(WARNING, "first partition: %d", pageCandidates->items[0].pid);
+//    elog(WARNING, "first partition: %d", pageCandidates->items[0].pid);
 
 
     // 현재 insert page 읽어옴 .. -> index 유지 용도

@@ -583,7 +583,7 @@ HnswUpdateMetaPagePartitionPage(Relation index, int updateEntry, ForkNumber fork
     Page		page;
     GenericXLogState *state;
     HnswMetaPage metap;
-    elog(WARNING, "[DEBUG] 111 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+//    elog(WARNING, "[DEBUG] 111 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
 
     buf = ReadBufferExtended(index, forkNum, HNSW_METAPAGE_BLKNO, RBM_NORMAL, NULL);
     LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
@@ -598,7 +598,7 @@ HnswUpdateMetaPagePartitionPage(Relation index, int updateEntry, ForkNumber fork
         page = GenericXLogRegisterBuffer(state, buf, 0);
     }
 
-    elog(WARNING, "[DEBUG] 222 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
+//    elog(WARNING, "[DEBUG] 222 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
 
 
     metap = HnswPageGetMeta(page);

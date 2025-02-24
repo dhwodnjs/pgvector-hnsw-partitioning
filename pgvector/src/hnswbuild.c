@@ -156,7 +156,10 @@ CreateMetaPageWithPartition(HnswBuildState * buildstate, HnswPartitionState *cou
     // 필요한 Partition page 수 = ( 전체 heap tuple 개수 / 64 : 파티션 수) * 0.3 : Inser 페이지 수 / 1000 : 한 페이지에 저장 가능
     // buildstate->indtuples는 일단 현재 build 한거로 계산 .. 바꾸는 거는 나중에 생각하자
 
-    partitionCount = ((int)buildstate->graph->indtuples + MAX_NODES_PER_PARTITION - 1) / MAX_NODES_PER_PARTITION;
+    // 전체 heap tuple 수 -> 일단 직접 넣어주기 ..? ..
+    int heap_tuples = 100000;
+    partitionCount = (heap_tuples + MAX_NODES_PER_PARTITION - 1) / MAX_NODES_PER_PARTITION;
+//    partitionCount = ((int)buildstate->graph->indtuples + MAX_NODES_PER_PARTITION - 1) / MAX_NODES_PER_PARTITION;
     partitionPageCount = (int)(partitionCount * INSERT_PAGE_PER_PARTITION + MAX_PARTITION_ENTRIES - 1) / MAX_PARTITION_ENTRIES;
 
     metap->partitionPageCount = partitionPageCount;
@@ -227,12 +230,15 @@ CreatePartitionPages(HnswBuildState * buildstate, HnswPartitionState *countParti
     int partitionPageCount;
 //    BlockNumber *partitionPageArray;
 
+
     buf = HnswNewBuffer(index, forkNum);
     page = BufferGetPage(buf);
     HnswInitPage(buf, page);
 
 
-    partitionCount = ((int)buildstate->graph->indtuples + MAX_NODES_PER_PARTITION - 1) / MAX_NODES_PER_PARTITION;
+    int heap_tuples = 100000;
+    partitionCount = (heap_tuples + MAX_NODES_PER_PARTITION - 1) / MAX_NODES_PER_PARTITION;
+//    partitionCount = ((int)buildstate->graph->indtuples + MAX_NODES_PER_PARTITION - 1) / MAX_NODES_PER_PARTITION;
     partitionPageCount = (int)(partitionCount * INSERT_PAGE_PER_PARTITION + MAX_PARTITION_ENTRIES - 1) / MAX_PARTITION_ENTRIES;
 
 //    BlockNumber partitionPageArray[partitionPageCount];
@@ -244,6 +250,7 @@ CreatePartitionPages(HnswBuildState * buildstate, HnswPartitionState *countParti
     /* 첫 페이지 BlockNumber 저장 */
 //    partitionPageArray[partitionPageIndex] = BufferGetBlockNumber(buf);
     partitionPageIndex++;
+    elog(WARNING, "partitionPageIndex: %d", partitionPageIndex);
 
 //    elog(WARNING, "blkno: %d", (int)BufferGetBlockNumber(buf));
 
@@ -270,6 +277,7 @@ CreatePartitionPages(HnswBuildState * buildstate, HnswPartitionState *countParti
 
 //            partitionPageArray[partitionPageIndex] = BufferGetBlockNumber(buf);
             partitionPageIndex++;
+            elog(WARNING, "partitionPageIndex: %d", partitionPageIndex);
 //            elog(WARNING, "blkno: %d", (int)BufferGetBlockNumber(buf));
 
             partPage = (HnswPartitionPageData *) PageGetContents(page);
@@ -444,6 +452,8 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
     for (unsigned i = 0; i < partitionstate->numPartitions; i++) {
         HnswPartition *partition = &partitionstate->partitions[i];
 
+//        elog(WARNING, "[DEBUG] Attempting to add element on page: %u", BufferGetBlockNumber(buf));
+
         for (unsigned j = 0; j < partition->size; j++) {
             element_per_page_counter++;
             HnswElement element = HnswPtrAccess(base, partition->nodes[j]);
@@ -490,33 +500,17 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
             }
 
             ItemPointerSet(&etup->neighbortid, element->neighborPage, element->neighborOffno);
-//
-//            /* Add element */
-//            if (PageAddItem(page, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != element->offno)
-//                elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
-//
-//            /* Add new page if needed */
-//            if (PageGetFreeSpace(page) < ntupSize)
-//                HnswBuildAppendPage(index, &buf, &page, forkNum);
-/* Add element */
+
 //            elog(WARNING, "[DEBUG] Attempting to add element at offno: %u on page: %u", element->offno, BufferGetBlockNumber(buf));
 //            elog(WARNING, "[DEBUG] Page free space before insert: %zu bytes", PageGetFreeSpace(page));
 
-            if (PageAddItem(page, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != element->offno) {
-//                elog(ERROR, "[ERROR] Failed to add index item to \"%s\" at block %u, offno %u",
-//                     RelationGetRelationName(index), BufferGetBlockNumber(buf), element->offno);
-            }
+            /* Add element */
+            if (PageAddItem(page, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != element->offno)
+                elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
 
-/* Add new page if needed */
-            Size freeSpaceAfterInsert = PageGetFreeSpace(page);
-//            elog(WARNING, "[DEBUG] Page free space after insert: %zu bytes", freeSpaceAfterInsert);
-
-            if (freeSpaceAfterInsert < ntupSize) {
-//                elog(WARNING, "[DEBUG] Free space (%zu) is less than neighbor tuple size (%zu), appending new page...",
-//                     freeSpaceAfterInsert, ntupSize);
+            /* Add new page if needed */
+            if (PageGetFreeSpace(page) < ntupSize)
                 HnswBuildAppendPage(index, &buf, &page, forkNum);
-            }
-
 
             /* Add placeholder for neighbors */
             if (PageAddItem(page, (Item) ntup, ntupSize, InvalidOffsetNumber, false, false) != element->neighborOffno)
@@ -552,7 +546,7 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
     HnswUpdateMetaPage(index, HNSW_UPDATE_ENTRY_ALWAYS, entryPoint, insertPage, forkNum, true);
 //    elog(WARNING, "[DEBUG] 3 log_newpage_range called with blocks: 0 ~ %d", RelationGetNumberOfBlocksInFork(index, forkNum));
 
-    elog(INFO, "CreateGraphPagesWithPartitions done");
+    elog(WARNING, "CreateGraphPagesWithPartitions done");
 
     pfree(etup);
     pfree(ntup);
@@ -674,7 +668,7 @@ WriteNeighborTuplesWithPartitions(HnswBuildState * buildstate, HnswPartitionStat
 
     pfree(ntup);
 
-    elog(INFO, "WriteNeighborTuplesWithPartitions done");
+    elog(WARNING, "WriteNeighborTuplesWithPartitions done");
 }
 
 
@@ -715,7 +709,7 @@ FlushPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *partit
     buildstate->graph->flushed = true;
     MemoryContextReset(buildstate->graphCtx);
 
-    elog(INFO, "FlushPagesWithPartitions done");
+    elog(WARNING, "FlushPagesWithPartitions done");
 }
 
 
@@ -743,7 +737,7 @@ FlushPagesWithPartitionsPage(HnswBuildState * buildstate, HnswPartitionState *pa
     buildstate->graph->flushed = true;
     MemoryContextReset(buildstate->graphCtx);
 
-    elog(INFO, "FlushPagesWithPartitions done");
+    elog(WARNING, "FlushPagesWithPartitions done");
 }
 
 
@@ -919,7 +913,7 @@ HnswPartitionGraph(HnswBuildState *buildstate)
 {
 //    int numIterations = 61;
     HnswAllocator *allocator = &buildstate->allocator;
-    elog(INFO, "maxNodesPerPartition: %d", MAX_NODES_PER_PARTITION);
+    elog(WARNING, "maxNodesPerPartition: %d", MAX_NODES_PER_PARTITION);
 
     /* 파티션 상태 초기화 */
     HnswPartitionState *partitionstate = InitPartitionState(buildstate, MAX_NODES_PER_PARTITION, allocator);
@@ -933,7 +927,7 @@ HnswPartitionGraph(HnswBuildState *buildstate)
     int cnt = 0;
     int enterCnt = 0;
 
-    elog(INFO, "Starting initial partitioning...");
+    elog(WARNING, "Starting initial partitioning...");
 
     /* 그래프 순회 및 초기 배정 */
     while (!HnswPtrIsNull(base, iter))
@@ -987,7 +981,7 @@ HnswPartitionGraph(HnswBuildState *buildstate)
         iter = element->next;
     }
 
-    elog(INFO, "Initial partitioning completed. Total nodes: %d, Assigned nodes: %d", cnt, enterCnt);
+    elog(WARNING, "Initial partitioning completed. Total nodes: %d, Assigned nodes: %d", cnt, enterCnt);
 
     HnswPartitionState *newPartitionstate;
 
@@ -1342,6 +1336,7 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid, Hn
 		LWLockRelease(flushLock);
 
 		return HnswInsertTupleOnDisk(index, support, value, heaptid, true);
+//        return HnswInsertTupleOnDiskWithPartitionPage(index, support, value, heaptid, true);
 	}
 
 	/*
@@ -1369,23 +1364,27 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid, Hn
 					 errhint("Increase maintenance_work_mem to speed up builds.")));
 
 
-////    /* LDG 기반 그래프 파티셔닝 */
-//            HnswPartitionState *partitionstate;
-//            partitionstate = HnswPartitionGraph(buildstate);
-//
-//            // insert pool 구성?
-//            HnswPartitionState *countPartitionstate;
-//            countPartitionstate = CountPartitionSizeForInsert(buildstate, partitionstate);
+            /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
+            HnswPartitionState *partitionstate;
+            partitionstate = HnswPartitionGraph(buildstate);
 
-            // countPartitionstate -> 이 결과를 ... 넣어보자 ..!!
+            HnswPartitionState *countPartitionstate;
+            countPartitionstate = CountOverlapRatioForInsert(buildstate, partitionstate);
 
+            buildstate->partitionstate = partitionstate;
+            buildstate->countPartitionstate = countPartitionstate;
 
-            FlushPages(buildstate);
+            /* Partition 기반으로 FlushPages 호출 */
+//        FlushPagesWithPartitions(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
+            FlushPagesWithPartitionsPage(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
+
+//            FlushPages(buildstate);
 		}
 
 		LWLockRelease(flushLock);
 
 		return HnswInsertTupleOnDisk(index, support, value, heaptid, true);
+//        return HnswInsertTupleOnDiskWithPartitionPage(index, support, value, heaptid, true);
 	}
 
     if ((int)graph->indtuples % 10000 == 0){
@@ -1929,6 +1928,8 @@ BuildGraph(HnswBuildState * buildstate, ForkNumber forkNum)
 {
 	int			parallel_workers = 0;
 
+    elog(WARNING, "no partition (vanilla");
+
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PROGRESS_HNSW_PHASE_LOAD);
 
 	/* Calculate parallel workers */
@@ -1965,7 +1966,7 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
 {
     int			parallel_workers = 0;
 
-    elog(WARNING, "start build");
+    elog(WARNING, "build with partition");
 
     pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PROGRESS_HNSW_PHASE_LOAD);
 
