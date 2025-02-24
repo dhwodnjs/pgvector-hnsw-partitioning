@@ -137,6 +137,8 @@ HnswPtrDeclare(char, DatumRelptr, DatumPtr);
 
 struct HnswElementData
 {
+    int pid;
+
 	HnswElementPtr next;
 	ItemPointerData heaptids[HNSW_HEAPTIDS];
 	uint8		heaptidsLength;
@@ -327,6 +329,9 @@ typedef HnswPageOpaqueData * HnswPageOpaque;
 
 typedef struct HnswElementTupleData
 {
+
+    int pid;
+
 	uint8		type;
 	uint8		level;
 	uint8		deleted;
