@@ -23,10 +23,16 @@
 #include "commands/trigger.h"
 #include "executor/executor.h"
 #include "executor/nodeModifyTable.h"
+#include "nodes/nodeFuncs.h"
+#include "parser/parse_relation.h"
+#include "parser/parsetree.h"
 #include "replication/logicalrelation.h"
+#include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
+#include "utils/datum.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -559,12 +565,8 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	ItemPointer tid = &(searchslot->tts_tid);
 
-	/*
-	 * We support only non-system tables, with
-	 * check_publication_add_relation() accountable.
-	 */
+	/* For now we support only tables. */
 	Assert(rel->rd_rel->relkind == RELKIND_RELATION);
-	Assert(!IsCatalogRelation(rel));
 
 	CheckCmdReplicaIdentity(rel, CMD_UPDATE);
 

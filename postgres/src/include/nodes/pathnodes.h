@@ -104,9 +104,6 @@ typedef struct PlannerGlobal
 	/* Plans for SubPlan nodes */
 	List	   *subplans;
 
-	/* Paths from which the SubPlan Plans were made */
-	List	   *subpaths;
-
 	/* PlannerInfos for SubPlan nodes */
 	List	   *subroots pg_node_attr(read_write_ignore);
 
@@ -400,8 +397,6 @@ struct PlannerInfo
 	List	   *distinct_pathkeys;
 	/* sortClause pathkeys, if any */
 	List	   *sort_pathkeys;
-	/* set operator pathkeys, if any */
-	List	   *setop_pathkeys;
 
 	/* Canonicalised partition schemes used in the query. */
 	List	   *part_schemes pg_node_attr(read_write_ignore);
@@ -426,11 +421,7 @@ struct PlannerInfo
 	 * items to be proven redundant, implying that there is only one group
 	 * containing all the query's rows.  Hence, if you want to check whether
 	 * GROUP BY was specified, test for nonempty parse->groupClause, not for
-	 * nonempty processed_groupClause.  Optimizer chooses specific order of
-	 * group-by clauses during the upper paths generation process, attempting
-	 * to use different strategies to minimize number of sorts or engage
-	 * incremental sort.  See preprocess_groupclause() and
-	 * get_useful_group_keys_orderings() for details.
+	 * nonempty processed_groupClause.
 	 *
 	 * Currently, when grouping sets are specified we do not attempt to
 	 * optimize the groupClause, so that processed_groupClause will be
@@ -728,7 +719,7 @@ typedef struct PartitionSchemeData *PartitionScheme;
  * populate these fields, for base rels; but someday they might be used for
  * join rels too:
  *
- *		unique_for_rels - list of Relid sets, each one being a set of other
+ *		unique_for_rels - list of UniqueRelInfo, each one being a set of other
  *					rels for which this one has been proven unique
  *		non_unique_for_rels - list of Relid sets, each one being a set of
  *					other rels for which we have tried and failed to prove
@@ -922,11 +913,7 @@ typedef struct RelOptInfo
 	Relids	   *attr_needed pg_node_attr(read_write_ignore);
 	/* array indexed [min_attr .. max_attr] */
 	int32	   *attr_widths pg_node_attr(read_write_ignore);
-
-	/*
-	 * Zero-based set containing attnums of NOT NULL columns.  Not populated
-	 * for rels corresponding to non-partitioned inh==true RTEs.
-	 */
+	/* zero-based set containing attnums of NOT NULL columns */
 	Bitmapset  *notnullattnums;
 	/* relids of outer joins that can null this baserel */
 	Relids		nulling_relids;
@@ -967,7 +954,7 @@ typedef struct RelOptInfo
 	/*
 	 * cache space for remembering if we have proven this relation unique
 	 */
-	/* known unique for these other relid set(s) */
+	/* known unique for these other relid set(s) given in UniqueRelInfo(s) */
 	List	   *unique_for_rels;
 	/* known not unique for these set(s) */
 	List	   *non_unique_for_rels;
@@ -1101,9 +1088,6 @@ typedef struct IndexOptInfo IndexOptInfo;
 #define HAVE_INDEXOPTINFO_TYPEDEF 1
 #endif
 
-struct IndexPath;				/* avoid including pathnodes.h here */
-struct PlannerInfo;				/* avoid including pathnodes.h here */
-
 struct IndexOptInfo
 {
 	pg_node_attr(no_copy_equal, no_read, no_query_jumble)
@@ -1203,7 +1187,7 @@ struct IndexOptInfo
 	bool		amcanmarkpos;
 	/* AM's cost estimator */
 	/* Rather than include amapi.h here, we declare amcostestimate like this */
-	void		(*amcostestimate) (struct PlannerInfo *, struct IndexPath *, double, Cost *, Cost *, Selectivity *, double *, double *) pg_node_attr(read_write_ignore);
+	void		(*amcostestimate) () pg_node_attr(read_write_ignore);
 };
 
 /*
@@ -1475,21 +1459,14 @@ typedef struct PathKey
 } PathKey;
 
 /*
- * Contains an order of group-by clauses and the corresponding list of
- * pathkeys.
- *
- * The elements of 'clauses' list should have the same order as the head of
- * 'pathkeys' list.  The tleSortGroupRef of the clause should be equal to
- * ec_sortref of the pathkey equivalence class.  If there are redundant
- * clauses with the same tleSortGroupRef, they must be grouped together.
+ * Combines the information about pathkeys and the associated clauses.
  */
-typedef struct GroupByOrdering
+typedef struct PathKeyInfo
 {
 	NodeTag		type;
-
 	List	   *pathkeys;
 	List	   *clauses;
-} GroupByOrdering;
+} PathKeyInfo;
 
 /*
  * VolatileFunctionStatus -- allows nodes to cache their
@@ -1881,7 +1858,7 @@ typedef struct ForeignPath
  *
  * We provide a set of hooks here - which the provider must take care to set
  * up correctly - to allow extensions to supply their own methods of scanning
- * a relation or join relations.  For example, a provider might provide GPU
+ * a relation or joing relations.  For example, a provider might provide GPU
  * acceleration, a cache-based scan, or some other kind of logic we haven't
  * dreamed up yet.
  *
@@ -2322,7 +2299,6 @@ typedef struct WindowAggPath
 	Path	   *subpath;		/* path representing input source */
 	WindowClause *winclause;	/* WindowClause we'll be using */
 	List	   *qual;			/* lower-level WindowAgg runconditions */
-	List	   *runCondition;	/* OpExpr List to short-circuit execution */
 	bool		topwindow;		/* false for all apart from the WindowAgg
 								 * that's closest to the root of the plan */
 } WindowAggPath;
@@ -2391,8 +2367,6 @@ typedef struct ModifyTablePath
 	int			epqParam;		/* ID of Param for EvalPlanQual re-eval */
 	List	   *mergeActionLists;	/* per-target-table lists of actions for
 									 * MERGE */
-	List	   *mergeJoinConditions;	/* per-target-table join conditions
-										 * for MERGE */
 } ModifyTablePath;
 
 /*
@@ -2880,9 +2854,6 @@ typedef struct PlaceHolderVar
  * cost estimation purposes it is sometimes useful to know the join size under
  * plain innerjoin semantics.  Note that lhs_strict and the semi_xxx fields
  * are not set meaningfully within such structs.
- *
- * We also create transient SpecialJoinInfos for child joins during
- * partitionwise join planning, which are also not present in join_info_list.
  */
 #ifndef HAVE_SPECIALJOININFO_TYPEDEF
 typedef struct SpecialJoinInfo SpecialJoinInfo;
@@ -3434,5 +3405,36 @@ typedef struct AggTransInfo
 	Datum		initValue pg_node_attr(read_write_ignore);
 	bool		initValueIsNull;
 } AggTransInfo;
+
+/*
+ * UniqueRelInfo caches a fact that a relation is unique when being joined
+ * to other relation(s).
+ */
+typedef struct UniqueRelInfo
+{
+	pg_node_attr(no_copy_equal, no_read, no_query_jumble)
+
+	NodeTag		type;
+
+	/*
+	 * The relation in consideration is unique when being joined with this set
+	 * of other relation(s).
+	 */
+	Relids		outerrelids;
+
+	/*
+	 * The relation in consideration is unique when considering only clauses
+	 * suitable for self-join (passed split_selfjoin_quals()).
+	 */
+	bool		self_join;
+
+	/*
+	 * Additional clauses from a baserestrictinfo list that were used to prove
+	 * the uniqueness.   We cache it for the self-join checking procedure: a
+	 * self-join can be removed if the outer relation contains strictly the
+	 * same set of clauses.
+	 */
+	List	   *extra_clauses;
+} UniqueRelInfo;
 
 #endif							/* PATHNODES_H */

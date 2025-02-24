@@ -47,8 +47,7 @@ OBJS += \
 	llvmjit.o \
 	llvmjit_error.o \
 	llvmjit_inline.o \
-	llvmjit_wrap.o \
-	SectionMemoryManager.o
+	llvmjit_wrap.o
 
 # Code generation
 OBJS += \

@@ -12,7 +12,7 @@
 #include "postgres.h"
 
 #include "access/xact.h"
-#include "libpq/libpq-be.h"
+#include "libpq/libpq.h"
 #include "miscadmin.h"
 #include "pg_trace.h"
 #include "pgstat.h"
@@ -22,6 +22,7 @@
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
 #include "utils/ascii.h"
+#include "utils/backend_status.h"
 #include "utils/guc.h"			/* for application_name */
 #include "utils/memutils.h"
 
@@ -831,7 +832,7 @@ pgstat_read_current_status(void)
 			/*
 			 * The BackendStatusArray index is exactly the ProcNumber of the
 			 * source backend.  Note that this means localBackendStatusTable
-			 * is in order by proc_number. pgstat_get_beentry_by_proc_number()
+			 * is in order by proc_number.  pgstat_get_beentry_by_backend_id()
 			 * depends on that.
 			 */
 			localentry->proc_number = procNumber;
@@ -1101,8 +1102,8 @@ pgstat_get_local_beentry_by_proc_number(ProcNumber procNumber)
 	pgstat_read_current_status();
 
 	/*
-	 * Since the localBackendStatusTable is in order by proc_number, we can
-	 * use bsearch() to search it efficiently.
+	 * Since the localBackendStatusTable is in order by backend_id, we can use
+	 * bsearch() to search it efficiently.
 	 */
 	key.proc_number = procNumber;
 	return bsearch(&key, localBackendStatusTable, localNumBackends,
@@ -1113,11 +1114,11 @@ pgstat_get_local_beentry_by_proc_number(ProcNumber procNumber)
 /* ----------
  * pgstat_get_local_beentry_by_index() -
  *
- *	Like pgstat_get_beentry_by_proc_number() but with locally computed
- *	additions (like xid and xmin values of the backend)
+ *	Like pgstat_get_beentry_by_backend_id() but with locally computed additions
+ *	(like xid and xmin values of the backend)
  *
  *	The idx argument is a 1-based index in the localBackendStatusTable
- *	(note that this is unlike pgstat_get_beentry_by_proc_number()).
+ *	(note that this is unlike pgstat_get_beentry_by_backend_id()).
  *	Returns NULL if the argument is out of range (no current caller does that).
  *
  *	NB: caller is responsible for a check if the user is permitted to see

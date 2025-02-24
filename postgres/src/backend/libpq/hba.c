@@ -26,19 +26,24 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 
+#include "access/htup_details.h"
 #include "catalog/pg_collation.h"
+#include "catalog/pg_type.h"
 #include "common/ip.h"
 #include "common/string.h"
-#include "libpq/hba.h"
+#include "funcapi.h"
 #include "libpq/ifaddr.h"
-#include "libpq/libpq-be.h"
+#include "libpq/libpq.h"
+#include "miscadmin.h"
 #include "postmaster/postmaster.h"
 #include "regex/regex.h"
 #include "replication/walsender.h"
 #include "storage/fd.h"
 #include "utils/acl.h"
+#include "utils/builtins.h"
 #include "utils/conffiles.h"
 #include "utils/guc.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/varlena.h"
 
@@ -1378,7 +1383,7 @@ parse_hba_line(TokenizedAuthLine *tok_line, int elevel)
 				ereport(elevel,
 						(errcode(ERRCODE_CONFIG_FILE_ERROR),
 						 errmsg("hostssl record cannot match because SSL is disabled"),
-						 errhint("Set \"ssl = on\" in postgresql.conf."),
+						 errhint("Set ssl = on in postgresql.conf."),
 						 errcontext("line %d of configuration file \"%s\"",
 									line_num, file_name)));
 				*err_msg = "hostssl record cannot match because SSL is disabled";

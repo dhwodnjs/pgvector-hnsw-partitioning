@@ -14,7 +14,6 @@
  */
 #include "postgres.h"
 
-#include "catalog/namespace.h"
 #include "catalog/pg_type.h"
 #include "commands/dbcommands.h"
 #include "funcapi.h"
@@ -23,6 +22,7 @@
 #include "nodes/nodeFuncs.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_expr.h"
+#include "parser/parse_func.h"
 #include "parser/parse_relation.h"
 #include "parser/parse_target.h"
 #include "parser/parse_type.h"
@@ -30,6 +30,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/typcache.h"
 
 static void markTargetListOrigin(ParseState *pstate, TargetEntry *tle,
 								 Var *var, int levelsup);
@@ -820,16 +821,7 @@ transformAssignmentIndirection(ParseState *pstate,
 			fstore->fieldnums = list_make1_int(attnum);
 			fstore->resulttype = baseTypeId;
 
-			/*
-			 * If target is a domain, apply constraints.  Notice that this
-			 * isn't totally right: the expression tree we build would check
-			 * the domain's constraints on a composite value with only this
-			 * one field populated or updated, possibly leading to an unwanted
-			 * failure.  The rewriter will merge together any subfield
-			 * assignments to the same table column, resulting in the domain's
-			 * constraints being checked only once after we've assigned to all
-			 * the fields that the INSERT or UPDATE means to.
-			 */
+			/* If target is a domain, apply constraints */
 			if (baseTypeId != targetTypeId)
 				return coerce_to_domain((Node *) fstore,
 										baseTypeId, baseTypeMod,
@@ -975,12 +967,7 @@ transformAssignmentSubscripts(ParseState *pstate,
 
 	result = (Node *) sbsref;
 
-	/*
-	 * If target was a domain over container, need to coerce up to the domain.
-	 * As in transformAssignmentIndirection, this coercion is premature if the
-	 * query assigns to multiple elements of the container; but we'll fix that
-	 * during query rewrite.
-	 */
+	/* If target was a domain over container, need to coerce up to the domain */
 	if (containerType != targetTypeId)
 	{
 		Oid			resulttype = exprType(result);
@@ -1820,10 +1807,6 @@ FigureColnameInternal(Node *node, char **name)
 			/* make GROUPING() act like a regular function */
 			*name = "grouping";
 			return 2;
-		case T_MergeSupportFunc:
-			/* make MERGE_ACTION() act like a regular function */
-			*name = "merge_action";
-			return 2;
 		case T_SubLink:
 			switch (((SubLink *) node)->subLinkType)
 			{
@@ -2006,25 +1989,6 @@ FigureColnameInternal(Node *node, char **name)
 			/* make JSON_ARRAYAGG act like a regular function */
 			*name = "json_arrayagg";
 			return 2;
-		case T_JsonFuncExpr:
-			/* make SQL/JSON functions act like a regular function */
-			switch (((JsonFuncExpr *) node)->op)
-			{
-				case JSON_EXISTS_OP:
-					*name = "json_exists";
-					return 2;
-				case JSON_QUERY_OP:
-					*name = "json_query";
-					return 2;
-				case JSON_VALUE_OP:
-					*name = "json_value";
-					return 2;
-					/* JSON_TABLE_OP can't happen here. */
-				default:
-					elog(ERROR, "unrecognized JsonExpr op: %d",
-						 (int) ((JsonFuncExpr *) node)->op);
-			}
-			break;
 		default:
 			break;
 	}

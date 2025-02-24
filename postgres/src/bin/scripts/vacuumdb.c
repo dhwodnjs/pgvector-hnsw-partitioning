@@ -72,7 +72,6 @@ static void vacuum_one_database(ConnParams *cparams,
 static void vacuum_all_databases(ConnParams *cparams,
 								 vacuumingOptions *vacopts,
 								 bool analyze_in_stages,
-								 SimpleStringList *objects,
 								 int concurrentCons,
 								 const char *progname, bool echo, bool quiet);
 
@@ -379,7 +378,6 @@ main(int argc, char *argv[])
 
 		vacuum_all_databases(&cparams, &vacopts,
 							 analyze_in_stages,
-							 &objects,
 							 concurrentCons,
 							 progname, echo, quiet);
 	}
@@ -430,6 +428,18 @@ check_objfilter(void)
 	if ((objfilter & OBJFILTER_ALL_DBS) &&
 		(objfilter & OBJFILTER_DATABASE))
 		pg_fatal("cannot vacuum all databases and a specific one at the same time");
+
+	if ((objfilter & OBJFILTER_ALL_DBS) &&
+		(objfilter & OBJFILTER_TABLE))
+		pg_fatal("cannot vacuum specific table(s) in all databases");
+
+	if ((objfilter & OBJFILTER_ALL_DBS) &&
+		(objfilter & OBJFILTER_SCHEMA))
+		pg_fatal("cannot vacuum specific schema(s) in all databases");
+
+	if ((objfilter & OBJFILTER_ALL_DBS) &&
+		(objfilter & OBJFILTER_SCHEMA_EXCLUDE))
+		pg_fatal("cannot exclude specific schema(s) in all databases");
 
 	if ((objfilter & OBJFILTER_TABLE) &&
 		(objfilter & OBJFILTER_SCHEMA))
@@ -491,6 +501,7 @@ vacuum_one_database(ConnParams *cparams,
 	int			ntups;
 	bool		failed = false;
 	bool		objects_listed = false;
+	bool		has_where = false;
 	const char *initcmd;
 	const char *stage_commands[] = {
 		"SET default_statistics_target=1; SET vacuum_cost_delay=0;",
@@ -664,10 +675,7 @@ vacuum_one_database(ConnParams *cparams,
 						 " LEFT JOIN pg_catalog.pg_class t"
 						 " ON c.reltoastrelid OPERATOR(pg_catalog.=) t.oid\n");
 
-	/*
-	 * Used to match the tables or schemas listed by the user, completing the
-	 * JOIN clause.
-	 */
+	/* Used to match the tables or schemas listed by the user */
 	if (objects_listed)
 	{
 		appendPQExpBufferStr(&catalog_query, " LEFT JOIN listed_objects"
@@ -678,27 +686,14 @@ vacuum_one_database(ConnParams *cparams,
 			appendPQExpBufferStr(&catalog_query, "c.oid\n");
 		else
 			appendPQExpBufferStr(&catalog_query, "ns.oid\n");
-	}
 
-	/*
-	 * Exclude temporary tables, beginning the WHERE clause.
-	 */
-	appendPQExpBufferStr(&catalog_query,
-						 " WHERE c.relpersistence OPERATOR(pg_catalog.!=) "
-						 CppAsString2(RELPERSISTENCE_TEMP) "\n");
-
-	/*
-	 * Used to match the tables or schemas listed by the user, for the WHERE
-	 * clause.
-	 */
-	if (objects_listed)
-	{
 		if (objfilter & OBJFILTER_SCHEMA_EXCLUDE)
 			appendPQExpBuffer(&catalog_query,
-							  " AND listed_objects.object_oid IS NULL\n");
+							  " WHERE listed_objects.object_oid IS NULL\n");
 		else
 			appendPQExpBuffer(&catalog_query,
-							  " AND listed_objects.object_oid IS NOT NULL\n");
+							  " WHERE listed_objects.object_oid IS NOT NULL\n");
+		has_where = true;
 	}
 
 	/*
@@ -710,9 +705,11 @@ vacuum_one_database(ConnParams *cparams,
 	if ((objfilter & OBJFILTER_TABLE) == 0)
 	{
 		appendPQExpBuffer(&catalog_query,
-						  " AND c.relkind OPERATOR(pg_catalog.=) ANY (array["
+						  " %s c.relkind OPERATOR(pg_catalog.=) ANY (array["
 						  CppAsString2(RELKIND_RELATION) ", "
-						  CppAsString2(RELKIND_MATVIEW) "])\n");
+						  CppAsString2(RELKIND_MATVIEW) "])\n",
+						  has_where ? "AND" : "WHERE");
+		has_where = true;
 	}
 
 	/*
@@ -725,23 +722,25 @@ vacuum_one_database(ConnParams *cparams,
 	if (vacopts->min_xid_age != 0)
 	{
 		appendPQExpBuffer(&catalog_query,
-						  " AND GREATEST(pg_catalog.age(c.relfrozenxid),"
+						  " %s GREATEST(pg_catalog.age(c.relfrozenxid),"
 						  " pg_catalog.age(t.relfrozenxid)) "
 						  " OPERATOR(pg_catalog.>=) '%d'::pg_catalog.int4\n"
 						  " AND c.relfrozenxid OPERATOR(pg_catalog.!=)"
 						  " '0'::pg_catalog.xid\n",
-						  vacopts->min_xid_age);
+						  has_where ? "AND" : "WHERE", vacopts->min_xid_age);
+		has_where = true;
 	}
 
 	if (vacopts->min_mxid_age != 0)
 	{
 		appendPQExpBuffer(&catalog_query,
-						  " AND GREATEST(pg_catalog.mxid_age(c.relminmxid),"
+						  " %s GREATEST(pg_catalog.mxid_age(c.relminmxid),"
 						  " pg_catalog.mxid_age(t.relminmxid)) OPERATOR(pg_catalog.>=)"
 						  " '%d'::pg_catalog.int4\n"
 						  " AND c.relminmxid OPERATOR(pg_catalog.!=)"
 						  " '0'::pg_catalog.xid\n",
-						  vacopts->min_mxid_age);
+						  has_where ? "AND" : "WHERE", vacopts->min_mxid_age);
+		has_where = true;
 	}
 
 	/*
@@ -896,7 +895,6 @@ static void
 vacuum_all_databases(ConnParams *cparams,
 					 vacuumingOptions *vacopts,
 					 bool analyze_in_stages,
-					 SimpleStringList *objects,
 					 int concurrentCons,
 					 const char *progname, bool echo, bool quiet)
 {
@@ -929,7 +927,7 @@ vacuum_all_databases(ConnParams *cparams,
 
 				vacuum_one_database(cparams, vacopts,
 									stage,
-									objects,
+									NULL,
 									concurrentCons,
 									progname, echo, quiet);
 			}
@@ -943,7 +941,7 @@ vacuum_all_databases(ConnParams *cparams,
 
 			vacuum_one_database(cparams, vacopts,
 								ANALYZE_NO_STAGE,
-								objects,
+								NULL,
 								concurrentCons,
 								progname, echo, quiet);
 		}

@@ -59,16 +59,16 @@
 /* needed for PGSQL_AF_INET */
 #include <sys/socket.h>
 
+#include "access/genam.h"
 #include "access/brin.h"
 #include "access/brin_internal.h"
 #include "access/brin_tuple.h"
-#include "access/genam.h"
-#include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/stratnum.h"
+#include "access/htup_details.h"
+#include "catalog/pg_type.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_amop.h"
-#include "catalog/pg_type.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
@@ -77,6 +77,7 @@
 #include "utils/inet.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/numeric.h"
 #include "utils/pg_lsn.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
@@ -3023,7 +3024,7 @@ brin_minmax_multi_summary_out(PG_FUNCTION_ARGS)
 	 * Detoast to get value with full 4B header (can't be stored in a toast
 	 * table, but can use 1B header).
 	 */
-	ranges = (SerializedRanges *) PG_DETOAST_DATUM(PG_GETARG_DATUM(0));
+	ranges = (SerializedRanges *) PG_DETOAST_DATUM_PACKED(PG_GETARG_DATUM(0));
 
 	/* lookup output func for the type */
 	getTypeOutputInfo(ranges->typid, &outfunc, &isvarlena);

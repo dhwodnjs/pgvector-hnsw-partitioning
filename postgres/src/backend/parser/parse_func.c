@@ -834,7 +834,6 @@ ParseFuncOrColumn(ParseState *pstate, List *funcname, List *fargs,
 		wfunc->winstar = agg_star;
 		wfunc->winagg = (fdresult == FUNCDETAIL_AGGREGATE);
 		wfunc->aggfilter = agg_filter;
-		wfunc->runCondition = NIL;
 		wfunc->location = location;
 
 		/*
@@ -2600,7 +2599,6 @@ check_srf_call_placement(ParseState *pstate, Node *last_srf, int location)
 			errkind = true;
 			break;
 		case EXPR_KIND_RETURNING:
-		case EXPR_KIND_MERGE_RETURNING:
 			errkind = true;
 			break;
 		case EXPR_KIND_VALUES:

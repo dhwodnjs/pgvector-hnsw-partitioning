@@ -113,13 +113,6 @@ typedef struct
 	ConditionVariable wal_flush_cv;
 	ConditionVariable wal_replay_cv;
 
-	/*
-	 * Used by physical walsenders holding slots specified in
-	 * synchronized_standby_slots to wake up logical walsenders holding
-	 * logical failover slots when a walreceiver confirms the receipt of LSN.
-	 */
-	ConditionVariable wal_confirm_rcv_cv;
-
 	WalSnd		walsnds[FLEXIBLE_ARRAY_MEMBER];
 } WalSndCtlData;
 

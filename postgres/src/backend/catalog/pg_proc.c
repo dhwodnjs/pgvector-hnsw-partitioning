@@ -32,7 +32,9 @@
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
+#include "parser/analyze.h"
 #include "parser/parse_coerce.h"
+#include "parser/parse_type.h"
 #include "pgstat.h"
 #include "rewrite/rewriteHandler.h"
 #include "tcop/pquery.h"
@@ -437,7 +439,7 @@ ProcedureCreate(const char *procedureName,
 			if (olddesc == NULL && newdesc == NULL)
 				 /* ok, both are runtime-defined RECORDs */ ;
 			else if (olddesc == NULL || newdesc == NULL ||
-					 !equalRowTypes(olddesc, newdesc))
+					 !equalTupleDescs(olddesc, newdesc))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_FUNCTION_DEFINITION),
 						 errmsg("cannot change return type of existing function"),
@@ -959,7 +961,6 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 
 			(void) check_sql_fn_retval(querytree_list,
 									   rettype, rettupdesc,
-									   proc->prokind,
 									   false, NULL);
 		}
 

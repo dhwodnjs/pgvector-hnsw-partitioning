@@ -19,7 +19,6 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
-#include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/rel.h"
@@ -380,7 +379,6 @@ pg_truncate_visibility_map(PG_FUNCTION_ARGS)
 	Relation	rel;
 	ForkNumber	fork;
 	BlockNumber block;
-	BlockNumber old_block;
 
 	rel = relation_open(relid, AccessExclusiveLock);
 
@@ -390,22 +388,15 @@ pg_truncate_visibility_map(PG_FUNCTION_ARGS)
 	/* Forcibly reset cached file size */
 	RelationGetSmgr(rel)->smgr_cached_nblocks[VISIBILITYMAP_FORKNUM] = InvalidBlockNumber;
 
-	/* Compute new and old size before entering critical section. */
-	fork = VISIBILITYMAP_FORKNUM;
 	block = visibilitymap_prepare_truncate(rel, 0);
-	old_block = BlockNumberIsValid(block) ? smgrnblocks(RelationGetSmgr(rel), fork) : 0;
-
-	/*
-	 * WAL-logging, buffer dropping, file truncation must be atomic and all on
-	 * one side of a checkpoint.  See RelationTruncate() for discussion.
-	 */
-	Assert((MyProc->delayChkptFlags & (DELAY_CHKPT_START | DELAY_CHKPT_COMPLETE)) == 0);
-	MyProc->delayChkptFlags |= DELAY_CHKPT_START | DELAY_CHKPT_COMPLETE;
-	START_CRIT_SECTION();
+	if (BlockNumberIsValid(block))
+	{
+		fork = VISIBILITYMAP_FORKNUM;
+		smgrtruncate(RelationGetSmgr(rel), &fork, 1, &block);
+	}
 
 	if (RelationNeedsWAL(rel))
 	{
-		XLogRecPtr	lsn;
 		xl_smgr_truncate xlrec;
 
 		xlrec.blkno = 0;
@@ -415,16 +406,8 @@ pg_truncate_visibility_map(PG_FUNCTION_ARGS)
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, sizeof(xlrec));
 
-		lsn = XLogInsert(RM_SMGR_ID,
-						 XLOG_SMGR_TRUNCATE | XLR_SPECIAL_REL_UPDATE);
-		XLogFlush(lsn);
+		XLogInsert(RM_SMGR_ID, XLOG_SMGR_TRUNCATE | XLR_SPECIAL_REL_UPDATE);
 	}
-
-	if (BlockNumberIsValid(block))
-		smgrtruncate2(RelationGetSmgr(rel), &fork, 1, &old_block, &block);
-
-	END_CRIT_SECTION();
-	MyProc->delayChkptFlags &= ~(DELAY_CHKPT_START | DELAY_CHKPT_COMPLETE);
 
 	/*
 	 * Release the lock right away, not at commit time.
@@ -550,63 +533,6 @@ collect_visibility_data(Oid relid, bool include_pd)
 }
 
 /*
- * The "strict" version of GetOldestNonRemovableTransactionId().  The
- * pg_visibility check can tolerate false positives (don't report some of the
- * errors), but can't tolerate false negatives (report false errors). Normally,
- * horizons move forwards, but there are cases when it could move backward
- * (see comment for ComputeXidHorizons()).
- *
- * This is why we have to implement our own function for xid horizon, which
- * would be guaranteed to be newer or equal to any xid horizon computed before.
- * We have to do the following to achieve this.
- *
- * 1. Ignore processes xmin's, because they consider connection to other
- *    databases that were ignored before.
- * 2. Ignore KnownAssignedXids, because they are not database-aware. At the
- *    same time, the primary could compute its horizons database-aware.
- * 3. Ignore walsender xmin, because it could go backward if some replication
- *    connections don't use replication slots.
- *
- * As a result, we're using only currently running xids to compute the horizon.
- * Surely these would significantly sacrifice accuracy.  But we have to do so
- * to avoid reporting false errors.
- */
-static TransactionId
-GetStrictOldestNonRemovableTransactionId(Relation rel)
-{
-	RunningTransactions runningTransactions;
-
-	if (rel == NULL || rel->rd_rel->relisshared || RecoveryInProgress())
-	{
-		/* Shared relation: take into account all running xids */
-		runningTransactions = GetRunningTransactionData();
-		LWLockRelease(ProcArrayLock);
-		LWLockRelease(XidGenLock);
-		return runningTransactions->oldestRunningXid;
-	}
-	else if (!RELATION_IS_LOCAL(rel))
-	{
-		/*
-		 * Normal relation: take into account xids running within the current
-		 * database
-		 */
-		runningTransactions = GetRunningTransactionData();
-		LWLockRelease(ProcArrayLock);
-		LWLockRelease(XidGenLock);
-		return runningTransactions->oldestDatabaseRunningXid;
-	}
-	else
-	{
-		/*
-		 * For temporary relations, ComputeXidHorizons() uses only
-		 * TransamVariables->latestCompletedXid and MyProc->xid.  These two
-		 * shouldn't go backwards.  So we're fine with this horizon.
-		 */
-		return GetOldestNonRemovableTransactionId(rel);
-	}
-}
-
-/*
  * Returns a list of items whose visibility map information does not match
  * the status of the tuples on the page.
  *
@@ -637,7 +563,7 @@ collect_corrupt_items(Oid relid, bool all_visible, bool all_frozen)
 	check_relation_relkind(rel);
 
 	if (all_visible)
-		OldestXmin = GetStrictOldestNonRemovableTransactionId(rel);
+		OldestXmin = GetOldestNonRemovableTransactionId(rel);
 
 	nblocks = RelationGetNumberOfBlocks(rel);
 
@@ -745,11 +671,11 @@ collect_corrupt_items(Oid relid, bool all_visible, bool all_frozen)
 				 * retake ProcArrayLock here while we're holding the buffer
 				 * exclusively locked, but it should be safe against
 				 * deadlocks, because surely
-				 * GetStrictOldestNonRemovableTransactionId() should never
-				 * take a buffer lock. And this shouldn't happen often, so
-				 * it's worth being careful so as to avoid false positives.
+				 * GetOldestNonRemovableTransactionId() should never take a
+				 * buffer lock. And this shouldn't happen often, so it's worth
+				 * being careful so as to avoid false positives.
 				 */
-				RecomputedOldestXmin = GetStrictOldestNonRemovableTransactionId(rel);
+				RecomputedOldestXmin = GetOldestNonRemovableTransactionId(rel);
 
 				if (!TransactionIdPrecedes(OldestXmin, RecomputedOldestXmin))
 					record_corrupt_item(items, &tuple.t_self);

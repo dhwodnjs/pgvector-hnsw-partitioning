@@ -26,11 +26,12 @@
 
 #include <math.h>
 
+#include "access/relscan.h"
 #include "access/tsmapi.h"
 #include "catalog/pg_type.h"
 #include "common/hashfn.h"
 #include "optimizer/optimizer.h"
-#include "utils/fmgrprotos.h"
+#include "utils/builtins.h"
 
 
 /* Private state */

@@ -19,12 +19,13 @@
 
 #include "access/twophase_rmgr.h"
 #include "access/xact.h"
-#include "catalog/catalog.h"
+#include "catalog/partition.h"
 #include "postmaster/autovacuum.h"
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 #include "utils/rel.h"
 #include "utils/timestamp.h"
+#include "catalog/catalog.h"
 
 
 /* Record that's written to 2PC state file when pgstat state is persisted */
@@ -245,7 +246,7 @@ pgstat_report_vacuum(Oid tableoid, bool shared,
 	 */
 	tabentry->ins_since_vacuum = 0;
 
-	if (AmAutoVacuumWorkerProcess())
+	if (IsAutoVacuumWorkerProcess())
 	{
 		tabentry->last_autovacuum_time = ts;
 		tabentry->autovacuum_count++;
@@ -336,7 +337,7 @@ pgstat_report_analyze(Relation rel,
 	if (resetcounter)
 		tabentry->mod_since_analyze = 0;
 
-	if (AmAutoVacuumWorkerProcess())
+	if (IsAutoVacuumWorkerProcess())
 	{
 		tabentry->last_autoanalyze_time = GetCurrentTimestamp();
 		tabentry->autoanalyze_count++;

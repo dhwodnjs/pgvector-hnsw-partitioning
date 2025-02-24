@@ -14,6 +14,7 @@
 
 #include "postgres.h"
 
+#include "catalog/pg_type.h"
 #include "common/config_info.h"
 #include "funcapi.h"
 #include "miscadmin.h"

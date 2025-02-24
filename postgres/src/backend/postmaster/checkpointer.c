@@ -42,7 +42,6 @@
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
-#include "postmaster/auxprocess.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/interrupt.h"
 #include "replication/syncrep.h"
@@ -170,15 +169,10 @@ static void ReqCheckpointHandler(SIGNAL_ARGS);
  * basic execution environment, but not enabled signals yet.
  */
 void
-CheckpointerMain(char *startup_data, size_t startup_data_len)
+CheckpointerMain(void)
 {
 	sigjmp_buf	local_sigjmp_buf;
 	MemoryContext checkpointer_context;
-
-	Assert(startup_data_len == 0);
-
-	MyBackendType = B_CHECKPOINTER;
-	AuxiliaryProcessMainCommon();
 
 	CheckpointerShmem->checkpointer_pid = MyProcPid;
 
@@ -442,7 +436,7 @@ CheckpointerMain(char *startup_data, size_t startup_data_len)
 									   "checkpoints are occurring too frequently (%d seconds apart)",
 									   elapsed_secs,
 									   elapsed_secs),
-						 errhint("Consider increasing the configuration parameter \"%s\".", "max_wal_size")));
+						 errhint("Consider increasing the configuration parameter max_wal_size.")));
 
 			/*
 			 * Initialize checkpointer-private variables used during
@@ -1168,10 +1162,6 @@ CompactCheckpointerRequestQueue(void)
 
 	/* must hold CheckpointerCommLock in exclusive mode */
 	Assert(LWLockHeldByMe(CheckpointerCommLock));
-
-	/* Avoid memory allocations in a critical section. */
-	if (CritSectionCount > 0)
-		return false;
 
 	/* Initialize skip_slot array */
 	skip_slot = palloc0(sizeof(bool) * CheckpointerShmem->num_requests);

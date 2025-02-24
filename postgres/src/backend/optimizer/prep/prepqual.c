@@ -34,6 +34,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/prep.h"
 #include "utils/lsyscache.h"
 
 

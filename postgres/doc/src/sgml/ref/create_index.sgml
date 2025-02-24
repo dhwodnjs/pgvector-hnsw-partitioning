@@ -790,12 +790,6 @@ Indexes:
   </para>
 
   <para>
-   While <command>CREATE INDEX</command> is running, the <xref
-   linkend="guc-search-path"/> is temporarily changed to <literal>pg_catalog,
-   pg_temp</literal>.
-  </para>
-
-  <para>
    For most index methods, the speed of creating an index is
    dependent on the setting of <xref linkend="guc-maintenance-work-mem"/>.
    Larger values will reduce the time needed for index creation, so long
@@ -808,7 +802,7 @@ Indexes:
    leveraging multiple CPUs in order to process the table rows faster.
    This feature is known as <firstterm>parallel index
    build</firstterm>.  For index methods that support building indexes
-   in parallel (currently, B-tree and BRIN),
+   in parallel (currently, only B-tree),
    <varname>maintenance_work_mem</varname> specifies the maximum
    amount of memory that can be used by each index build operation as
    a whole, regardless of how many worker processes were started.

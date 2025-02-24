@@ -26,22 +26,29 @@
 #include "catalog/pg_subscription_rel.h"
 #include "funcapi.h"
 #include "lib/dshash.h"
+#include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
+#include "postmaster/fork_process.h"
 #include "postmaster/interrupt.h"
+#include "postmaster/postmaster.h"
 #include "replication/logicallauncher.h"
+#include "replication/logicalworker.h"
 #include "replication/slot.h"
 #include "replication/walreceiver.h"
 #include "replication/worker_internal.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "storage/procsignal.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
+#include "utils/ps_status.h"
 #include "utils/snapmgr.h"
+#include "utils/timeout.h"
 
 /* max sleep time between cycles (3min) */
 #define DEFAULT_NAPTIME_PER_CYCLE 180000L
@@ -425,7 +432,7 @@ retry:
 		ereport(WARNING,
 				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 				 errmsg("out of logical replication worker slots"),
-				 errhint("You might need to increase \"%s\".", "max_logical_replication_workers")));
+				 errhint("You might need to increase %s.", "max_logical_replication_workers")));
 		return false;
 	}
 
@@ -511,7 +518,7 @@ retry:
 		ereport(WARNING,
 				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 				 errmsg("out of background worker slots"),
-				 errhint("You might need to increase \"%s\".", "max_worker_processes")));
+				 errhint("You might need to increase %s.", "max_worker_processes")));
 		return false;
 	}
 

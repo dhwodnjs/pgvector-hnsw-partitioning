@@ -17,6 +17,8 @@
 #include "access/bufmask.h"
 #include "access/spgist_private.h"
 #include "access/spgxlog.h"
+#include "access/transam.h"
+#include "access/xlog.h"
 #include "access/xlogutils.h"
 #include "storage/standby.h"
 #include "utils/memutils.h"
@@ -36,7 +38,7 @@ fillFakeState(SpGistState *state, spgxlogState stateSrc)
 {
 	memset(state, 0, sizeof(*state));
 
-	state->redirectXid = stateSrc.redirectXid;
+	state->myXid = stateSrc.myXid;
 	state->isBuild = stateSrc.isBuild;
 	state->deadTupleStorage = palloc0(SGDTSIZE);
 }

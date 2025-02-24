@@ -590,7 +590,7 @@ ginbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		/*
 		 * and cleanup any pending inserts
 		 */
-		ginInsertCleanup(&gvs.ginstate, !AmAutoVacuumWorkerProcess(),
+		ginInsertCleanup(&gvs.ginstate, !IsAutoVacuumWorkerProcess(),
 						 false, true, stats);
 	}
 
@@ -701,7 +701,7 @@ ginvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	 */
 	if (info->analyze_only)
 	{
-		if (AmAutoVacuumWorkerProcess())
+		if (IsAutoVacuumWorkerProcess())
 		{
 			initGinState(&ginstate, index);
 			ginInsertCleanup(&ginstate, false, true, true, stats);
@@ -717,7 +717,7 @@ ginvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	{
 		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
 		initGinState(&ginstate, index);
-		ginInsertCleanup(&ginstate, !AmAutoVacuumWorkerProcess(),
+		ginInsertCleanup(&ginstate, !IsAutoVacuumWorkerProcess(),
 						 false, true, stats);
 	}
 

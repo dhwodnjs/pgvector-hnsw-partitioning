@@ -200,7 +200,8 @@ scram_ServerKey(const uint8 *salted_password,
  *
  * The password should already have been processed with SASLprep, if necessary!
  *
- * The result is palloc'd or malloc'd, so caller is responsible for freeing it.
+ * If iterations is 0, default number of iterations is used.  The result is
+ * palloc'd or malloc'd, so caller is responsible for freeing it.
  *
  * On error, returns NULL and sets *errstr to point to a message about the
  * error details.

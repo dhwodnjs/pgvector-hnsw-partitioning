@@ -82,9 +82,10 @@
 #include "miscadmin.h"
 #include "nodes/execnodes.h"
 #include "pgstat.h"
+#include "replication/logical.h"
 #include "replication/origin.h"
-#include "replication/slot.h"
 #include "storage/condition_variable.h"
+#include "storage/copydir.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
@@ -187,7 +188,7 @@ replorigin_check_prerequisites(bool check_slots, bool recoveryOK)
 	if (check_slots && max_replication_slots == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("cannot query or manipulate replication origin when \"max_replication_slots\" is 0")));
+				 errmsg("cannot query or manipulate replication origin when max_replication_slots = 0")));
 
 	if (!recoveryOK && RecoveryInProgress())
 		ereport(ERROR,
@@ -795,7 +796,7 @@ StartupReplicationOrigin(void)
 		if (last_state == max_replication_slots)
 			ereport(PANIC,
 					(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
-					 errmsg("could not find free replication state, increase \"max_replication_slots\"")));
+					 errmsg("could not find free replication state, increase max_replication_slots")));
 
 		/* copy data to shared memory */
 		replication_states[last_state].roident = disk_state.roident;
@@ -954,7 +955,7 @@ replorigin_advance(RepOriginId node,
 				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 				 errmsg("could not find free replication state slot for replication origin with ID %d",
 						node),
-				 errhint("Increase \"max_replication_slots\" and try again.")));
+				 errhint("Increase max_replication_slots and try again.")));
 
 	if (replication_state == NULL)
 	{
@@ -1155,7 +1156,7 @@ replorigin_session_setup(RepOriginId node, int acquired_by)
 				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
 				 errmsg("could not find free replication state slot for replication origin with ID %d",
 						node),
-				 errhint("Increase \"max_replication_slots\" and try again.")));
+				 errhint("Increase max_replication_slots and try again.")));
 	else if (session_replication_state == NULL)
 	{
 		/* initialize new slot */

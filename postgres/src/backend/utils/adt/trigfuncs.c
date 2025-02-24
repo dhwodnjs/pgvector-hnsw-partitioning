@@ -15,7 +15,8 @@
 
 #include "access/htup_details.h"
 #include "commands/trigger.h"
-#include "utils/fmgrprotos.h"
+#include "utils/builtins.h"
+#include "utils/rel.h"
 
 
 /*

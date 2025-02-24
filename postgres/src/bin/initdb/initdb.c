@@ -102,7 +102,7 @@ static const char *const auth_methods_host[] = {
 	"sspi",
 #endif
 #ifdef USE_PAM
-	"pam",
+	"pam", "pam ",
 #endif
 #ifdef USE_BSD_AUTH
 	"bsd",
@@ -118,7 +118,7 @@ static const char *const auth_methods_host[] = {
 static const char *const auth_methods_local[] = {
 	"trust", "reject", "scram-sha-256", "md5", "password", "peer", "radius",
 #ifdef USE_PAM
-	"pam",
+	"pam", "pam ",
 #endif
 #ifdef USE_BSD_AUTH
 	"bsd",
@@ -145,9 +145,7 @@ static char *lc_numeric = NULL;
 static char *lc_time = NULL;
 static char *lc_messages = NULL;
 static char locale_provider = COLLPROVIDER_LIBC;
-static bool builtin_locale_specified = false;
-static char *datlocale = NULL;
-static bool icu_locale_specified = false;
+static char *icu_locale = NULL;
 static char *icu_rules = NULL;
 static const char *default_text_search_config = NULL;
 static char *username = NULL;
@@ -340,61 +338,6 @@ do { \
 		output_failed = true, output_errno = errno; \
 } while (0)
 
-#ifdef WIN32
-typedef wchar_t *save_locale_t;
-#else
-typedef char *save_locale_t;
-#endif
-
-/*
- * Save a copy of the current global locale's name, for the given category.
- * The returned value must be passed to restore_global_locale().
- *
- * Since names from the environment haven't been vetted for non-ASCII
- * characters, we use the wchar_t variant of setlocale() on Windows.  Otherwise
- * they might not survive a save-restore round trip: when restoring, the name
- * itself might be interpreted with a different encoding by plain setlocale(),
- * after we switch to another locale in between.  (This is a problem only in
- * initdb, not in similar backend code where the global locale's name should
- * already have been verified as ASCII-only.)
- */
-static save_locale_t
-save_global_locale(int category)
-{
-	save_locale_t save;
-
-#ifdef WIN32
-	save = _wsetlocale(category, NULL);
-	if (!save)
-		pg_fatal("_wsetlocale() failed");
-	save = wcsdup(save);
-	if (!save)
-		pg_fatal("out of memory");
-#else
-	save = setlocale(category, NULL);
-	if (!save)
-		pg_fatal("setlocale() failed");
-	save = pg_strdup(save);
-#endif
-	return save;
-}
-
-/*
- * Restore the global locale returned by save_global_locale().
- */
-static void
-restore_global_locale(int category, save_locale_t save)
-{
-#ifdef WIN32
-	if (!_wsetlocale(category, save))
-		pg_fatal("failed to restore old locale");
-#else
-	if (!setlocale(category, save))
-		pg_fatal("failed to restore old locale \"%s\"", save);
-#endif
-	free(save);
-}
-
 /*
  * Escape single quotes and backslashes, suitably for insertions into
  * configuration files or SQL E'' strings.
@@ -541,7 +484,6 @@ replace_guc_value(char **lines, const char *guc_name, const char *guc_value,
 	for (i = 0; lines[i]; i++)
 	{
 		const char *where;
-		const char *namestart;
 
 		/*
 		 * Look for a line assigning to guc_name.  Typically it will be
@@ -552,19 +494,15 @@ replace_guc_value(char **lines, const char *guc_name, const char *guc_value,
 		where = lines[i];
 		while (*where == '#' || isspace((unsigned char) *where))
 			where++;
-		if (pg_strncasecmp(where, guc_name, namelen) != 0)
+		if (strncmp(where, guc_name, namelen) != 0)
 			continue;
-		namestart = where;
 		where += namelen;
 		while (isspace((unsigned char) *where))
 			where++;
 		if (*where != '=')
 			continue;
 
-		/* found it -- let's use the canonical casing shown in the file */
-		memcpy(&newline->data[mark_as_comment ? 1 : 0], namestart, namelen);
-
-		/* now append the original comment if any */
+		/* found it -- append the original comment if any */
 		where = strrchr(where, '#');
 		if (where)
 		{
@@ -1119,7 +1057,7 @@ test_config_settings(void)
 #define MIN_BUFS_FOR_CONNS(nconns)	((nconns) * 10)
 
 	static const int trial_conns[] = {
-		100, 50, 40, 30, 25
+		100, 50, 40, 30, 20
 	};
 	static const int trial_bufs[] = {
 		16384, 8192, 4096, 3584, 3072, 2560, 2048, 1536,
@@ -1147,7 +1085,7 @@ test_config_settings(void)
 	 * Probe for max_connections before shared_buffers, since it is subject to
 	 * more constraints than shared_buffers.
 	 */
-	printf(_("selecting default \"max_connections\" ... "));
+	printf(_("selecting default max_connections ... "));
 	fflush(stdout);
 
 	for (i = 0; i < connslen; i++)
@@ -1167,7 +1105,7 @@ test_config_settings(void)
 
 	printf("%d\n", n_connections);
 
-	printf(_("selecting default \"shared_buffers\" ... "));
+	printf(_("selecting default shared_buffers ... "));
 	fflush(stdout);
 
 	for (i = 0; i < bufslen; i++)
@@ -1577,8 +1515,8 @@ bootstrap_template1(void)
 	bki_lines = replace_token(bki_lines, "LC_CTYPE",
 							  escape_quotes_bki(lc_ctype));
 
-	bki_lines = replace_token(bki_lines, "DATLOCALE",
-							  datlocale ? escape_quotes_bki(datlocale) : "_null_");
+	bki_lines = replace_token(bki_lines, "ICU_LOCALE",
+							  icu_locale ? escape_quotes_bki(icu_locale) : "_null_");
 
 	bki_lines = replace_token(bki_lines, "ICU_RULES",
 							  icu_rules ? escape_quotes_bki(icu_rules) : "_null_");
@@ -2129,13 +2067,16 @@ locale_date_order(const char *locale)
 	char	   *posD;
 	char	   *posM;
 	char	   *posY;
-	save_locale_t save;
+	char	   *save;
 	size_t		res;
 	int			result;
 
 	result = DATEORDER_MDY;		/* default */
 
-	save = save_global_locale(LC_TIME);
+	save = setlocale(LC_TIME, NULL);
+	if (!save)
+		return result;
+	save = pg_strdup(save);
 
 	setlocale(LC_TIME, locale);
 
@@ -2146,7 +2087,8 @@ locale_date_order(const char *locale)
 
 	res = my_strftime(buf, sizeof(buf), "%x", &testtime);
 
-	restore_global_locale(LC_TIME, save);
+	setlocale(LC_TIME, save);
+	free(save);
 
 	if (res == 0)
 		return result;
@@ -2183,17 +2125,18 @@ locale_date_order(const char *locale)
 static void
 check_locale_name(int category, const char *locale, char **canonname)
 {
-	save_locale_t save;
+	char	   *save;
 	char	   *res;
-
-	/* Don't let Windows' non-ASCII locale names in. */
-	if (locale && !pg_is_ascii(locale))
-		pg_fatal("locale name \"%s\" contains non-ASCII characters", locale);
 
 	if (canonname)
 		*canonname = NULL;		/* in case of failure */
 
-	save = save_global_locale(category);
+	save = setlocale(category, NULL);
+	if (!save)
+		pg_fatal("setlocale() failed");
+
+	/* save may be pointing at a modifiable scratch variable, so copy it. */
+	save = pg_strdup(save);
 
 	/* for setlocale() call */
 	if (!locale)
@@ -2207,7 +2150,9 @@ check_locale_name(int category, const char *locale, char **canonname)
 		*canonname = pg_strdup(res);
 
 	/* restore old value. */
-	restore_global_locale(category, save);
+	if (!setlocale(category, save))
+		pg_fatal("failed to restore old locale \"%s\"", save);
+	free(save);
 
 	/* complain if locale wasn't valid */
 	if (res == NULL)
@@ -2231,11 +2176,6 @@ check_locale_name(int category, const char *locale, char **canonname)
 			pg_fatal("invalid locale settings; check LANG and LC_* environment variables");
 		}
 	}
-
-	/* Don't let Windows' non-ASCII locale names out. */
-	if (canonname && !pg_is_ascii(*canonname))
-		pg_fatal("locale name \"%s\" contains non-ASCII characters",
-				 *canonname);
 }
 
 /*
@@ -2407,7 +2347,7 @@ setlocales(void)
 {
 	char	   *canonname;
 
-	/* set empty lc_* and datlocale values to locale config if set */
+	/* set empty lc_* and iculocale values to locale config if set */
 
 	if (locale)
 	{
@@ -2423,8 +2363,8 @@ setlocales(void)
 			lc_monetary = locale;
 		if (!lc_messages)
 			lc_messages = locale;
-		if (!datlocale && locale_provider != COLLPROVIDER_LIBC)
-			datlocale = locale;
+		if (!icu_locale && locale_provider == COLLPROVIDER_ICU)
+			icu_locale = locale;
 	}
 
 	/*
@@ -2450,35 +2390,22 @@ setlocales(void)
 	lc_messages = canonname;
 #endif
 
-	if (locale_provider != COLLPROVIDER_LIBC && datlocale == NULL)
-		pg_fatal("locale must be specified if provider is %s",
-				 collprovider_name(locale_provider));
-
-	if (locale_provider == COLLPROVIDER_BUILTIN)
-	{
-		if (strcmp(datlocale, "C") == 0)
-			canonname = "C";
-		else if (strcmp(datlocale, "C.UTF-8") == 0 ||
-				 strcmp(datlocale, "C.UTF8") == 0)
-			canonname = "C.UTF-8";
-		else
-			pg_fatal("invalid locale name \"%s\" for builtin provider",
-					 datlocale);
-
-		datlocale = canonname;
-	}
-	else if (locale_provider == COLLPROVIDER_ICU)
+	if (locale_provider == COLLPROVIDER_ICU)
 	{
 		char	   *langtag;
 
-		/* canonicalize to a language tag */
-		langtag = icu_language_tag(datlocale);
-		printf(_("Using language tag \"%s\" for ICU locale \"%s\".\n"),
-			   langtag, datlocale);
-		pg_free(datlocale);
-		datlocale = langtag;
+		/* acquire default locale from the environment, if not specified */
+		if (icu_locale == NULL)
+			pg_fatal("ICU locale must be specified");
 
-		icu_validate_locale(datlocale);
+		/* canonicalize to a language tag */
+		langtag = icu_language_tag(icu_locale);
+		printf(_("Using language tag \"%s\" for ICU locale \"%s\".\n"),
+			   langtag, icu_locale);
+		pg_free(icu_locale);
+		icu_locale = langtag;
+
+		icu_validate_locale(icu_locale);
 
 		/*
 		 * In supported builds, the ICU locale ID will be opened during
@@ -2515,9 +2442,7 @@ usage(const char *progname)
 			 "                            set default locale in the respective category for\n"
 			 "                            new databases (default taken from environment)\n"));
 	printf(_("      --no-locale           equivalent to --locale=C\n"));
-	printf(_("      --builtin-locale=LOCALE\n"
-			 "                            set builtin locale name for new databases\n"));
-	printf(_("      --locale-provider={builtin|libc|icu}\n"
+	printf(_("      --locale-provider={libc|icu}\n"
 			 "                            set default locale provider for new databases\n"));
 	printf(_("      --pwfile=FILE         read password for the new superuser from file\n"));
 	printf(_("  -T, --text-search-config=CFG\n"
@@ -2534,7 +2459,7 @@ usage(const char *progname)
 	printf(_("  -n, --no-clean            do not clean up after errors\n"));
 	printf(_("  -N, --no-sync             do not wait for changes to be written safely to disk\n"));
 	printf(_("      --no-instructions     do not print instructions for next steps\n"));
-	printf(_("  -s, --show                show internal settings, then exit\n"));
+	printf(_("  -s, --show                show internal settings\n"));
 	printf(_("      --sync-method=METHOD  set method for syncing files to disk\n"));
 	printf(_("  -S, --sync-only           only sync database files to disk, then exit\n"));
 	printf(_("\nOther options:\n"));
@@ -2565,6 +2490,10 @@ check_authmethod_valid(const char *authmethod, const char *const *valid_methods,
 	{
 		if (strcmp(authmethod, *p) == 0)
 			return;
+		/* with space = param */
+		if (strchr(authmethod, ' '))
+			if (strncmp(authmethod, *p, (authmethod - strchr(authmethod, ' '))) == 0)
+				return;
 	}
 
 	pg_fatal("invalid authentication method \"%s\" for \"%s\" connections",
@@ -2670,14 +2599,14 @@ setup_locale_encoding(void)
 		strcmp(lc_ctype, lc_numeric) == 0 &&
 		strcmp(lc_ctype, lc_monetary) == 0 &&
 		strcmp(lc_ctype, lc_messages) == 0 &&
-		(!datlocale || strcmp(lc_ctype, datlocale) == 0))
+		(!icu_locale || strcmp(lc_ctype, icu_locale) == 0))
 		printf(_("The database cluster will be initialized with locale \"%s\".\n"), lc_ctype);
 	else
 	{
 		printf(_("The database cluster will be initialized with this locale configuration:\n"));
-		printf(_("  locale provider:   %s\n"), collprovider_name(locale_provider));
-		if (locale_provider != COLLPROVIDER_LIBC)
-			printf(_("  default collation: %s\n"), datlocale);
+		printf(_("  provider:    %s\n"), collprovider_name(locale_provider));
+		if (icu_locale)
+			printf(_("  ICU locale:  %s\n"), icu_locale);
 		printf(_("  LC_COLLATE:  %s\n"
 				 "  LC_CTYPE:    %s\n"
 				 "  LC_MESSAGES: %s\n"
@@ -2750,13 +2679,6 @@ setup_locale_encoding(void)
 	if (!check_locale_encoding(lc_ctype, encodingid) ||
 		!check_locale_encoding(lc_collate, encodingid))
 		exit(1);				/* check_locale_encoding printed the error */
-
-	if (locale_provider == COLLPROVIDER_BUILTIN)
-	{
-		if (strcmp(datlocale, "C.UTF-8") == 0 && encodingid != PG_UTF8)
-			pg_fatal("builtin provider locale \"%s\" requires encoding \"%s\"",
-					 datlocale, "UTF-8");
-	}
 
 	if (locale_provider == COLLPROVIDER_ICU &&
 		!check_icu_locale_encoding(encodingid))
@@ -3177,10 +3099,9 @@ main(int argc, char *argv[])
 		{"allow-group-access", no_argument, NULL, 'g'},
 		{"discard-caches", no_argument, NULL, 14},
 		{"locale-provider", required_argument, NULL, 15},
-		{"builtin-locale", required_argument, NULL, 16},
-		{"icu-locale", required_argument, NULL, 17},
-		{"icu-rules", required_argument, NULL, 18},
-		{"sync-method", required_argument, NULL, 19},
+		{"icu-locale", required_argument, NULL, 16},
+		{"icu-rules", required_argument, NULL, 17},
+		{"sync-method", required_argument, NULL, 18},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -3348,9 +3269,7 @@ main(int argc, char *argv[])
 										 "-c debug_discard_caches=1");
 				break;
 			case 15:
-				if (strcmp(optarg, "builtin") == 0)
-					locale_provider = COLLPROVIDER_BUILTIN;
-				else if (strcmp(optarg, "icu") == 0)
+				if (strcmp(optarg, "icu") == 0)
 					locale_provider = COLLPROVIDER_ICU;
 				else if (strcmp(optarg, "libc") == 0)
 					locale_provider = COLLPROVIDER_LIBC;
@@ -3358,17 +3277,12 @@ main(int argc, char *argv[])
 					pg_fatal("unrecognized locale provider: %s", optarg);
 				break;
 			case 16:
-				datlocale = pg_strdup(optarg);
-				builtin_locale_specified = true;
+				icu_locale = pg_strdup(optarg);
 				break;
 			case 17:
-				datlocale = pg_strdup(optarg);
-				icu_locale_specified = true;
-				break;
-			case 18:
 				icu_rules = pg_strdup(optarg);
 				break;
-			case 19:
+			case 18:
 				if (!parse_sync_method(optarg, &sync_method))
 					exit(1);
 				break;
@@ -3398,11 +3312,7 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-	if (builtin_locale_specified && locale_provider != COLLPROVIDER_BUILTIN)
-		pg_fatal("%s cannot be specified unless locale provider \"%s\" is chosen",
-				 "--builtin-locale", "builtin");
-
-	if (icu_locale_specified && locale_provider != COLLPROVIDER_ICU)
+	if (icu_locale && locale_provider != COLLPROVIDER_ICU)
 		pg_fatal("%s cannot be specified unless locale provider \"%s\" is chosen",
 				 "--icu-locale", "icu");
 

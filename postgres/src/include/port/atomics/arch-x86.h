@@ -207,8 +207,6 @@ pg_atomic_compare_exchange_u64_impl(volatile pg_atomic_uint64 *ptr,
 {
 	char	ret;
 
-	AssertPointerAlignment(expected, 8);
-
 	/*
 	 * Perform cmpxchg and use the zero flag which it implicitly sets when
 	 * equal to measure the success.

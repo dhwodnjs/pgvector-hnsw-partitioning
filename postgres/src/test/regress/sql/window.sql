@@ -1345,13 +1345,6 @@ SELECT * FROM
    FROM empsalary) emp
 WHERE c = 1;
 
--- Try another case with a WindowFunc with a byref return type
-SELECT * FROM
-  (SELECT row_number() OVER (PARTITION BY salary) AS rn,
-          lead(depname) OVER (PARTITION BY salary) || ' Department' AS n_dep
-   FROM empsalary) emp
-WHERE rn < 1;
-
 -- Some more complex cases with multiple window clauses
 EXPLAIN (COSTS OFF)
 SELECT * FROM
@@ -1382,14 +1375,6 @@ SELECT 1 FROM
   (SELECT ntile(e2.salary) OVER (PARTITION BY e1.depname) AS c
    FROM empsalary e1 LEFT JOIN empsalary e2 ON TRUE
    WHERE e1.empno = e2.empno) s
-WHERE s.c = 1;
-
--- Ensure the run condition optimization is used in cases where the WindowFunc
--- has a Var from another query level
-EXPLAIN (COSTS OFF)
-SELECT 1 FROM
-  (SELECT ntile(s1.x) OVER () AS c
-   FROM (SELECT (SELECT 1) AS x) AS s1) s
 WHERE s.c = 1;
 
 -- Tests to ensure we don't push down the run condition when it's not valid to

@@ -37,8 +37,9 @@
 #include "access/xact.h"
 #include "catalog/namespace.h"
 #include "mb/pg_wchar.h"
-#include "utils/fmgrprotos.h"
+#include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/syscache.h"
 #include "varatt.h"
 
 /*

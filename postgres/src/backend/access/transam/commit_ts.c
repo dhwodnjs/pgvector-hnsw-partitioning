@@ -27,11 +27,14 @@
 #include "access/transam.h"
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
+#include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "pg_trace.h"
 #include "storage/shmem.h"
-#include "utils/fmgrprotos.h"
+#include "utils/builtins.h"
 #include "utils/guc_hooks.h"
+#include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
 /*
@@ -384,9 +387,9 @@ error_commit_ts_disabled(void)
 			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 			 errmsg("could not get commit timestamp data"),
 			 RecoveryInProgress() ?
-			 errhint("Make sure the configuration parameter \"%s\" is set on the primary server.",
+			 errhint("Make sure the configuration parameter %s is set on the primary server.",
 					 "track_commit_timestamp") :
-			 errhint("Make sure the configuration parameter \"%s\" is set.",
+			 errhint("Make sure the configuration parameter %s is set.",
 					 "track_commit_timestamp")));
 }
 

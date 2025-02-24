@@ -29,7 +29,6 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/paramassign.h"
-#include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
 #include "optimizer/plancat.h"
@@ -41,7 +40,6 @@
 #include "parser/parse_clause.h"
 #include "parser/parsetree.h"
 #include "partitioning/partprune.h"
-#include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
 
 
@@ -313,8 +311,7 @@ static ModifyTable *make_modifytable(PlannerInfo *root, Plan *subplan,
 									 List *updateColnosLists,
 									 List *withCheckOptionLists, List *returningLists,
 									 List *rowMarks, OnConflictExpr *onconflict,
-									 List *mergeActionLists, List *mergeJoinConditions,
-									 int epqParam);
+									 List *mergeActionLists, int epqParam);
 static GatherMerge *create_gather_merge_plan(PlannerInfo *root,
 											 GatherMergePath *best_path);
 
@@ -2027,7 +2024,7 @@ create_projection_plan(PlannerInfo *root, ProjectionPath *best_path, int flags)
 	 * Convert our subpath to a Plan and determine whether we need a Result
 	 * node.
 	 *
-	 * In most cases where we don't need to project, create_projection_path
+	 * In most cases where we don't need to project, creation_projection_path
 	 * will have set dummypp, but not always.  First, some createplan.c
 	 * routines change the tlists of their nodes.  (An example is that
 	 * create_merge_append_plan might add resjunk sort columns to a
@@ -2700,7 +2697,7 @@ create_windowagg_plan(PlannerInfo *root, WindowAggPath *best_path)
 						  wc->inRangeColl,
 						  wc->inRangeAsc,
 						  wc->inRangeNullsFirst,
-						  best_path->runCondition,
+						  wc->runCondition,
 						  best_path->qual,
 						  best_path->topwindow,
 						  subplan);
@@ -2838,7 +2835,6 @@ create_modifytable_plan(PlannerInfo *root, ModifyTablePath *best_path)
 							best_path->rowMarks,
 							best_path->onconflict,
 							best_path->mergeActionLists,
-							best_path->mergeJoinConditions,
 							best_path->epqParam);
 
 	copy_generic_path_info(&plan->plan, &best_path->path);
@@ -4358,22 +4354,6 @@ create_nestloop_plan(PlannerInfo *root,
 	Relids		outerrelids;
 	List	   *nestParams;
 	Relids		saveOuterRels = root->curOuterRels;
-
-	/*
-	 * If the inner path is parameterized by the topmost parent of the outer
-	 * rel rather than the outer rel itself, fix that.  (Nothing happens here
-	 * if it is not so parameterized.)
-	 */
-	best_path->jpath.innerjoinpath =
-		reparameterize_path_by_child(root,
-									 best_path->jpath.innerjoinpath,
-									 best_path->jpath.outerjoinpath->parent);
-
-	/*
-	 * Failure here probably means that reparameterize_path_by_child() is not
-	 * in sync with path_is_reparameterizable_by_child().
-	 */
-	Assert(best_path->jpath.innerjoinpath != NULL);
 
 	/* NestLoop can project, so no need to be picky about child tlists */
 	outer_plan = create_plan_recurse(root, best_path->jpath.outerjoinpath, 0);
@@ -7034,8 +7014,7 @@ make_modifytable(PlannerInfo *root, Plan *subplan,
 				 List *updateColnosLists,
 				 List *withCheckOptionLists, List *returningLists,
 				 List *rowMarks, OnConflictExpr *onconflict,
-				 List *mergeActionLists, List *mergeJoinConditions,
-				 int epqParam)
+				 List *mergeActionLists, int epqParam)
 {
 	ModifyTable *node = makeNode(ModifyTable);
 	List	   *fdw_private_list;
@@ -7105,7 +7084,6 @@ make_modifytable(PlannerInfo *root, Plan *subplan,
 	node->returningLists = returningLists;
 	node->rowMarks = rowMarks;
 	node->mergeActionLists = mergeActionLists;
-	node->mergeJoinConditions = mergeJoinConditions;
 	node->epqParam = epqParam;
 
 	/*
@@ -7142,19 +7120,7 @@ make_modifytable(PlannerInfo *root, Plan *subplan,
 
 			if (rte->rtekind == RTE_RELATION &&
 				rte->relkind == RELKIND_FOREIGN_TABLE)
-			{
-				/* Check if the access to foreign tables is restricted */
-				if (unlikely((restrict_nonsystem_relation_kind & RESTRICT_RELKIND_FOREIGN_TABLE) != 0))
-				{
-					/* there must not be built-in foreign tables */
-					Assert(rte->relid >= FirstNormalObjectId);
-					ereport(ERROR,
-							(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-							 errmsg("access to non-system foreign table is restricted")));
-				}
-
 				fdwroutine = GetFdwRoutineByRelId(rte->relid);
-			}
 			else
 				fdwroutine = NULL;
 		}

@@ -94,20 +94,17 @@ extern bool smgrprefetch(SMgrRelation reln, ForkNumber forknum,
 						 BlockNumber blocknum, int nblocks);
 extern void smgrreadv(SMgrRelation reln, ForkNumber forknum,
 					  BlockNumber blocknum,
-					  void **buffers, BlockNumber nblocks);
+					  void **buffer, BlockNumber nblocks);
 extern void smgrwritev(SMgrRelation reln, ForkNumber forknum,
 					   BlockNumber blocknum,
-					   const void **buffers, BlockNumber nblocks,
+					   const void **buffer, BlockNumber nblocks,
 					   bool skipFsync);
 extern void smgrwriteback(SMgrRelation reln, ForkNumber forknum,
 						  BlockNumber blocknum, BlockNumber nblocks);
 extern BlockNumber smgrnblocks(SMgrRelation reln, ForkNumber forknum);
 extern BlockNumber smgrnblocks_cached(SMgrRelation reln, ForkNumber forknum);
-extern void smgrtruncate(SMgrRelation reln, ForkNumber *forknum, int nforks,
-						 BlockNumber *nblocks);
-extern void smgrtruncate2(SMgrRelation reln, ForkNumber *forknum, int nforks,
-						  BlockNumber *old_nblocks,
-						  BlockNumber *nblocks);
+extern void smgrtruncate(SMgrRelation reln, ForkNumber *forknum,
+						 int nforks, BlockNumber *nblocks);
 extern void smgrimmedsync(SMgrRelation reln, ForkNumber forknum);
 extern void smgrregistersync(SMgrRelation reln, ForkNumber forknum);
 extern void AtEOXact_SMgr(void);

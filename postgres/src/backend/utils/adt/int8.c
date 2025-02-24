@@ -24,6 +24,7 @@
 #include "nodes/supportnodes.h"
 #include "optimizer/optimizer.h"
 #include "utils/builtins.h"
+#include "utils/lsyscache.h"
 
 
 typedef struct

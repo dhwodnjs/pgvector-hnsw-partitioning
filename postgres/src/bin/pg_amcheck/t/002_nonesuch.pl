@@ -302,7 +302,9 @@ $node->safe_psql(
 ));
 
 $node->command_checks_all(
-	[ 'pg_amcheck', '-d', 'regression_invalid' ],
+	[
+		'pg_amcheck', '-d', 'regression_invalid'
+	],
 	1,
 	[qr/^$/],
 	[
@@ -312,7 +314,8 @@ $node->command_checks_all(
 
 $node->command_checks_all(
 	[
-		'pg_amcheck', '-d', 'postgres', '-t', 'regression_invalid.public.foo',
+	    'pg_amcheck', '-d', 'postgres',
+		'-t', 'regression_invalid.public.foo',
 	],
 	1,
 	[qr/^$/],

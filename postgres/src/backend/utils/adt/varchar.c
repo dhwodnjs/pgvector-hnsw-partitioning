@@ -25,6 +25,7 @@
 #include "nodes/supportnodes.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/pg_locale.h"
 #include "utils/varlena.h"
 
@@ -1028,9 +1029,7 @@ hashbpchar(PG_FUNCTION_ARGS)
 		buf = palloc(bsize + 1);
 
 		rsize = pg_strnxfrm(buf, bsize + 1, keydata, keylen, mylocale);
-
-		/* the second call may return a smaller value than the first */
-		if (rsize > bsize)
+		if (rsize != bsize)
 			elog(ERROR, "pg_strnxfrm() returned unexpected result");
 
 		/*
@@ -1086,9 +1085,7 @@ hashbpcharextended(PG_FUNCTION_ARGS)
 		buf = palloc(bsize + 1);
 
 		rsize = pg_strnxfrm(buf, bsize + 1, keydata, keylen, mylocale);
-
-		/* the second call may return a smaller value than the first */
-		if (rsize > bsize)
+		if (rsize != bsize)
 			elog(ERROR, "pg_strnxfrm() returned unexpected result");
 
 		/*

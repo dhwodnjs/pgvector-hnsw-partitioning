@@ -76,10 +76,6 @@ typedef enum IndexAMProperty
  * opfamily.  This allows ALTER OPERATOR FAMILY DROP, and causes that to
  * happen automatically if the operator or support func is dropped.  This
  * is the right behavior for inessential ("loose") objects.
- *
- * We also make dependencies on lefttype/righttype, of the same strength as
- * the dependency on the operator or support func, unless these dependencies
- * are redundant with the dependency on the operator or support func.
  */
 typedef struct OpFamilyMember
 {
@@ -118,8 +114,7 @@ typedef bool (*aminsert_function) (Relation indexRelation,
 								   struct IndexInfo *indexInfo);
 
 /* cleanup after insert */
-typedef void (*aminsertcleanup_function) (Relation indexRelation,
-										  struct IndexInfo *indexInfo);
+typedef void (*aminsertcleanup_function) (struct IndexInfo *indexInfo);
 
 /* bulk delete */
 typedef IndexBulkDeleteResult *(*ambulkdelete_function) (IndexVacuumInfo *info,
@@ -199,7 +194,7 @@ typedef void (*amrestrpos_function) (IndexScanDesc scan);
  */
 
 /* estimate size of parallel scan descriptor */
-typedef Size (*amestimateparallelscan_function) (int nkeys, int norderbys);
+typedef Size (*amestimateparallelscan_function) (void);
 
 /* prepare for parallel index scan */
 typedef void (*aminitparallelscan_function) (void *target);

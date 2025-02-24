@@ -177,8 +177,7 @@
     statements separated by semicolons.  A semicolon after the last
     statement is optional.  Unless the function is declared to return
     <type>void</type>, the last statement must be a <command>SELECT</command>,
-    or an <command>INSERT</command>, <command>UPDATE</command>,
-    <command>DELETE</command>, or <command>MERGE</command>
+    or an <command>INSERT</command>, <command>UPDATE</command>, or <command>DELETE</command>
     that has a <literal>RETURNING</literal> clause.
    </para>
 
@@ -1237,9 +1236,8 @@ SELECT x, CASE WHEN x &gt; 0 THEN generate_series(1, 5) ELSE 0 END FROM tab;
 
     <note>
      <para>
-      If a function's last command is <command>INSERT</command>,
-      <command>UPDATE</command>, <command>DELETE</command>, or
-      <command>MERGE</command> with <literal>RETURNING</literal>, that command will
+      If a function's last command is <command>INSERT</command>, <command>UPDATE</command>,
+      or <command>DELETE</command> with <literal>RETURNING</literal>, that command will
       always be executed to completion, even if the function is not declared
       with <literal>SETOF</literal> or the calling query does not fetch all the
       result rows.  Any extra rows produced by the <literal>RETURNING</literal>
@@ -3624,16 +3622,12 @@ INJECTION_POINT(name);
 <programlisting>
 extern void InjectionPointAttach(const char *name,
                                  const char *library,
-                                 const char *function,
-                                 const void *private_data,
-                                 int private_data_size);
+                                 const char *function);
 </programlisting>
 
      <literal>name</literal> is the name of the injection point, which when
      reached during execution will execute the <literal>function</literal>
-     loaded from <literal>library</literal>. <literal>private_data</literal>
-     is a private area of data of size <literal>private_data_size</literal>
-     given as argument to the callback when executed.
+     loaded from <literal>library</literal>.
     </para>
 
     <para>
@@ -3641,13 +3635,9 @@ extern void InjectionPointAttach(const char *name,
      <literal>InjectionPointCallback</literal>:
 <programlisting>
 static void
-custom_injection_callback(const char *name, const void *private_data)
+custom_injection_callback(const char *name)
 {
-    uint32 wait_event_info = WaitEventInjectionPointNew(name);
-
-    pgstat_report_wait_start(wait_event_info);
     elog(NOTICE, "%s: executed custom callback", name);
-    pgstat_report_wait_end();
 }
 </programlisting>
      This callback prints a message to server error log with severity
@@ -3658,10 +3648,8 @@ custom_injection_callback(const char *name, const void *private_data)
     <para>
      Optionally, it is possible to detach an injection point by calling:
 <programlisting>
-extern bool InjectionPointDetach(const char *name);
+extern void InjectionPointDetach(const char *name);
 </programlisting>
-     On success, <literal>true</literal> is returned, <literal>false</literal>
-     otherwise.
     </para>
 
     <para>
@@ -3670,12 +3658,6 @@ extern bool InjectionPointDetach(const char *name);
      <literal>InjectionPointAttach</literal> is called. It remains attached
      while the server is running or until the injection point is detached
      using <literal>InjectionPointDetach</literal>.
-    </para>
-
-    <para>
-     An example can be found in
-     <filename>src/test/modules/injection_points</filename> in the PostgreSQL
-     source tree.
     </para>
 
     <para>

@@ -18,7 +18,7 @@
 #include "access/stratnum.h"
 #include "common/int.h"
 #include "tsearch/ts_utils.h"
-#include "utils/fmgrprotos.h"
+#include "utils/builtins.h"
 
 #define GETENTRY(vec,pos) DatumGetTSQuerySign((vec)->vector[pos].key)
 

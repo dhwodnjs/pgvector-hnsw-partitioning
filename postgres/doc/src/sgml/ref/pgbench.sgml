@@ -162,8 +162,7 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
     <variablelist>
 
      <varlistentry id="pgbench-option-dbname">
-      <term><option><optional>-d</optional> <replaceable class="parameter">dbname</replaceable></option></term>
-      <term><option><optional>--dbname=</optional><replaceable class="parameter">dbname</replaceable></option></term>
+      <term><replaceable class="parameter">dbname</replaceable></term>
       <listitem>
        <para>
         Specifies the name of the database to test in. If this is
@@ -459,6 +458,16 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
         Establish a new connection for each transaction, rather than
         doing it just once per client session.
         This is useful to measure the connection overhead.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="pgbench-option-debug">
+      <term><option>-d</option></term>
+      <term><option>--debug</option></term>
+      <listitem>
+       <para>
+        Print debugging output.
        </para>
       </listitem>
      </varlistentry>
@@ -925,17 +934,9 @@ pgbench <optional> <replaceable>options</replaceable> </optional> <replaceable>d
 
    <para>
     <application>pgbench</application> also accepts the following common command-line
-    arguments for connection parameters and other common settings:
+    arguments for connection parameters:
 
     <variablelist>
-     <varlistentry id="pgbench-option-debug">
-      <term><option>--debug</option></term>
-      <listitem>
-       <para>
-        Print debugging output.
-       </para>
-      </listitem>
-     </varlistentry>
 
      <varlistentry id="pgbench-option-host">
       <term><option>-h</option> <replaceable>hostname</replaceable></term>

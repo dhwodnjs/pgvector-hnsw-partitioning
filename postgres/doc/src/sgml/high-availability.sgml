@@ -1302,7 +1302,7 @@ synchronous_standby_names = 'ANY 2 (s1, s2, s3)'
     <varname>synchronous_commit</varname> is set to <literal>on</literal>,
     <literal>remote_apply</literal> or <literal>remote_write</literal> will wait for
     responses from. Such transaction commits may never be completed
-    if any one of the synchronous standbys should crash.
+    if any one of synchronous standbys should crash.
    </para>
 
    <para>
@@ -1485,15 +1485,6 @@ synchronous_standby_names = 'ANY 2 (s1, s2, s3)'
     each system for maintenance. This also serves as a test of the
     failover mechanism to ensure that it will really work when you need it.
     Written administration procedures are advised.
-   </para>
-
-   <para>
-    If you have opted for logical replication slot synchronization (see
-    <xref linkend="logicaldecoding-replication-slots-synchronization"/>),
-    then before switching to the standby server, it is recommended to check
-    if the logical slots synchronized on the standby server are ready
-    for failover. This can be done by following the steps described in
-    <xref linkend="logical-replication-failover"/>.
    </para>
 
    <para>

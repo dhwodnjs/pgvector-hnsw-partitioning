@@ -7,7 +7,7 @@ use warnings FATAL => 'all';
 
 use Cwd qw(abs_path getcwd);
 use File::Find;
-use File::Spec;
+use File::Spec qw(devnull);
 use File::Temp;
 use IO::Handle;
 use Getopt::Long;
@@ -80,14 +80,12 @@ my $filtered_typedefs_fh;
 
 sub check_indent
 {
-	if (system("$indent -? < $devnull > $devnull 2>&1") != 0)
+	system("$indent -? < $devnull > $devnull 2>&1");
+	if ($? >> 8 != 1)
 	{
-		if ($? >> 8 != 1)
-		{
-			print STDERR
-			  "You do not appear to have $indent installed on your system.\n";
-			exit 1;
-		}
+		print STDERR
+		  "You do not appear to have $indent installed on your system.\n";
+		exit 1;
 	}
 
 	if (`$indent --version` !~ m/ $INDENT_VERSION /)
@@ -97,7 +95,8 @@ sub check_indent
 		exit 1;
 	}
 
-	if (system("$indent -gnu < $devnull > $devnull 2>&1") == 0)
+	system("$indent -gnu < $devnull > $devnull 2>&1");
+	if ($? == 0)
 	{
 		print STDERR
 		  "You appear to have GNU indent rather than BSD indent.\n";
@@ -284,7 +283,7 @@ sub run_indent
 
 	unlink "$filename.BAK";
 
-	open(my $src_out, '<', $filename) || die $!;
+	open(my $src_out, '<', $filename);
 	local ($/) = undef;
 	$source = <$src_out>;
 	close($src_out);

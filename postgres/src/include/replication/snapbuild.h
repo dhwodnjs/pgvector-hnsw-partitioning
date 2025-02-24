@@ -62,7 +62,6 @@ extern void CheckPointSnapBuild(void);
 extern SnapBuild *AllocateSnapshotBuilder(struct ReorderBuffer *reorder,
 										  TransactionId xmin_horizon, XLogRecPtr start_lsn,
 										  bool need_full_snapshot,
-										  bool in_slot_creation,
 										  XLogRecPtr two_phase_at);
 extern void FreeSnapshotBuilder(SnapBuild *builder);
 
@@ -91,7 +90,5 @@ extern void SnapBuildProcessNewCid(SnapBuild *builder, TransactionId xid,
 extern void SnapBuildProcessRunningXacts(SnapBuild *builder, XLogRecPtr lsn,
 										 struct xl_running_xacts *running);
 extern void SnapBuildSerializationPoint(SnapBuild *builder, XLogRecPtr lsn);
-
-extern bool SnapBuildSnapshotExists(XLogRecPtr lsn);
 
 #endif							/* SNAPBUILD_H */

@@ -48,7 +48,6 @@
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
-#include "postmaster/auxprocess.h"
 #include "postmaster/interrupt.h"
 #include "postmaster/walwriter.h"
 #include "storage/bufmgr.h"
@@ -86,17 +85,12 @@ int			WalWriterFlushAfter = DEFAULT_WAL_WRITER_FLUSH_AFTER;
  * basic execution environment, but not enabled signals yet.
  */
 void
-WalWriterMain(char *startup_data, size_t startup_data_len)
+WalWriterMain(void)
 {
 	sigjmp_buf	local_sigjmp_buf;
 	MemoryContext walwriter_context;
 	int			left_till_hibernate;
 	bool		hibernating;
-
-	Assert(startup_data_len == 0);
-
-	MyBackendType = B_WAL_WRITER;
-	AuxiliaryProcessMainCommon();
 
 	/*
 	 * Properly accept or ignore signals the postmaster might send us

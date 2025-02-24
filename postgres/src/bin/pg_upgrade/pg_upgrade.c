@@ -51,13 +51,6 @@
 #include "fe_utils/string_utils.h"
 #include "pg_upgrade.h"
 
-/*
- * Maximum number of pg_restore actions (TOC entries) to process within one
- * transaction.  At some point we might want to make this user-controllable,
- * but for now a hard-wired setting will suffice.
- */
-#define RESTORE_TRANSACTION_SIZE 1000
-
 static void set_locale_and_encoding(void);
 static void prepare_new_cluster(void);
 static void prepare_new_globals(void);
@@ -112,8 +105,8 @@ main(int argc, char **argv)
 	 * output directories with correct permissions.
 	 */
 	if (!GetDataDirectoryCreatePerm(new_cluster.pgdata))
-		pg_fatal("could not read permissions of directory \"%s\": %m",
-				 new_cluster.pgdata);
+		pg_fatal("could not read permissions of directory \"%s\": %s",
+				 new_cluster.pgdata, strerror(errno));
 
 	umask(pg_mode_mask);
 
@@ -398,7 +391,7 @@ setup(char *argv0, bool *live_check)
  * Copy locale and encoding information into the new cluster's template0.
  *
  * We need to copy the encoding, datlocprovider, datcollate, datctype, and
- * datlocale. We don't need datcollversion because that's never set for
+ * daticulocale. We don't need datcollversion because that's never set for
  * template0.
  */
 static void
@@ -407,7 +400,7 @@ set_locale_and_encoding(void)
 	PGconn	   *conn_new_template1;
 	char	   *datcollate_literal;
 	char	   *datctype_literal;
-	char	   *datlocale_literal = NULL;
+	char	   *daticulocale_literal = NULL;
 	DbLocaleInfo *locale = old_cluster.template0;
 
 	prep_status("Setting locale and encoding for new cluster");
@@ -421,29 +414,15 @@ set_locale_and_encoding(void)
 	datctype_literal = PQescapeLiteral(conn_new_template1,
 									   locale->db_ctype,
 									   strlen(locale->db_ctype));
-	if (locale->db_locale)
-		datlocale_literal = PQescapeLiteral(conn_new_template1,
-											locale->db_locale,
-											strlen(locale->db_locale));
+	if (locale->db_iculocale)
+		daticulocale_literal = PQescapeLiteral(conn_new_template1,
+											   locale->db_iculocale,
+											   strlen(locale->db_iculocale));
 	else
-		datlocale_literal = pg_strdup("NULL");
+		daticulocale_literal = pg_strdup("NULL");
 
 	/* update template0 in new cluster */
-	if (GET_MAJOR_VERSION(new_cluster.major_version) >= 1700)
-		PQclear(executeQueryOrDie(conn_new_template1,
-								  "UPDATE pg_catalog.pg_database "
-								  "  SET encoding = %d, "
-								  "      datlocprovider = '%c', "
-								  "      datcollate = %s, "
-								  "      datctype = %s, "
-								  "      datlocale = %s "
-								  "  WHERE datname = 'template0' ",
-								  locale->db_encoding,
-								  locale->db_collprovider,
-								  datcollate_literal,
-								  datctype_literal,
-								  datlocale_literal));
-	else if (GET_MAJOR_VERSION(new_cluster.major_version) >= 1500)
+	if (GET_MAJOR_VERSION(new_cluster.major_version) >= 1500)
 		PQclear(executeQueryOrDie(conn_new_template1,
 								  "UPDATE pg_catalog.pg_database "
 								  "  SET encoding = %d, "
@@ -456,7 +435,7 @@ set_locale_and_encoding(void)
 								  locale->db_collprovider,
 								  datcollate_literal,
 								  datctype_literal,
-								  datlocale_literal));
+								  daticulocale_literal));
 	else
 		PQclear(executeQueryOrDie(conn_new_template1,
 								  "UPDATE pg_catalog.pg_database "
@@ -470,7 +449,7 @@ set_locale_and_encoding(void)
 
 	PQfreemem(datcollate_literal);
 	PQfreemem(datctype_literal);
-	PQfreemem(datlocale_literal);
+	PQfreemem(daticulocale_literal);
 
 	PQfinish(conn_new_template1);
 
@@ -569,12 +548,10 @@ create_new_objects(void)
 				  true,
 				  true,
 				  "\"%s/pg_restore\" %s %s --exit-on-error --verbose "
-				  "--transaction-size=%d "
 				  "--dbname postgres \"%s/%s\"",
 				  new_cluster.bindir,
 				  cluster_conn_opts(&new_cluster),
 				  create_opts,
-				  RESTORE_TRANSACTION_SIZE,
 				  log_opts.dumpdir,
 				  sql_file_name);
 
@@ -587,7 +564,6 @@ create_new_objects(void)
 					log_file_name[MAXPGPATH];
 		DbInfo	   *old_db = &old_cluster.dbarr.dbs[dbnum];
 		const char *create_opts;
-		int			txn_size;
 
 		/* Skip template1 in this pass */
 		if (strcmp(old_db->db_name, "template1") == 0)
@@ -607,28 +583,13 @@ create_new_objects(void)
 		else
 			create_opts = "--create";
 
-		/*
-		 * In parallel mode, reduce the --transaction-size of each restore job
-		 * so that the total number of locks that could be held across all the
-		 * jobs stays in bounds.
-		 */
-		txn_size = RESTORE_TRANSACTION_SIZE;
-		if (user_opts.jobs > 1)
-		{
-			txn_size /= user_opts.jobs;
-			/* Keep some sanity if -j is huge */
-			txn_size = Max(txn_size, 10);
-		}
-
 		parallel_exec_prog(log_file_name,
 						   NULL,
 						   "\"%s/pg_restore\" %s %s --exit-on-error --verbose "
-						   "--transaction-size=%d "
 						   "--dbname template1 \"%s/%s\"",
 						   new_cluster.bindir,
 						   cluster_conn_opts(&new_cluster),
 						   create_opts,
-						   txn_size,
 						   log_opts.dumpdir,
 						   sql_file_name);
 	}

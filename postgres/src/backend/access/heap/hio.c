@@ -22,6 +22,7 @@
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
 #include "storage/lmgr.h"
+#include "storage/smgr.h"
 
 
 /*

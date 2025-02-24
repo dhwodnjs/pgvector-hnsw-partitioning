@@ -26,6 +26,7 @@
 #include "executor/nodeProjectSet.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
+#include "utils/memutils.h"
 
 
 static TupleTableSlot *ExecProjectSRF(ProjectSetState *node, bool continuing);

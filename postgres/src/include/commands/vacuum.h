@@ -17,7 +17,6 @@
 #include "access/htup.h"
 #include "access/genam.h"
 #include "access/parallel.h"
-#include "access/tidstore.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
@@ -229,7 +228,6 @@ typedef struct VacuumParams
 									 * default */
 	VacOptValue index_cleanup;	/* Do index vacuum and cleanup */
 	VacOptValue truncate;		/* Truncate empty pages at the end */
-	Oid			toast_parent;	/* for privilege checks when recursing */
 
 	/*
 	 * The number of parallel vacuum workers.  0 by default which means choose
@@ -279,14 +277,19 @@ struct VacuumCutoffs
 };
 
 /*
- * VacDeadItemsInfo stores supplemental information for dead tuple TID
- * storage (i.e. TidStore).
+ * VacDeadItems stores TIDs whose index tuples are deleted by index vacuuming.
  */
-typedef struct VacDeadItemsInfo
+typedef struct VacDeadItems
 {
-	size_t		max_bytes;		/* the maximum bytes TidStore can use */
-	int64		num_items;		/* current # of entries */
-} VacDeadItemsInfo;
+	int			max_items;		/* # slots allocated in array */
+	int			num_items;		/* current # of entries */
+
+	/* Sorted array of TIDs to delete from indexes */
+	ItemPointerData items[FLEXIBLE_ARRAY_MEMBER];
+} VacDeadItems;
+
+#define MAXDEADITEMS(avail_mem) \
+	(((avail_mem) - offsetof(VacDeadItems, items)) / sizeof(ItemPointerData))
 
 /* GUC parameters */
 extern PGDLLIMPORT int default_statistics_target;	/* PGDLLIMPORT for PostGIS */
@@ -340,17 +343,17 @@ extern bool vacuum_get_cutoffs(Relation rel, const VacuumParams *params,
 extern bool vacuum_xid_failsafe_check(const struct VacuumCutoffs *cutoffs);
 extern void vac_update_datfrozenxid(void);
 extern void vacuum_delay_point(void);
-extern bool vacuum_is_permitted_for_relation(Oid relid, Form_pg_class reltuple,
-											 bits32 options);
+extern bool vacuum_is_relation_owner(Oid relid, Form_pg_class reltuple,
+									 bits32 options);
 extern Relation vacuum_open_relation(Oid relid, RangeVar *relation,
 									 bits32 options, bool verbose,
 									 LOCKMODE lmode);
 extern IndexBulkDeleteResult *vac_bulkdel_one_index(IndexVacuumInfo *ivinfo,
 													IndexBulkDeleteResult *istat,
-													TidStore *dead_items,
-													VacDeadItemsInfo *dead_items_info);
+													VacDeadItems *dead_items);
 extern IndexBulkDeleteResult *vac_cleanup_one_index(IndexVacuumInfo *ivinfo,
 													IndexBulkDeleteResult *istat);
+extern Size vac_max_items_to_alloc_size(int max_items);
 
 /* In postmaster/autovacuum.c */
 extern void AutoVacuumUpdateCostLimit(void);
@@ -359,12 +362,10 @@ extern void VacuumUpdateCosts(void);
 /* in commands/vacuumparallel.c */
 extern ParallelVacuumState *parallel_vacuum_init(Relation rel, Relation *indrels,
 												 int nindexes, int nrequested_workers,
-												 int vac_work_mem, int elevel,
+												 int max_items, int elevel,
 												 BufferAccessStrategy bstrategy);
 extern void parallel_vacuum_end(ParallelVacuumState *pvs, IndexBulkDeleteResult **istats);
-extern TidStore *parallel_vacuum_get_dead_items(ParallelVacuumState *pvs,
-												VacDeadItemsInfo **dead_items_info_p);
-extern void parallel_vacuum_reset_dead_items(ParallelVacuumState *pvs);
+extern VacDeadItems *parallel_vacuum_get_dead_items(ParallelVacuumState *pvs);
 extern void parallel_vacuum_bulkdel_all_indexes(ParallelVacuumState *pvs,
 												long num_table_tuples,
 												int num_index_scans);

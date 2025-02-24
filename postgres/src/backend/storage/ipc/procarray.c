@@ -47,6 +47,7 @@
 
 #include <signal.h>
 
+#include "access/clog.h"
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
@@ -1106,7 +1107,7 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 		 * If the snapshot isn't overflowed or if its empty we can reset our
 		 * pending state and use this snapshot instead.
 		 */
-		if (running->subxid_status != SUBXIDS_MISSING || running->xcnt == 0)
+		if (!running->subxid_overflow || running->xcnt == 0)
 		{
 			/*
 			 * If we have already collected known assigned xids, we need to
@@ -1258,7 +1259,7 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 	 * missing, so conservatively assume the last one is latestObservedXid.
 	 * ----------
 	 */
-	if (running->subxid_status == SUBXIDS_MISSING)
+	if (running->subxid_overflow)
 	{
 		standbyState = STANDBY_SNAPSHOT_PENDING;
 
@@ -1270,18 +1271,6 @@ ProcArrayApplyRecoveryInfo(RunningTransactions running)
 		standbyState = STANDBY_SNAPSHOT_READY;
 
 		standbySnapshotPendingXmin = InvalidTransactionId;
-
-		/*
-		 * If the 'xids' array didn't include all subtransactions, we have to
-		 * mark any snapshots taken as overflowed.
-		 */
-		if (running->subxid_status == SUBXIDS_IN_SUBTRANS)
-			procArray->lastOverflowedXid = latestObservedXid;
-		else
-		{
-			Assert(running->subxid_status == SUBXIDS_IN_ARRAY);
-			procArray->lastOverflowedXid = InvalidTransactionId;
-		}
 	}
 
 	/*
@@ -1727,9 +1716,9 @@ TransactionIdIsActive(TransactionId xid)
  * Note: the approximate horizons (see definition of GlobalVisState) are
  * updated by the computations done here. That's currently required for
  * correctness and a small optimization. Without doing so it's possible that
- * heap vacuum's call to heap_page_prune_and_freeze() uses a more conservative
- * horizon than later when deciding which tuples can be removed - which the
- * code doesn't expect (breaking HOT).
+ * heap vacuum's call to heap_page_prune() uses a more conservative horizon
+ * than later when deciding which tuples can be removed - which the code
+ * doesn't expect (breaking HOT).
  */
 static void
 ComputeXidHorizons(ComputeXidHorizonsResult *h)
@@ -2700,7 +2689,6 @@ GetRunningTransactionData(void)
 	RunningTransactions CurrentRunningXacts = &CurrentRunningXactsData;
 	TransactionId latestCompletedXid;
 	TransactionId oldestRunningXid;
-	TransactionId oldestDatabaseRunningXid;
 	TransactionId *xids;
 	int			index;
 	int			count;
@@ -2745,7 +2733,7 @@ GetRunningTransactionData(void)
 
 	latestCompletedXid =
 		XidFromFullTransactionId(TransamVariables->latestCompletedXid);
-	oldestDatabaseRunningXid = oldestRunningXid =
+	oldestRunningXid =
 		XidFromFullTransactionId(TransamVariables->nextXid);
 
 	/*
@@ -2753,8 +2741,6 @@ GetRunningTransactionData(void)
 	 */
 	for (index = 0; index < arrayP->numProcs; index++)
 	{
-		int			pgprocno = arrayP->pgprocnos[index];
-		PGPROC	   *proc = &allProcs[pgprocno];
 		TransactionId xid;
 
 		/* Fetch xid just once - see GetNewTransactionId */
@@ -2774,13 +2760,6 @@ GetRunningTransactionData(void)
 		 */
 		if (TransactionIdPrecedes(xid, oldestRunningXid))
 			oldestRunningXid = xid;
-
-		/*
-		 * Also, update the oldest running xid within the current database.
-		 */
-		if (proc->databaseId == MyDatabaseId &&
-			TransactionIdPrecedes(xid, oldestDatabaseRunningXid))
-			oldestDatabaseRunningXid = xid;
 
 		if (ProcGlobal->subxidStates[index].overflowed)
 			suboverflowed = true;
@@ -2845,10 +2824,9 @@ GetRunningTransactionData(void)
 
 	CurrentRunningXacts->xcnt = count - subcount;
 	CurrentRunningXacts->subxcnt = subcount;
-	CurrentRunningXacts->subxid_status = suboverflowed ? SUBXIDS_IN_SUBTRANS : SUBXIDS_IN_ARRAY;
+	CurrentRunningXacts->subxid_overflow = suboverflowed;
 	CurrentRunningXacts->nextXid = XidFromFullTransactionId(TransamVariables->nextXid);
 	CurrentRunningXacts->oldestRunningXid = oldestRunningXid;
-	CurrentRunningXacts->oldestDatabaseRunningXid = oldestDatabaseRunningXid;
 	CurrentRunningXacts->latestCompletedXid = latestCompletedXid;
 
 	Assert(TransactionIdIsValid(CurrentRunningXacts->nextXid));
@@ -3621,7 +3599,8 @@ CountDBBackends(Oid databaseid)
 }
 
 /*
- * CountDBConnections --- counts database backends (only regular backends)
+ * CountDBConnections --- counts database backends ignoring any background
+ *		worker processes
  */
 int
 CountDBConnections(Oid databaseid)
@@ -3693,7 +3672,6 @@ CancelDBBackends(Oid databaseid, ProcSignalReason sigmode, bool conflictPending)
 
 /*
  * CountUserBackends --- count backends that are used by specified user
- * (only regular backends, not any type of background worker)
  */
 int
 CountUserBackends(Oid roleid)
@@ -3820,8 +3798,8 @@ CountOtherDBBackends(Oid databaseId, int *nbackends, int *nprepared)
  * The current backend is always ignored; it is caller's responsibility to
  * check whether the current backend uses the given DB, if it's important.
  *
- * If the target database has a prepared transaction or permissions checks
- * fail for a connection, this fails without terminating anything.
+ * It doesn't allow to terminate the connections even if there is a one
+ * backend with the prepared transaction in the target database.
  */
 void
 TerminateOtherDBBackends(Oid databaseId)
@@ -3866,19 +3844,14 @@ TerminateOtherDBBackends(Oid databaseId)
 		ListCell   *lc;
 
 		/*
-		 * Permissions checks relax the pg_terminate_backend checks in two
-		 * ways, both by omitting the !OidIsValid(proc->roleId) check:
+		 * Check whether we have the necessary rights to terminate other
+		 * sessions.  We don't terminate any session until we ensure that we
+		 * have rights on all the sessions to be terminated.  These checks are
+		 * the same as we do in pg_terminate_backend.
 		 *
-		 * - Accept terminating autovacuum workers, since DROP DATABASE
-		 * without FORCE terminates them.
-		 *
-		 * - Accept terminating bgworkers.  For bgworker authors, it's
-		 * convenient to be able to recommend FORCE if a worker is blocking
-		 * DROP DATABASE unexpectedly.
-		 *
-		 * Unlike pg_terminate_backend, we don't raise some warnings - like
-		 * "PID %d is not a PostgreSQL server process", because for us already
-		 * finished session is not a problem.
+		 * In this case we don't raise some warnings - like "PID %d is not a
+		 * PostgreSQL server process", because for us already finished session
+		 * is not a problem.
 		 */
 		foreach(lc, pids)
 		{
@@ -3887,6 +3860,7 @@ TerminateOtherDBBackends(Oid databaseId)
 
 			if (proc != NULL)
 			{
+				/* Only allow superusers to signal superuser-owned backends. */
 				if (superuser_arg(proc->roleId) && !superuser())
 					ereport(ERROR,
 							(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -3894,6 +3868,7 @@ TerminateOtherDBBackends(Oid databaseId)
 							 errdetail("Only roles with the %s attribute may terminate processes of roles with the %s attribute.",
 									   "SUPERUSER", "SUPERUSER")));
 
+				/* Users can signal backends they have role membership in. */
 				if (!has_privs_of_role(GetUserId(), proc->roleId) &&
 					!has_privs_of_role(GetUserId(), ROLE_PG_SIGNAL_BACKEND))
 					ereport(ERROR,
@@ -4275,6 +4250,36 @@ GlobalVisTestIsRemovableXid(GlobalVisState *state, TransactionId xid)
 	fxid = FullXidRelativeTo(state->definitely_needed, xid);
 
 	return GlobalVisTestIsRemovableFullXid(state, fxid);
+}
+
+/*
+ * Return FullTransactionId below which all transactions are not considered
+ * running anymore.
+ *
+ * Note: This is less efficient than testing with
+ * GlobalVisTestIsRemovableFullXid as it likely requires building an accurate
+ * cutoff, even in the case all the XIDs compared with the cutoff are outside
+ * [maybe_needed, definitely_needed).
+ */
+FullTransactionId
+GlobalVisTestNonRemovableFullHorizon(GlobalVisState *state)
+{
+	/* acquire accurate horizon if not already done */
+	if (GlobalVisTestShouldUpdate(state))
+		GlobalVisUpdate();
+
+	return state->maybe_needed;
+}
+
+/* Convenience wrapper around GlobalVisTestNonRemovableFullHorizon */
+TransactionId
+GlobalVisTestNonRemovableHorizon(GlobalVisState *state)
+{
+	FullTransactionId cutoff;
+
+	cutoff = GlobalVisTestNonRemovableFullHorizon(state);
+
+	return XidFromFullTransactionId(cutoff);
 }
 
 /*

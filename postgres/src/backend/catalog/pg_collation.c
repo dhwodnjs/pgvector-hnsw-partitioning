@@ -14,7 +14,9 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/htup_details.h"
+#include "access/sysattr.h"
 #include "access/table.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
@@ -24,6 +26,8 @@
 #include "catalog/pg_namespace.h"
 #include "mb/pg_wchar.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
+#include "utils/pg_locale.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
@@ -45,7 +49,7 @@ CollationCreate(const char *collname, Oid collnamespace,
 				bool collisdeterministic,
 				int32 collencoding,
 				const char *collcollate, const char *collctype,
-				const char *colllocale,
+				const char *colliculocale,
 				const char *collicurules,
 				const char *collversion,
 				bool if_not_exists,
@@ -64,10 +68,7 @@ CollationCreate(const char *collname, Oid collnamespace,
 	Assert(collname);
 	Assert(collnamespace);
 	Assert(collowner);
-	Assert((collprovider == COLLPROVIDER_LIBC &&
-			collcollate && collctype && !colllocale) ||
-		   (collprovider != COLLPROVIDER_LIBC &&
-			!collcollate && !collctype && colllocale));
+	Assert((collcollate && collctype) || colliculocale);
 
 	/*
 	 * Make sure there is no existing collation of same name & encoding.
@@ -190,10 +191,10 @@ CollationCreate(const char *collname, Oid collnamespace,
 		values[Anum_pg_collation_collctype - 1] = CStringGetTextDatum(collctype);
 	else
 		nulls[Anum_pg_collation_collctype - 1] = true;
-	if (colllocale)
-		values[Anum_pg_collation_colllocale - 1] = CStringGetTextDatum(colllocale);
+	if (colliculocale)
+		values[Anum_pg_collation_colliculocale - 1] = CStringGetTextDatum(colliculocale);
 	else
-		nulls[Anum_pg_collation_colllocale - 1] = true;
+		nulls[Anum_pg_collation_colliculocale - 1] = true;
 	if (collicurules)
 		values[Anum_pg_collation_collicurules - 1] = CStringGetTextDatum(collicurules);
 	else

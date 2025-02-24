@@ -19,8 +19,7 @@ struct manifest_wal_range;
 struct manifest_writer;
 typedef struct manifest_writer manifest_writer;
 
-extern manifest_writer *create_manifest_writer(char *directory,
-											   uint64 system_identifier);
+extern manifest_writer *create_manifest_writer(char *directory);
 extern void add_file_to_manifest(manifest_writer *mwriter,
 								 const char *manifest_path,
 								 size_t size, time_t mtime,

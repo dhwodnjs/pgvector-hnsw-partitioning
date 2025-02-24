@@ -146,7 +146,6 @@ typedef struct MemoryContextData
 	((context) != NULL && \
 	 (IsA((context), AllocSetContext) || \
 	  IsA((context), SlabContext) || \
-	  IsA((context), GenerationContext) || \
-	  IsA((context), BumpContext)))
+	  IsA((context), GenerationContext)))
 
 #endif							/* MEMNODES_H */

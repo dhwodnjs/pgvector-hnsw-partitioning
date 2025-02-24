@@ -11,7 +11,6 @@
 
 #include "access/htup_details.h"
 #include "lib/ilist.h"
-#include "lib/pairingheap.h"
 #include "storage/sinval.h"
 #include "utils/hsearch.h"
 #include "utils/relcache.h"
@@ -403,11 +402,6 @@ typedef struct ReorderBufferTXN
 	dlist_node	catchange_node;
 
 	/*
-	 * A node in txn_heap
-	 */
-	pairingheap_node txn_node;
-
-	/*
 	 * Size of this transaction (changes currently in memory, in bytes).
 	 */
 	Size		size;
@@ -478,38 +472,45 @@ typedef void (*ReorderBufferRollbackPreparedCB) (ReorderBuffer *rb,
 												 TimestampTz prepare_time);
 
 /* start streaming transaction callback signature */
-typedef void (*ReorderBufferStreamStartCB) (ReorderBuffer *rb,
+typedef void (*ReorderBufferStreamStartCB) (
+											ReorderBuffer *rb,
 											ReorderBufferTXN *txn,
 											XLogRecPtr first_lsn);
 
 /* stop streaming transaction callback signature */
-typedef void (*ReorderBufferStreamStopCB) (ReorderBuffer *rb,
+typedef void (*ReorderBufferStreamStopCB) (
+										   ReorderBuffer *rb,
 										   ReorderBufferTXN *txn,
 										   XLogRecPtr last_lsn);
 
 /* discard streamed transaction callback signature */
-typedef void (*ReorderBufferStreamAbortCB) (ReorderBuffer *rb,
+typedef void (*ReorderBufferStreamAbortCB) (
+											ReorderBuffer *rb,
 											ReorderBufferTXN *txn,
 											XLogRecPtr abort_lsn);
 
 /* prepare streamed transaction callback signature */
-typedef void (*ReorderBufferStreamPrepareCB) (ReorderBuffer *rb,
+typedef void (*ReorderBufferStreamPrepareCB) (
+											  ReorderBuffer *rb,
 											  ReorderBufferTXN *txn,
 											  XLogRecPtr prepare_lsn);
 
 /* commit streamed transaction callback signature */
-typedef void (*ReorderBufferStreamCommitCB) (ReorderBuffer *rb,
+typedef void (*ReorderBufferStreamCommitCB) (
+											 ReorderBuffer *rb,
 											 ReorderBufferTXN *txn,
 											 XLogRecPtr commit_lsn);
 
 /* stream change callback signature */
-typedef void (*ReorderBufferStreamChangeCB) (ReorderBuffer *rb,
+typedef void (*ReorderBufferStreamChangeCB) (
+											 ReorderBuffer *rb,
 											 ReorderBufferTXN *txn,
 											 Relation relation,
 											 ReorderBufferChange *change);
 
 /* stream message callback signature */
-typedef void (*ReorderBufferStreamMessageCB) (ReorderBuffer *rb,
+typedef void (*ReorderBufferStreamMessageCB) (
+											  ReorderBuffer *rb,
 											  ReorderBufferTXN *txn,
 											  XLogRecPtr message_lsn,
 											  bool transactional,
@@ -517,14 +518,16 @@ typedef void (*ReorderBufferStreamMessageCB) (ReorderBuffer *rb,
 											  const char *message);
 
 /* stream truncate callback signature */
-typedef void (*ReorderBufferStreamTruncateCB) (ReorderBuffer *rb,
+typedef void (*ReorderBufferStreamTruncateCB) (
+											   ReorderBuffer *rb,
 											   ReorderBufferTXN *txn,
 											   int nrelations,
 											   Relation relations[],
 											   ReorderBufferChange *change);
 
 /* update progress txn callback signature */
-typedef void (*ReorderBufferUpdateProgressTxnCB) (ReorderBuffer *rb,
+typedef void (*ReorderBufferUpdateProgressTxnCB) (
+												  ReorderBuffer *rb,
 												  ReorderBufferTXN *txn,
 												  XLogRecPtr lsn);
 
@@ -627,9 +630,6 @@ struct ReorderBuffer
 
 	/* memory accounting */
 	Size		size;
-
-	/* Max-heap for sizes of all top-level and sub transactions */
-	pairingheap *txn_heap;
 
 	/*
 	 * Statistics about transactions spilled to disk.

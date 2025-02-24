@@ -35,6 +35,7 @@
 #include "access/detoast.h"
 #include "access/genam.h"
 #include "access/htup_details.h"
+#include "access/sysattr.h"
 #include "access/table.h"
 #include "access/xact.h"
 #include "catalog/dependency.h"

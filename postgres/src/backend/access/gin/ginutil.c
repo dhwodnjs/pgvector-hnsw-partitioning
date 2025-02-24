@@ -23,9 +23,10 @@
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "storage/indexfsm.h"
+#include "storage/lmgr.h"
+#include "storage/predicate.h"
 #include "utils/builtins.h"
 #include "utils/index_selfuncs.h"
-#include "utils/rel.h"
 #include "utils/typcache.h"
 
 

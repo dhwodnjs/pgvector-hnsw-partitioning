@@ -49,6 +49,7 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include "access/printtup.h"
 #include "access/timeline.h"
 #include "access/transam.h"
 #include "access/xact.h"
@@ -83,6 +84,7 @@
 #include "storage/ipc.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
+#include "storage/procarray.h"
 #include "tcop/dest.h"
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
@@ -90,6 +92,7 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
+#include "utils/portal.h"
 #include "utils/ps_status.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
@@ -336,7 +339,7 @@ WalSndErrorCleanup(void)
 	if (MyReplicationSlot != NULL)
 		ReplicationSlotRelease();
 
-	ReplicationSlotCleanup(false);
+	ReplicationSlotCleanup();
 
 	replication_active = false;
 
@@ -697,7 +700,7 @@ UploadManifest(void)
 	ib = CreateIncrementalBackupInfo(mcxt);
 
 	/* Send a CopyInResponse message */
-	pq_beginmessage(&buf, PqMsg_CopyInResponse);
+	pq_beginmessage(&buf, 'G');
 	pq_sendbyte(&buf, 0);
 	pq_sendint16(&buf, 0);
 	pq_endmessage_reuse(&buf);
@@ -1726,119 +1729,35 @@ WalSndUpdateProgress(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId 
 }
 
 /*
- * Wake up the logical walsender processes with logical failover slots if the
- * currently acquired physical slot is specified in synchronized_standby_slots GUC.
- */
-void
-PhysicalWakeupLogicalWalSnd(void)
-{
-	Assert(MyReplicationSlot && SlotIsPhysical(MyReplicationSlot));
-
-	/*
-	 * If we are running in a standby, there is no need to wake up walsenders.
-	 * This is because we do not support syncing slots to cascading standbys,
-	 * so, there are no walsenders waiting for standbys to catch up.
-	 */
-	if (RecoveryInProgress())
-		return;
-
-	if (SlotExistsInSyncStandbySlots(NameStr(MyReplicationSlot->data.name)))
-		ConditionVariableBroadcast(&WalSndCtl->wal_confirm_rcv_cv);
-}
-
-/*
- * Returns true if not all standbys have caught up to the flushed position
- * (flushed_lsn) when the current acquired slot is a logical failover
- * slot and we are streaming; otherwise, returns false.
- *
- * If returning true, the function sets the appropriate wait event in
- * wait_event; otherwise, wait_event is set to 0.
- */
-static bool
-NeedToWaitForStandbys(XLogRecPtr flushed_lsn, uint32 *wait_event)
-{
-	int			elevel = got_STOPPING ? ERROR : WARNING;
-	bool		failover_slot;
-
-	failover_slot = (replication_active && MyReplicationSlot->data.failover);
-
-	/*
-	 * Note that after receiving the shutdown signal, an ERROR is reported if
-	 * any slots are dropped, invalidated, or inactive. This measure is taken
-	 * to prevent the walsender from waiting indefinitely.
-	 */
-	if (failover_slot && !StandbySlotsHaveCaughtup(flushed_lsn, elevel))
-	{
-		*wait_event = WAIT_EVENT_WAIT_FOR_STANDBY_CONFIRMATION;
-		return true;
-	}
-
-	*wait_event = 0;
-	return false;
-}
-
-/*
- * Returns true if we need to wait for WALs to be flushed to disk, or if not
- * all standbys have caught up to the flushed position (flushed_lsn) when the
- * current acquired slot is a logical failover slot and we are
- * streaming; otherwise, returns false.
- *
- * If returning true, the function sets the appropriate wait event in
- * wait_event; otherwise, wait_event is set to 0.
- */
-static bool
-NeedToWaitForWal(XLogRecPtr target_lsn, XLogRecPtr flushed_lsn,
-				 uint32 *wait_event)
-{
-	/* Check if we need to wait for WALs to be flushed to disk */
-	if (target_lsn > flushed_lsn)
-	{
-		*wait_event = WAIT_EVENT_WAL_SENDER_WAIT_FOR_WAL;
-		return true;
-	}
-
-	/* Check if the standby slots have caught up to the flushed position */
-	return NeedToWaitForStandbys(flushed_lsn, wait_event);
-}
-
-/*
  * Wait till WAL < loc is flushed to disk so it can be safely sent to client.
  *
- * If the walsender holds a logical failover slot, we also wait for all the
- * specified streaming replication standby servers to confirm receipt of WAL
- * up to RecentFlushPtr. It is beneficial to wait here for the confirmation
- * up to RecentFlushPtr rather than waiting before transmitting each change
- * to logical subscribers, which is already covered by RecentFlushPtr.
- *
- * Returns end LSN of flushed WAL.  Normally this will be >= loc, but if we
- * detect a shutdown request (either from postmaster or client) we will return
- * early, so caller must always check.
+ * Returns end LSN of flushed WAL.  Normally this will be >= loc, but
+ * if we detect a shutdown request (either from postmaster or client)
+ * we will return early, so caller must always check.
  */
 static XLogRecPtr
 WalSndWaitForWal(XLogRecPtr loc)
 {
 	int			wakeEvents;
-	uint32		wait_event = 0;
 	static XLogRecPtr RecentFlushPtr = InvalidXLogRecPtr;
 
 	/*
 	 * Fast path to avoid acquiring the spinlock in case we already know we
-	 * have enough WAL available and all the standby servers have confirmed
-	 * receipt of WAL up to RecentFlushPtr. This is particularly interesting
-	 * if we're far behind.
+	 * have enough WAL available. This is particularly interesting if we're
+	 * far behind.
 	 */
-	if (!XLogRecPtrIsInvalid(RecentFlushPtr) &&
-		!NeedToWaitForWal(loc, RecentFlushPtr, &wait_event))
+	if (RecentFlushPtr != InvalidXLogRecPtr &&
+		loc <= RecentFlushPtr)
 		return RecentFlushPtr;
 
-	/*
-	 * Within the loop, we wait for the necessary WALs to be flushed to disk
-	 * first, followed by waiting for standbys to catch up if there are enough
-	 * WALs (see NeedToWaitForWal()) or upon receiving the shutdown signal.
-	 */
+	/* Get a more recent flush pointer. */
+	if (!RecoveryInProgress())
+		RecentFlushPtr = GetFlushRecPtr(NULL);
+	else
+		RecentFlushPtr = GetXLogReplayRecPtr(NULL);
+
 	for (;;)
 	{
-		bool		wait_for_standby_at_stop = false;
 		long		sleeptime;
 
 		/* Clear any already-pending wakeups */
@@ -1865,35 +1784,21 @@ WalSndWaitForWal(XLogRecPtr loc)
 		if (got_STOPPING)
 			XLogBackgroundFlush();
 
-		/*
-		 * To avoid the scenario where standbys need to catch up to a newer
-		 * WAL location in each iteration, we update our idea of the currently
-		 * flushed position only if we are not waiting for standbys to catch
-		 * up.
-		 */
-		if (wait_event != WAIT_EVENT_WAIT_FOR_STANDBY_CONFIRMATION)
-		{
-			if (!RecoveryInProgress())
-				RecentFlushPtr = GetFlushRecPtr(NULL);
-			else
-				RecentFlushPtr = GetXLogReplayRecPtr(NULL);
-		}
+		/* Update our idea of the currently flushed position. */
+		if (!RecoveryInProgress())
+			RecentFlushPtr = GetFlushRecPtr(NULL);
+		else
+			RecentFlushPtr = GetXLogReplayRecPtr(NULL);
 
 		/*
-		 * If postmaster asked us to stop and the standby slots have caught up
-		 * to the flushed position, don't wait anymore.
+		 * If postmaster asked us to stop, don't wait anymore.
 		 *
 		 * It's important to do this check after the recomputation of
 		 * RecentFlushPtr, so we can send all remaining data before shutting
 		 * down.
 		 */
 		if (got_STOPPING)
-		{
-			if (NeedToWaitForStandbys(RecentFlushPtr, &wait_event))
-				wait_for_standby_at_stop = true;
-			else
-				break;
-		}
+			break;
 
 		/*
 		 * We only send regular messages to the client for full decoded
@@ -1908,18 +1813,11 @@ WalSndWaitForWal(XLogRecPtr loc)
 			!waiting_for_ping_response)
 			WalSndKeepalive(false, InvalidXLogRecPtr);
 
-		/*
-		 * Exit the loop if already caught up and doesn't need to wait for
-		 * standby slots.
-		 */
-		if (!wait_for_standby_at_stop &&
-			!NeedToWaitForWal(loc, RecentFlushPtr, &wait_event))
+		/* check whether we're done */
+		if (loc <= RecentFlushPtr)
 			break;
 
-		/*
-		 * Waiting for new WAL or waiting for standbys to catch up. Since we
-		 * need to wait, we're now caught up.
-		 */
+		/* Waiting for new WAL. Since we need to wait, we're now caught up. */
 		WalSndCaughtUp = true;
 
 		/*
@@ -1957,9 +1855,7 @@ WalSndWaitForWal(XLogRecPtr loc)
 		if (pq_is_send_pending())
 			wakeEvents |= WL_SOCKET_WRITEABLE;
 
-		Assert(wait_event != 0);
-
-		WalSndWait(wakeEvents, sleeptime, wait_event);
+		WalSndWait(wakeEvents, sleeptime, WAIT_EVENT_WAL_SENDER_WAIT_FOR_WAL);
 	}
 
 	/* reactivate latch so WalSndLoop knows to continue */
@@ -2369,7 +2265,6 @@ PhysicalConfirmReceivedLocation(XLogRecPtr lsn)
 	{
 		ReplicationSlotMarkDirty();
 		ReplicationSlotsComputeRequiredLSN();
-		PhysicalWakeupLogicalWalSnd();
 	}
 
 	/*
@@ -3493,7 +3388,7 @@ WalSndDone(WalSndSendDataCallback send_data)
  * Returns the latest point in WAL that has been safely flushed to disk.
  * This should only be called when in recovery.
  *
- * This is called either by cascading walsender to find WAL position to be sent
+ * This is called either by cascading walsender to find WAL postion to be sent
  * to a cascaded standby or by slot synchronization operation to validate remote
  * slot's lsn before syncing it locally.
  *
@@ -3643,7 +3538,6 @@ WalSndShmemInit(void)
 
 		ConditionVariableInit(&WalSndCtl->wal_flush_cv);
 		ConditionVariableInit(&WalSndCtl->wal_replay_cv);
-		ConditionVariableInit(&WalSndCtl->wal_confirm_rcv_cv);
 	}
 }
 
@@ -3713,14 +3607,8 @@ WalSndWait(uint32 socket_events, long timeout, uint32 wait_event)
 	 *
 	 * And, we use separate shared memory CVs for physical and logical
 	 * walsenders for selective wake ups, see WalSndWakeup() for more details.
-	 *
-	 * If the wait event is WAIT_FOR_STANDBY_CONFIRMATION, wait on another CV
-	 * until awakened by physical walsenders after the walreceiver confirms
-	 * the receipt of the LSN.
 	 */
-	if (wait_event == WAIT_EVENT_WAIT_FOR_STANDBY_CONFIRMATION)
-		ConditionVariablePrepareToSleep(&WalSndCtl->wal_confirm_rcv_cv);
-	else if (MyWalSnd->kind == REPLICATION_KIND_PHYSICAL)
+	if (MyWalSnd->kind == REPLICATION_KIND_PHYSICAL)
 		ConditionVariablePrepareToSleep(&WalSndCtl->wal_flush_cv);
 	else if (MyWalSnd->kind == REPLICATION_KIND_LOGICAL)
 		ConditionVariablePrepareToSleep(&WalSndCtl->wal_replay_cv);

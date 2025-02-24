@@ -68,34 +68,6 @@ $node->pgbench(
 		  "CREATE TYPE pg_temp.e AS ENUM ($labels); DROP TYPE pg_temp.e;"
 	});
 
-# Test inplace updates from VACUUM concurrent with heap_update from GRANT.
-# The PROC_IN_VACUUM environment can't finish MVCC table scans consistently,
-# so this fails rarely.  To reproduce consistently, add a sleep after
-# GetCatalogSnapshot(non-catalog-rel).
-Test::More->builder->todo_start('PROC_IN_VACUUM scan breakage');
-$node->safe_psql('postgres', 'CREATE TABLE ddl_target ()');
-$node->pgbench(
-	'--no-vacuum --client=5 --protocol=prepared --transactions=50',
-	0,
-	[qr{processed: 250/250}],
-	[qr{^$}],
-	'concurrent GRANT/VACUUM',
-	{
-		'001_pgbench_grant@9' => q(
-			DO $$
-			BEGIN
-				PERFORM pg_advisory_xact_lock(42);
-				FOR i IN 1 .. 10 LOOP
-					GRANT SELECT ON ddl_target TO PUBLIC;
-					REVOKE SELECT ON ddl_target FROM PUBLIC;
-				END LOOP;
-			END
-			$$;
-),
-		'001_pgbench_vacuum_ddl_target@1' => "VACUUM ddl_target;",
-	});
-Test::More->builder->todo_end;
-
 # Trigger various connection errors
 $node->pgbench(
 	'no-such-database',
@@ -666,56 +638,6 @@ SELECT :v0, :v1, :v2, :v3;
              permute(:size-6, :size, 5432) = 8648551549198294572 and \
              permute(:size-7, :size, 5432) = 4542876852200565125)
 }
-	});
-
-# test nested \if constructs
-$node->pgbench(
-	'--no-vacuum --client=1 --exit-on-abort --transactions=1',
-	0,
-	[qr{actually processed}],
-	[qr{^$}],
-	'nested ifs',
-	{
-		'pgbench_nested_if' => q(
-			\if false
-				SELECT 1 / 0;
-				\if true
-					SELECT 1 / 0;
-				\elif true
-					SELECT 1 / 0;
-				\else
-					SELECT 1 / 0;
-				\endif
-				SELECT 1 / 0;
-			\elif false
-				\if true
-					SELECT 1 / 0;
-				\elif true
-					SELECT 1 / 0;
-				\else
-					SELECT 1 / 0;
-				\endif
-			\else
-				\if false
-					SELECT 1 / 0;
-				\elif false
-					SELECT 1 / 0;
-				\else
-					SELECT 'correct';
-				\endif
-			\endif
-			\if true
-				SELECT 'correct';
-			\else
-				\if true
-					SELECT 1 / 0;
-				\elif true
-					SELECT 1 / 0;
-				\else
-					SELECT 1 / 0;
-				\endif
-			\endif
-		)
 	});
 
 # random determinism when seeded
@@ -1430,7 +1352,7 @@ my $err_pattern =
   . "\\1";
 
 $node->pgbench(
-	"-n -c 2 -t 1 --debug --verbose-errors --max-tries 2",
+	"-n -c 2 -t 1 -d --verbose-errors --max-tries 2",
 	0,
 	[
 		qr{processed: 2/2\b},
@@ -1619,13 +1541,18 @@ $node->safe_psql('postgres', 'DROP TABLE first_client_table, xy;');
 
 # Test --exit-on-abort
 $node->safe_psql('postgres',
-	'CREATE TABLE counter(i int); ' . 'INSERT INTO counter VALUES (0);');
+	'CREATE TABLE counter(i int); '.
+	'INSERT INTO counter VALUES (0);'
+);
 
 $node->pgbench(
 	'-t 10 -c 2 -j 2 --exit-on-abort',
 	2,
 	[],
-	[ qr{division by zero}, qr{Run was aborted due to an error in thread} ],
+	[
+		qr{division by zero},
+		qr{Run was aborted due to an error in thread}
+	],
 	'test --exit-on-abort',
 	{
 		'001_exit_on_abort' => q{

@@ -18,6 +18,7 @@ my $node = PostgreSQL::Test::Cluster->new('main');
 $node->init;
 $node->append_conf(
 	'postgresql.conf', qq[
+autovacuum = off # run autovacuum only when to anti wraparound
 autovacuum_naptime = 1s
 # so it's easier to verify the order of operations
 autovacuum_max_workers = 1
@@ -26,25 +27,23 @@ log_autovacuum_min_duration = 0
 $node->start;
 $node->safe_psql('postgres', 'CREATE EXTENSION xid_wraparound');
 
-# Create tables for a few different test scenarios. We disable autovacuum
-# on these tables to run it only to prevent wraparound.
+# Create tables for a few different test scenarios
 $node->safe_psql(
 	'postgres', qq[
-CREATE TABLE large(id serial primary key, data text, filler text default repeat(random()::text, 10))
-   WITH (autovacuum_enabled = off);
+CREATE TABLE large(id serial primary key, data text, filler text default repeat(random()::text, 10));
 INSERT INTO large(data) SELECT generate_series(1,30000);
 
-CREATE TABLE large_trunc(id serial primary key, data text, filler text default repeat(random()::text, 10))
-   WITH (autovacuum_enabled = off);
+CREATE TABLE large_trunc(id serial primary key, data text, filler text default repeat(random()::text, 10));
 INSERT INTO large_trunc(data) SELECT generate_series(1,30000);
 
-CREATE TABLE small(id serial primary key, data text, filler text default repeat(random()::text, 10))
-   WITH (autovacuum_enabled = off);
+CREATE TABLE small(id serial primary key, data text, filler text default repeat(random()::text, 10));
 INSERT INTO small(data) SELECT generate_series(1,15000);
 
-CREATE TABLE small_trunc(id serial primary key, data text, filler text default repeat(random()::text, 10))
-   WITH (autovacuum_enabled = off);
+CREATE TABLE small_trunc(id serial primary key, data text, filler text default repeat(random()::text, 10));
 INSERT INTO small_trunc(data) SELECT generate_series(1,15000);
+
+CREATE TABLE autovacuum_disabled(id serial primary key, data text) WITH (autovacuum_enabled=false);
+INSERT INTO autovacuum_disabled(data) SELECT generate_series(1,1000);
 ]);
 
 # Bump the query timeout to avoid false negatives on slow test systems.
@@ -64,6 +63,7 @@ $background_psql->query_safe(
 	DELETE FROM large_trunc WHERE id > 10000;
 	DELETE FROM small WHERE id % 2 = 0;
 	DELETE FROM small_trunc WHERE id > 1000;
+	DELETE FROM autovacuum_disabled WHERE id % 2 = 0;
 ]);
 
 # Consume 2 billion XIDs, to get us very close to wraparound
@@ -107,18 +107,20 @@ $ret = $node->safe_psql(
 	'postgres', qq[
 SELECT relname, age(relfrozenxid) > current_setting('autovacuum_freeze_max_age')::int
 FROM pg_class
-WHERE relname IN ('large', 'large_trunc', 'small', 'small_trunc')
+WHERE relname IN ('large', 'large_trunc', 'small', 'small_trunc', 'autovacuum_disabled')
 ORDER BY 1
 ]);
 
-is( $ret, "large|f
+is( $ret, "autovacuum_disabled|f
+large|f
 large_trunc|f
 small|f
 small_trunc|f", "all tables are vacuumed");
 
 # Check if vacuum failsafe was triggered for each table.
 my $log_contents = slurp_file($node->logfile, $log_offset);
-foreach my $tablename ('large', 'large_trunc', 'small', 'small_trunc')
+foreach my $tablename ('large', 'large_trunc', 'small', 'small_trunc',
+	'autovacuum_disabled')
 {
 	like(
 		$log_contents,

@@ -14,7 +14,7 @@ PGFILEDESC = "seg - line segment data type"
 
 HEADERS = segdata.h
 
-REGRESS = security seg partition
+REGRESS = security seg
 
 EXTRA_CLEAN = segparse.h segparse.c segscan.c
 

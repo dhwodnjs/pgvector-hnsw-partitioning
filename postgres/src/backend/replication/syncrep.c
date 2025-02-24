@@ -81,8 +81,10 @@
 #include "replication/syncrep.h"
 #include "replication/walsender.h"
 #include "replication/walsender_private.h"
+#include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/builtins.h"
 #include "utils/guc_hooks.h"
 #include "utils/ps_status.h"
 
@@ -1010,7 +1012,7 @@ check_synchronous_standby_names(char **newval, void **extra, GucSource source)
 			if (syncrep_parse_error_msg)
 				GUC_check_errdetail("%s", syncrep_parse_error_msg);
 			else
-				GUC_check_errdetail("\"synchronous_standby_names\" parser failed");
+				GUC_check_errdetail("synchronous_standby_names parser failed");
 			return false;
 		}
 

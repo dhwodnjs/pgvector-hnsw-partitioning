@@ -202,7 +202,7 @@ struct PGPROC
 		LocalTransactionId lxid;	/* local id of top-level transaction
 									 * currently * being executed by this
 									 * proc, if running; else
-									 * InvalidLocalTransactionId */
+									 * InvalidLocaltransactionId */
 	}			vxid;
 
 	/* These fields are zero while a backend is still starting up: */
@@ -212,7 +212,7 @@ struct PGPROC
 	Oid			tempNamespaceId;	/* OID of temp schema this backend is
 									 * using */
 
-	bool		isBackgroundWorker; /* true if not a regular backend. */
+	bool		isBackgroundWorker; /* true if background worker. */
 
 	/*
 	 * While in hot standby mode, shows that a conflict signal has been sent
@@ -313,6 +313,19 @@ struct PGPROC
 
 extern PGDLLIMPORT PGPROC *MyProc;
 
+/* Proc number of this backend. Equal to GetNumberFromPGProc(MyProc). */
+extern PGDLLIMPORT ProcNumber MyProcNumber;
+
+/* Our parallel session leader, or INVALID_PROC_NUMBER if none */
+extern PGDLLIMPORT ProcNumber ParallelLeaderProcNumber;
+
+/*
+ * The proc number to use for our session's temp relations is normally our own,
+ * but parallel workers should use their leader's ID.
+ */
+#define ProcNumberForTempRelations() \
+	(ParallelLeaderProcNumber == INVALID_PROC_NUMBER ? MyProcNumber : ParallelLeaderProcNumber)
+
 /*
  * There is one ProcGlobal struct for the whole database cluster.
  *
@@ -391,7 +404,7 @@ typedef struct PROC_HDR
 	uint32		allProcCount;
 	/* Head of list of free PGPROC structures */
 	dlist_head	freeProcs;
-	/* Head of list of autovacuum & special worker free PGPROC structures */
+	/* Head of list of autovacuum's free PGPROC structures */
 	dlist_head	autovacFreeProcs;
 	/* Head of list of bgworker free PGPROC structures */
 	dlist_head	bgworkerFreeProcs;
@@ -422,18 +435,8 @@ extern PGDLLIMPORT PGPROC *PreparedXactProcs;
 #define GetNumberFromPGProc(proc) ((proc) - &ProcGlobal->allProcs[0])
 
 /*
- * We set aside some extra PGPROC structures for "special worker" processes,
- * which are full-fledged backends (they can run transactions)
- * but are unique animals that there's never more than one of.
- * Currently there are two such processes: the autovacuum launcher
- * and the slotsync worker.
- */
-#define NUM_SPECIAL_WORKER_PROCS	2
-
-/*
  * We set aside some extra PGPROC structures for auxiliary processes,
- * ie things that aren't full-fledged backends (they cannot run transactions
- * or take heavyweight locks) but need shmem access.
+ * ie things that aren't full-fledged backends but need shmem access.
  *
  * Background writer, checkpointer, WAL writer, WAL summarizer, and archiver
  * run during normal operation.  Startup process and WAL receiver also consume
@@ -468,9 +471,7 @@ extern int	GetStartupBufferPinWaitBufId(void);
 extern bool HaveNFreeProcs(int n, int *nfree);
 extern void ProcReleaseLocks(bool isCommit);
 
-extern ProcWaitStatus ProcSleep(LOCALLOCK *locallock,
-								LockMethod lockMethodTable,
-								bool dontWait);
+extern ProcWaitStatus ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable);
 extern void ProcWakeup(PGPROC *proc, ProcWaitStatus waitStatus);
 extern void ProcLockWakeup(LockMethod lockMethodTable, LOCK *lock);
 extern void CheckDeadLockAlert(void);

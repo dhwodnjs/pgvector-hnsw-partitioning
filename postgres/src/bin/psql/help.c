@@ -176,7 +176,7 @@ slashUsage(unsigned short int pager)
 	HELP0("  \\gx [(OPTIONS)] [FILE] as \\g, but forces expanded output mode\n");
 	HELP0("  \\q                     quit psql\n");
 	HELP0("  \\watch [[i=]SEC] [c=N] [m=MIN]\n"
-		  "                         execute query every SEC seconds, up to N times,\n"
+		  "                         execute query every SEC seconds, up to N times\n"
 		  "                         stop if less than MIN rows are returned\n");
 	HELP0("\n");
 
@@ -294,7 +294,7 @@ slashUsage(unsigned short int pager)
 		  "                         numericlocale|pager|pager_min_lines|recordsep|\n"
 		  "                         recordsep_zero|tableattr|title|tuples_only|\n"
 		  "                         unicode_border_linestyle|unicode_column_linestyle|\n"
-		  "                         unicode_header_linestyle|xheader_width)\n");
+		  "                         unicode_header_linestyle)\n");
 	HELPN("  \\t [on|off]            show only rows (currently %s)\n",
 		  ON(pset.popt.topt.tuples_only));
 	HELP0("  \\T [STRING]            set HTML <table> tag attributes, or unset if none\n");
@@ -494,9 +494,6 @@ helpVariables(unsigned short int pager)
 		  "  unicode_column_linestyle\n"
 		  "  unicode_header_linestyle\n"
 		  "    set the style of Unicode line drawing [single, double]\n");
-	HELP0("  xheader_width\n"
-		  "    set the maximum width of the header for expanded output\n"
-		  "    [full, column, page, integer value]\n");
 
 	HELP0("\nEnvironment variables:\n");
 	HELP0("Usage:\n");

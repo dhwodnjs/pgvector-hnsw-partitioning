@@ -26,10 +26,12 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
+#include "catalog/pg_type.h"
 #include "catalog/toasting.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
-#include "utils/fmgroids.h"
+#include "storage/lock.h"
+#include "utils/builtins.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
@@ -324,7 +326,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 				 list_make2("chunk_id", "chunk_seq"),
 				 BTREE_AM_OID,
 				 rel->rd_rel->reltablespace,
-				 collationIds, opclassIds, NULL, coloptions, NULL, (Datum) 0,
+				 collationIds, opclassIds, NULL, coloptions, (Datum) 0,
 				 INDEX_CREATE_IS_PRIMARY, 0, true, true, NULL);
 
 	table_close(toast_rel, NoLock);
@@ -334,36 +336,21 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 	 */
 	class_rel = table_open(RelationRelationId, RowExclusiveLock);
 
+	reltup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relOid));
+	if (!HeapTupleIsValid(reltup))
+		elog(ERROR, "cache lookup failed for relation %u", relOid);
+
+	((Form_pg_class) GETSTRUCT(reltup))->reltoastrelid = toast_relid;
+
 	if (!IsBootstrapProcessingMode())
 	{
 		/* normal case, use a transactional update */
-		reltup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relOid));
-		if (!HeapTupleIsValid(reltup))
-			elog(ERROR, "cache lookup failed for relation %u", relOid);
-
-		((Form_pg_class) GETSTRUCT(reltup))->reltoastrelid = toast_relid;
-
 		CatalogTupleUpdate(class_rel, &reltup->t_self, reltup);
 	}
 	else
 	{
 		/* While bootstrapping, we cannot UPDATE, so overwrite in-place */
-
-		ScanKeyData key[1];
-		void	   *state;
-
-		ScanKeyInit(&key[0],
-					Anum_pg_class_oid,
-					BTEqualStrategyNumber, F_OIDEQ,
-					ObjectIdGetDatum(relOid));
-		systable_inplace_update_begin(class_rel, ClassOidIndexId, true,
-									  NULL, 1, key, &reltup, &state);
-		if (!HeapTupleIsValid(reltup))
-			elog(ERROR, "cache lookup failed for relation %u", relOid);
-
-		((Form_pg_class) GETSTRUCT(reltup))->reltoastrelid = toast_relid;
-
-		systable_inplace_update_finish(state, reltup);
+		heap_inplace_update(class_rel, reltup);
 	}
 
 	heap_freetuple(reltup);

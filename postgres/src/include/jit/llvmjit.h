@@ -17,12 +17,7 @@
  */
 #ifdef USE_LLVM
 
-#include "jit/llvmjit_backport.h"
-
 #include <llvm-c/Types.h>
-#ifdef USE_LLVM_BACKPORT_SECTION_MEMORY_MANAGER
-#include <llvm-c/OrcEE.h>
-#endif
 
 
 /*
@@ -43,9 +38,6 @@ extern "C"
 typedef struct LLVMJitContext
 {
 	JitContext	base;
-
-	/* used to ensure cleanup of context */
-	ResourceOwner resowner;
 
 	/* number of modules created */
 	size_t		module_generation;
@@ -140,9 +132,6 @@ extern LLVMValueRef slot_compile_deform(struct LLVMJitContext *context, TupleDes
  */
 extern LLVMTypeRef LLVMGetFunctionReturnType(LLVMValueRef r);
 extern LLVMTypeRef LLVMGetFunctionType(LLVMValueRef r);
-#ifdef USE_LLVM_BACKPORT_SECTION_MEMORY_MANAGER
-extern LLVMOrcObjectLayerRef LLVMOrcCreateRTDyldObjectLinkingLayerWithSafeSectionMemoryManager(LLVMOrcExecutionSessionRef ES);
-#endif
 
 #ifdef __cplusplus
 } /* extern "C" */

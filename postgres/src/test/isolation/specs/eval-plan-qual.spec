@@ -76,8 +76,6 @@ setup		{ BEGIN ISOLATION LEVEL READ COMMITTED; }
 step wx1	{ UPDATE accounts SET balance = balance - 200 WHERE accountid = 'checking' RETURNING balance; }
 # wy1 then wy2 checks the case where quals pass then fail
 step wy1	{ UPDATE accounts SET balance = balance + 500 WHERE accountid = 'checking' RETURNING balance; }
-# wx2 then wb1 checks the case of re-fetching up-to-date values for DELETE ... RETURNING ...
-step wb1	{ DELETE FROM accounts WHERE balance = 600 RETURNING *; }
 
 step wxext1	{ UPDATE accounts_ext SET balance = balance - 200 WHERE accountid = 'checking' RETURNING balance; }
 step tocds1	{ UPDATE accounts SET accountid = 'cds' WHERE accountid = 'checking'; }
@@ -194,12 +192,6 @@ step simplepartupdate_noroute {
 	update parttbl set b = 2 where c = 1 returning *;
 }
 
-# test system class LockTuple()
-
-step sys1	{
-	UPDATE pg_class SET reltuples = 123 WHERE oid = 'accounts'::regclass;
-}
-
 
 session s2
 setup		{ BEGIN ISOLATION LEVEL READ COMMITTED; }
@@ -288,18 +280,6 @@ step wnested2 {
     );
 }
 
-step sysupd2	{
-	UPDATE pg_class SET reltuples = reltuples * 2
-	WHERE oid = 'accounts'::regclass;
-}
-
-step sysmerge2	{
-	MERGE INTO pg_class
-	USING (SELECT 'accounts'::regclass AS o) j
-	ON o = oid
-	WHEN MATCHED THEN UPDATE SET reltuples = reltuples * 2;
-}
-
 step c2	{ COMMIT; }
 step r2	{ ROLLBACK; }
 
@@ -373,8 +353,6 @@ permutation wx1 delwcte c1 c2 read
 # test that a delete to a self-modified row throws error when
 # previously updated by a different cid
 permutation wx1 delwctefail c1 c2 read
-# test that a delete re-fetches up-to-date values for returning clause
-permutation read wx2 wb1 c2 c1 read
 
 permutation upsert1 upsert2 c1 c2 read
 permutation readp1 writep1 readp2 c1 c2
@@ -398,6 +376,3 @@ permutation simplepartupdate complexpartupdate c1 c2 read_part
 permutation simplepartupdate_route1to2 complexpartupdate_route_err1 c1 c2 read_part
 permutation simplepartupdate_noroute complexpartupdate_route c1 c2 read_part
 permutation simplepartupdate_noroute complexpartupdate_doesnt_route c1 c2 read_part
-
-permutation sys1 sysupd2 c1 c2
-permutation sys1 sysmerge2 c1 c2

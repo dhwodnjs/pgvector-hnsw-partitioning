@@ -18,6 +18,7 @@
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
 #include "nodes/execnodes.h"
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/pathnodes.h"
 #include "utils/builtins.h"
@@ -65,9 +66,6 @@ exprType(const Node *expr)
 			break;
 		case T_WindowFunc:
 			type = ((const WindowFunc *) expr)->wintype;
-			break;
-		case T_MergeSupportFunc:
-			type = ((const MergeSupportFunc *) expr)->msftype;
 			break;
 		case T_SubscriptingRef:
 			type = ((const SubscriptingRef *) expr)->refrestype;
@@ -236,20 +234,6 @@ exprType(const Node *expr)
 		case T_JsonIsPredicate:
 			type = BOOLOID;
 			break;
-		case T_JsonExpr:
-			{
-				const JsonExpr *jexpr = (const JsonExpr *) expr;
-
-				type = jexpr->returning->typid;
-				break;
-			}
-		case T_JsonBehavior:
-			{
-				const JsonBehavior *behavior = (const JsonBehavior *) expr;
-
-				type = exprType(behavior->expr);
-				break;
-			}
 		case T_NullTest:
 			type = BOOLOID;
 			break;
@@ -509,20 +493,6 @@ exprTypmod(const Node *expr)
 			return exprTypmod((Node *) ((const JsonValueExpr *) expr)->formatted_expr);
 		case T_JsonConstructorExpr:
 			return ((const JsonConstructorExpr *) expr)->returning->typmod;
-		case T_JsonExpr:
-			{
-				const JsonExpr *jexpr = (const JsonExpr *) expr;
-
-				return jexpr->returning->typmod;
-			}
-			break;
-		case T_JsonBehavior:
-			{
-				const JsonBehavior *behavior = (const JsonBehavior *) expr;
-
-				return exprTypmod(behavior->expr);
-			}
-			break;
 		case T_CoerceToDomain:
 			return ((const CoerceToDomain *) expr)->resulttypmod;
 		case T_CoerceToDomainValue:
@@ -840,9 +810,6 @@ exprCollation(const Node *expr)
 		case T_WindowFunc:
 			coll = ((const WindowFunc *) expr)->wincollid;
 			break;
-		case T_MergeSupportFunc:
-			coll = ((const MergeSupportFunc *) expr)->msfcollid;
-			break;
 		case T_SubscriptingRef:
 			coll = ((const SubscriptingRef *) expr)->refcollid;
 			break;
@@ -1002,23 +969,6 @@ exprCollation(const Node *expr)
 			/* IS JSON's result is boolean ... */
 			coll = InvalidOid;	/* ... so it has no collation */
 			break;
-		case T_JsonExpr:
-			{
-				const JsonExpr *jsexpr = (JsonExpr *) expr;
-
-				coll = jsexpr->collation;
-			}
-			break;
-		case T_JsonBehavior:
-			{
-				const JsonBehavior *behavior = (JsonBehavior *) expr;
-
-				if (behavior->expr)
-					coll = exprCollation(behavior->expr);
-				else
-					coll = InvalidOid;
-			}
-			break;
 		case T_NullTest:
 			/* NullTest's result is boolean ... */
 			coll = InvalidOid;	/* ... so it has no collation */
@@ -1134,9 +1084,6 @@ exprSetCollation(Node *expr, Oid collation)
 			break;
 		case T_WindowFunc:
 			((WindowFunc *) expr)->wincollid = collation;
-			break;
-		case T_MergeSupportFunc:
-			((MergeSupportFunc *) expr)->msfcollid = collation;
 			break;
 		case T_SubscriptingRef:
 			((SubscriptingRef *) expr)->refcollid = collation;
@@ -1257,21 +1204,6 @@ exprSetCollation(Node *expr, Oid collation)
 			break;
 		case T_JsonIsPredicate:
 			Assert(!OidIsValid(collation)); /* result is always boolean */
-			break;
-		case T_JsonExpr:
-			{
-				JsonExpr   *jexpr = (JsonExpr *) expr;
-
-				jexpr->collation = collation;
-			}
-			break;
-		case T_JsonBehavior:
-			{
-				JsonBehavior *behavior = (JsonBehavior *) expr;
-
-				if (behavior->expr)
-					exprSetCollation(behavior->expr, collation);
-			}
 			break;
 		case T_NullTest:
 			/* NullTest's result is boolean ... */
@@ -1410,9 +1342,6 @@ exprLocation(const Node *expr)
 		case T_WindowFunc:
 			/* function name should always be the first thing */
 			loc = ((const WindowFunc *) expr)->location;
-			break;
-		case T_MergeSupportFunc:
-			loc = ((const MergeSupportFunc *) expr)->location;
 			break;
 		case T_SubscriptingRef:
 			/* just use container argument's location */
@@ -1578,18 +1507,6 @@ exprLocation(const Node *expr)
 			break;
 		case T_JsonIsPredicate:
 			loc = ((const JsonIsPredicate *) expr)->location;
-			break;
-		case T_JsonExpr:
-			{
-				const JsonExpr *jsexpr = (const JsonExpr *) expr;
-
-				/* consider both function name and leftmost arg */
-				loc = leftmostLoc(jsexpr->location,
-								  exprLocation(jsexpr->formatted_expr));
-			}
-			break;
-		case T_JsonBehavior:
-			loc = exprLocation(((JsonBehavior *) expr)->expr);
 			break;
 		case T_NullTest:
 			{
@@ -2118,7 +2035,6 @@ expression_tree_walker_impl(Node *node,
 		case T_RangeTblRef:
 		case T_SortGroupClause:
 		case T_CTESearchClause:
-		case T_MergeSupportFunc:
 			/* primitive node types with no expression subnodes */
 			break;
 		case T_WithCheckOption:
@@ -2156,16 +2072,6 @@ expression_tree_walker_impl(Node *node,
 				if (LIST_WALK(expr->args))
 					return true;
 				if (WALK(expr->aggfilter))
-					return true;
-				if (WALK(expr->runCondition))
-					return true;
-			}
-			break;
-		case T_WindowFuncRunCondition:
-			{
-				WindowFuncRunCondition *expr = (WindowFuncRunCondition *) node;
-
-				if (WALK(expr->arg))
 					return true;
 			}
 			break;
@@ -2354,31 +2260,6 @@ expression_tree_walker_impl(Node *node,
 			break;
 		case T_JsonIsPredicate:
 			return WALK(((JsonIsPredicate *) node)->expr);
-		case T_JsonExpr:
-			{
-				JsonExpr   *jexpr = (JsonExpr *) node;
-
-				if (WALK(jexpr->formatted_expr))
-					return true;
-				if (WALK(jexpr->path_spec))
-					return true;
-				if (WALK(jexpr->passing_values))
-					return true;
-				/* we assume walker doesn't care about passing_names */
-				if (WALK(jexpr->on_empty))
-					return true;
-				if (WALK(jexpr->on_error))
-					return true;
-			}
-			break;
-		case T_JsonBehavior:
-			{
-				JsonBehavior *behavior = (JsonBehavior *) node;
-
-				if (WALK(behavior->expr))
-					return true;
-			}
-			break;
 		case T_NullTest:
 			return WALK(((NullTest *) node)->arg);
 		case T_BooleanTest:
@@ -2401,6 +2282,8 @@ expression_tree_walker_impl(Node *node,
 				if (WALK(wc->startOffset))
 					return true;
 				if (WALK(wc->endOffset))
+					return true;
+				if (WALK(wc->runCondition))
 					return true;
 			}
 			break;
@@ -2650,10 +2533,6 @@ expression_tree_walker_impl(Node *node,
 					return true;
 				if (WALK(tf->coldefexprs))
 					return true;
-				if (WALK(tf->colvalexprs))
-					return true;
-				if (WALK(tf->passingvalexprs))
-					return true;
 			}
 			break;
 		default:
@@ -2705,8 +2584,6 @@ query_tree_walker_impl(Query *query,
 		return true;
 	if (WALK(query->mergeActionList))
 		return true;
-	if (WALK(query->mergeJoinCondition))
-		return true;
 	if (WALK(query->returningList))
 		return true;
 	if (WALK(query->jointree))
@@ -2751,6 +2628,8 @@ query_tree_walker_impl(Query *query,
 			if (WALK(wc->startOffset))
 				return true;
 			if (WALK(wc->endOffset))
+				return true;
+			if (WALK(wc->runCondition))
 				return true;
 		}
 	}
@@ -2990,7 +2869,6 @@ expression_tree_mutator_impl(Node *node,
 		case T_RangeTblRef:
 		case T_SortGroupClause:
 		case T_CTESearchClause:
-		case T_MergeSupportFunc:
 			return (Node *) copyObject(node);
 		case T_WithCheckOption:
 			{
@@ -3048,16 +2926,6 @@ expression_tree_mutator_impl(Node *node,
 				FLATCOPY(newnode, wfunc, WindowFunc);
 				MUTATE(newnode->args, wfunc->args, List *);
 				MUTATE(newnode->aggfilter, wfunc->aggfilter, Expr *);
-				return (Node *) newnode;
-			}
-			break;
-		case T_WindowFuncRunCondition:
-			{
-				WindowFuncRunCondition *wfuncrc = (WindowFuncRunCondition *) node;
-				WindowFuncRunCondition *newnode;
-
-				FLATCOPY(newnode, wfuncrc, WindowFuncRunCondition);
-				MUTATE(newnode->arg, wfuncrc->arg, Expr *);
 				return (Node *) newnode;
 			}
 			break;
@@ -3395,31 +3263,6 @@ expression_tree_mutator_impl(Node *node,
 
 				return (Node *) newnode;
 			}
-		case T_JsonExpr:
-			{
-				JsonExpr   *jexpr = (JsonExpr *) node;
-				JsonExpr   *newnode;
-
-				FLATCOPY(newnode, jexpr, JsonExpr);
-				MUTATE(newnode->formatted_expr, jexpr->formatted_expr, Node *);
-				MUTATE(newnode->path_spec, jexpr->path_spec, Node *);
-				MUTATE(newnode->passing_values, jexpr->passing_values, List *);
-				/* assume mutator does not care about passing_names */
-				MUTATE(newnode->on_empty, jexpr->on_empty, JsonBehavior *);
-				MUTATE(newnode->on_error, jexpr->on_error, JsonBehavior *);
-				return (Node *) newnode;
-			}
-			break;
-		case T_JsonBehavior:
-			{
-				JsonBehavior *behavior = (JsonBehavior *) node;
-				JsonBehavior *newnode;
-
-				FLATCOPY(newnode, behavior, JsonBehavior);
-				MUTATE(newnode->expr, behavior->expr, Node *);
-				return (Node *) newnode;
-			}
-			break;
 		case T_NullTest:
 			{
 				NullTest   *ntest = (NullTest *) node;
@@ -3473,6 +3316,7 @@ expression_tree_mutator_impl(Node *node,
 				MUTATE(newnode->orderClause, wc->orderClause, List *);
 				MUTATE(newnode->startOffset, wc->startOffset, Node *);
 				MUTATE(newnode->endOffset, wc->endOffset, Node *);
+				MUTATE(newnode->runCondition, wc->runCondition, List *);
 				return (Node *) newnode;
 			}
 			break;
@@ -3712,8 +3556,6 @@ expression_tree_mutator_impl(Node *node,
 				MUTATE(newnode->rowexpr, tf->rowexpr, Node *);
 				MUTATE(newnode->colexprs, tf->colexprs, List *);
 				MUTATE(newnode->coldefexprs, tf->coldefexprs, List *);
-				MUTATE(newnode->colvalexprs, tf->colvalexprs, List *);
-				MUTATE(newnode->passingvalexprs, tf->passingvalexprs, List *);
 				return (Node *) newnode;
 			}
 			break;
@@ -3766,7 +3608,6 @@ query_tree_mutator_impl(Query *query,
 	MUTATE(query->withCheckOptions, query->withCheckOptions, List *);
 	MUTATE(query->onConflict, query->onConflict, OnConflictExpr *);
 	MUTATE(query->mergeActionList, query->mergeActionList, List *);
-	MUTATE(query->mergeJoinCondition, query->mergeJoinCondition, Node *);
 	MUTATE(query->returningList, query->returningList, List *);
 	MUTATE(query->jointree, query->jointree, FromExpr *);
 	MUTATE(query->setOperations, query->setOperations, Node *);
@@ -3805,6 +3646,7 @@ query_tree_mutator_impl(Query *query,
 			FLATCOPY(newnode, wc, WindowClause);
 			MUTATE(newnode->startOffset, wc->startOffset, Node *);
 			MUTATE(newnode->endOffset, wc->endOffset, Node *);
+			MUTATE(newnode->runCondition, wc->runCondition, List *);
 
 			resultlist = lappend(resultlist, (Node *) newnode);
 		}
@@ -3991,7 +3833,6 @@ raw_expression_tree_walker_impl(Node *node,
 		case T_ParamRef:
 		case T_A_Const:
 		case T_A_Star:
-		case T_MergeSupportFunc:
 			/* primitive node types with no subnodes */
 			break;
 		case T_Alias:
@@ -4110,66 +3951,6 @@ raw_expression_tree_walker_impl(Node *node,
 			break;
 		case T_JsonIsPredicate:
 			return WALK(((JsonIsPredicate *) node)->expr);
-		case T_JsonArgument:
-			return WALK(((JsonArgument *) node)->val);
-		case T_JsonFuncExpr:
-			{
-				JsonFuncExpr *jfe = (JsonFuncExpr *) node;
-
-				if (WALK(jfe->context_item))
-					return true;
-				if (WALK(jfe->pathspec))
-					return true;
-				if (WALK(jfe->passing))
-					return true;
-				if (WALK(jfe->output))
-					return true;
-				if (WALK(jfe->on_empty))
-					return true;
-				if (WALK(jfe->on_error))
-					return true;
-			}
-			break;
-		case T_JsonBehavior:
-			{
-				JsonBehavior *jb = (JsonBehavior *) node;
-
-				if (WALK(jb->expr))
-					return true;
-			}
-			break;
-		case T_JsonTable:
-			{
-				JsonTable  *jt = (JsonTable *) node;
-
-				if (WALK(jt->context_item))
-					return true;
-				if (WALK(jt->pathspec))
-					return true;
-				if (WALK(jt->passing))
-					return true;
-				if (WALK(jt->columns))
-					return true;
-				if (WALK(jt->on_error))
-					return true;
-			}
-			break;
-		case T_JsonTableColumn:
-			{
-				JsonTableColumn *jtc = (JsonTableColumn *) node;
-
-				if (WALK(jtc->typeName))
-					return true;
-				if (WALK(jtc->on_empty))
-					return true;
-				if (WALK(jtc->on_error))
-					return true;
-				if (WALK(jtc->columns))
-					return true;
-			}
-			break;
-		case T_JsonTablePathSpec:
-			return WALK(((JsonTablePathSpec *) node)->string);
 		case T_NullTest:
 			return WALK(((NullTest *) node)->arg);
 		case T_BooleanTest:
@@ -4271,8 +4052,6 @@ raw_expression_tree_walker_impl(Node *node,
 				if (WALK(stmt->joinCondition))
 					return true;
 				if (WALK(stmt->mergeWhenClauses))
-					return true;
-				if (WALK(stmt->returningList))
 					return true;
 				if (WALK(stmt->withClause))
 					return true;

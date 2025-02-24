@@ -13,16 +13,20 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/transam.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "libpq/pqformat.h"
 #include "miscadmin.h"
 #include "utils/builtins.h"
+#include "utils/date.h"
+#include "utils/datetime.h"
 #include "utils/json.h"
 #include "utils/jsonb.h"
 #include "utils/jsonfuncs.h"
 #include "utils/lsyscache.h"
+#include "utils/syscache.h"
 #include "utils/typcache.h"
 
 typedef struct JsonbInState
@@ -133,7 +137,8 @@ jsonb_send(PG_FUNCTION_ARGS)
 	pq_begintypsend(&buf);
 	pq_sendint8(&buf, version);
 	pq_sendtext(&buf, jtext->data, jtext->len);
-	destroyStringInfo(jtext);
+	pfree(jtext->data);
+	pfree(jtext);
 
 	PG_RETURN_BYTEA_P(pq_endtypsend(&buf));
 }
@@ -2157,35 +2162,4 @@ jsonb_float8(PG_FUNCTION_ARGS)
 	PG_FREE_IF_COPY(in, 0);
 
 	PG_RETURN_DATUM(retValue);
-}
-
-/*
- * Convert jsonb to a C-string stripping quotes from scalar strings.
- */
-char *
-JsonbUnquote(Jsonb *jb)
-{
-	if (JB_ROOT_IS_SCALAR(jb))
-	{
-		JsonbValue	v;
-
-		(void) JsonbExtractScalar(&jb->root, &v);
-
-		if (v.type == jbvString)
-			return pnstrdup(v.val.string.val, v.val.string.len);
-		else if (v.type == jbvBool)
-			return pstrdup(v.val.boolean ? "true" : "false");
-		else if (v.type == jbvNumeric)
-			return DatumGetCString(DirectFunctionCall1(numeric_out,
-													   PointerGetDatum(v.val.numeric)));
-		else if (v.type == jbvNull)
-			return pstrdup("null");
-		else
-		{
-			elog(ERROR, "unrecognized jsonb value type %d", v.type);
-			return NULL;
-		}
-	}
-	else
-		return JsonbToCString(NULL, &jb->root, VARSIZE(jb));
 }

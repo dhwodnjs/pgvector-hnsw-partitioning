@@ -20,8 +20,7 @@ GetOptions('outdir:s' => \$output_path, 'version:s' => \$version_str);
 
 my @version_parts = split /\./, $version_str;
 
-my $unicode_version_str = sprintf "%d.%d", $version_parts[0],
-  $version_parts[1];
+my $unicode_version_str = sprintf "%d.%d", $version_parts[0], $version_parts[1];
 
 my $output_file = "$output_path/unicode_version.h";
 

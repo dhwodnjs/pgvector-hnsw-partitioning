@@ -28,6 +28,7 @@ static void print_db_infos(DbInfoArr *db_arr);
 static void print_rel_infos(RelInfoArr *rel_arr);
 static void print_slot_infos(LogicalSlotInfoArr *slot_arr);
 static void get_old_cluster_logical_slot_infos(DbInfo *dbinfo, bool live_check);
+static void get_db_subscription_count(DbInfo *dbinfo);
 
 
 /*
@@ -292,8 +293,15 @@ get_db_rel_and_slot_infos(ClusterInfo *cluster, bool live_check)
 
 		get_rel_infos(cluster, pDbInfo);
 
+		/*
+		 * Retrieve the logical replication slots infos and the subscriptions
+		 * count for the old cluster.
+		 */
 		if (cluster == &old_cluster)
+		{
 			get_old_cluster_logical_slot_infos(pDbInfo, live_check);
+			get_db_subscription_count(pDbInfo);
+		}
 	}
 
 	if (cluster == &old_cluster)
@@ -320,24 +328,18 @@ get_template0_info(ClusterInfo *cluster)
 	int			i_datlocprovider;
 	int			i_datcollate;
 	int			i_datctype;
-	int			i_datlocale;
+	int			i_daticulocale;
 
-	if (GET_MAJOR_VERSION(cluster->major_version) >= 1700)
+	if (GET_MAJOR_VERSION(cluster->major_version) >= 1500)
 		dbres = executeQueryOrDie(conn,
 								  "SELECT encoding, datlocprovider, "
-								  "       datcollate, datctype, datlocale "
-								  "FROM	pg_catalog.pg_database "
-								  "WHERE datname='template0'");
-	else if (GET_MAJOR_VERSION(cluster->major_version) >= 1500)
-		dbres = executeQueryOrDie(conn,
-								  "SELECT encoding, datlocprovider, "
-								  "       datcollate, datctype, daticulocale AS datlocale "
+								  "       datcollate, datctype, daticulocale "
 								  "FROM	pg_catalog.pg_database "
 								  "WHERE datname='template0'");
 	else
 		dbres = executeQueryOrDie(conn,
 								  "SELECT encoding, 'c' AS datlocprovider, "
-								  "       datcollate, datctype, NULL AS datlocale "
+								  "       datcollate, datctype, NULL AS daticulocale "
 								  "FROM	pg_catalog.pg_database "
 								  "WHERE datname='template0'");
 
@@ -351,16 +353,16 @@ get_template0_info(ClusterInfo *cluster)
 	i_datlocprovider = PQfnumber(dbres, "datlocprovider");
 	i_datcollate = PQfnumber(dbres, "datcollate");
 	i_datctype = PQfnumber(dbres, "datctype");
-	i_datlocale = PQfnumber(dbres, "datlocale");
+	i_daticulocale = PQfnumber(dbres, "daticulocale");
 
 	locale->db_encoding = atoi(PQgetvalue(dbres, 0, i_datencoding));
 	locale->db_collprovider = PQgetvalue(dbres, 0, i_datlocprovider)[0];
 	locale->db_collate = pg_strdup(PQgetvalue(dbres, 0, i_datcollate));
 	locale->db_ctype = pg_strdup(PQgetvalue(dbres, 0, i_datctype));
-	if (PQgetisnull(dbres, 0, i_datlocale))
-		locale->db_locale = NULL;
+	if (PQgetisnull(dbres, 0, i_daticulocale))
+		locale->db_iculocale = NULL;
 	else
-		locale->db_locale = pg_strdup(PQgetvalue(dbres, 0, i_datlocale));
+		locale->db_iculocale = pg_strdup(PQgetvalue(dbres, 0, i_daticulocale));
 
 	cluster->template0 = locale;
 
@@ -390,15 +392,12 @@ get_db_infos(ClusterInfo *cluster)
 
 	snprintf(query, sizeof(query),
 			 "SELECT d.oid, d.datname, d.encoding, d.datcollate, d.datctype, ");
-	if (GET_MAJOR_VERSION(cluster->major_version) >= 1700)
+	if (GET_MAJOR_VERSION(cluster->major_version) < 1500)
 		snprintf(query + strlen(query), sizeof(query) - strlen(query),
-				 "datlocprovider, datlocale, ");
-	else if (GET_MAJOR_VERSION(cluster->major_version) >= 1500)
-		snprintf(query + strlen(query), sizeof(query) - strlen(query),
-				 "datlocprovider, daticulocale AS datlocale, ");
+				 "'c' AS datlocprovider, NULL AS daticulocale, ");
 	else
 		snprintf(query + strlen(query), sizeof(query) - strlen(query),
-				 "'c' AS datlocprovider, NULL AS datlocale, ");
+				 "datlocprovider, daticulocale, ");
 	snprintf(query + strlen(query), sizeof(query) - strlen(query),
 			 "pg_catalog.pg_tablespace_location(t.oid) AS spclocation "
 			 "FROM pg_catalog.pg_database d "
@@ -668,13 +667,13 @@ get_old_cluster_logical_slot_infos(DbInfo *dbinfo, bool live_check)
 	 * removed.
 	 */
 	res = executeQueryOrDie(conn, "SELECT slot_name, plugin, two_phase, failover, "
-							"%s as caught_up, invalidation_reason IS NOT NULL as invalid "
+							"%s as caught_up, conflict_reason IS NOT NULL as invalid "
 							"FROM pg_catalog.pg_replication_slots "
 							"WHERE slot_type = 'logical' AND "
 							"database = current_database() AND "
 							"temporary IS FALSE;",
 							live_check ? "FALSE" :
-							"(CASE WHEN invalidation_reason IS NOT NULL THEN FALSE "
+							"(CASE WHEN conflict_reason IS NOT NULL THEN FALSE "
 							"ELSE (SELECT pg_catalog.binary_upgrade_logical_slot_has_caught_up(slot_name)) "
 							"END)");
 
@@ -740,23 +739,52 @@ count_old_cluster_logical_slots(void)
 }
 
 /*
- * get_subscription_count()
+ * get_db_subscription_count()
  *
- * Gets the number of subscriptions in the cluster.
+ * Gets the number of subscriptions in the database referred to by "dbinfo".
+ *
+ * Note: This function will not do anything if the old cluster is pre-PG17.
+ * This is because before that the logical slots are not upgraded, so we will
+ * not be able to upgrade the logical replication clusters completely.
  */
-void
-get_subscription_count(ClusterInfo *cluster)
+static void
+get_db_subscription_count(DbInfo *dbinfo)
 {
 	PGconn	   *conn;
 	PGresult   *res;
 
-	conn = connectToServer(cluster, "template1");
+	/* Subscriptions can be migrated since PG17. */
+	if (GET_MAJOR_VERSION(old_cluster.major_version) < 1700)
+		return;
+
+	conn = connectToServer(&old_cluster, dbinfo->db_name);
 	res = executeQueryOrDie(conn, "SELECT count(*) "
-							"FROM pg_catalog.pg_subscription");
-	cluster->nsubs = atoi(PQgetvalue(res, 0, 0));
+							"FROM pg_catalog.pg_subscription WHERE subdbid = %u",
+							dbinfo->db_oid);
+	dbinfo->nsubs = atoi(PQgetvalue(res, 0, 0));
 
 	PQclear(res);
 	PQfinish(conn);
+}
+
+/*
+ * count_old_cluster_subscriptions()
+ *
+ * Returns the number of subscriptions for all databases.
+ *
+ * Note: this function always returns 0 if the old_cluster is PG16 and prior
+ * because we gather subscriptions only for cluster versions greater than or
+ * equal to PG17. See get_db_subscription_count().
+ */
+int
+count_old_cluster_subscriptions(void)
+{
+	int			nsubs = 0;
+
+	for (int dbnum = 0; dbnum < old_cluster.dbarr.ndbs; dbnum++)
+		nsubs += old_cluster.dbarr.dbs[dbnum].nsubs;
+
+	return nsubs;
 }
 
 static void
@@ -829,13 +857,13 @@ print_slot_infos(LogicalSlotInfoArr *slot_arr)
 	if (slot_arr->nslots == 0)
 		return;
 
-	pg_log(PG_VERBOSE, "Logical replication slots in the database:");
+	pg_log(PG_VERBOSE, "Logical replication slots within the database:");
 
 	for (int slotnum = 0; slotnum < slot_arr->nslots; slotnum++)
 	{
 		LogicalSlotInfo *slot_info = &slot_arr->slots[slotnum];
 
-		pg_log(PG_VERBOSE, "slot name: \"%s\", output plugin: \"%s\", two_phase: %s",
+		pg_log(PG_VERBOSE, "slot_name: \"%s\", plugin: \"%s\", two_phase: %s",
 			   slot_info->slotname,
 			   slot_info->plugin,
 			   slot_info->two_phase ? "true" : "false");

@@ -14,6 +14,8 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "access/sysattr.h"
+#include "catalog/pg_operator.h"
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_statistic_ext_data.h"
 #include "lib/stringinfo.h"
@@ -25,6 +27,7 @@
 #include "parser/parsetree.h"
 #include "statistics/extended_stats_internal.h"
 #include "statistics/statistics.h"
+#include "utils/bytea.h"
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
@@ -32,7 +35,6 @@
 #include "utils/selfuncs.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
-#include "varatt.h"
 
 /* size of the struct header fields (magic, type, ndeps) */
 #define SizeOfHeader		(3 * sizeof(uint32))
@@ -794,7 +796,7 @@ dependency_is_compatible_clause(Node *clause, Index relid, AttrNumber *attnum)
 	}
 	else if (IsA(clause, ScalarArrayOpExpr))
 	{
-		/* If it's a scalar array operator, check for Var IN Const. */
+		/* If it's an scalar array operator, check for Var IN Const. */
 		ScalarArrayOpExpr *expr = (ScalarArrayOpExpr *) clause;
 
 		/*
@@ -1222,7 +1224,7 @@ dependency_is_compatible_expression(Node *clause, Index relid, List *statlist, N
 	}
 	else if (IsA(clause, ScalarArrayOpExpr))
 	{
-		/* If it's a scalar array operator, check for Var IN Const. */
+		/* If it's an scalar array operator, check for Var IN Const. */
 		ScalarArrayOpExpr *expr = (ScalarArrayOpExpr *) clause;
 
 		/*

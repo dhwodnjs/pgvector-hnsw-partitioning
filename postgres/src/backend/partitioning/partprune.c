@@ -52,6 +52,7 @@
 #include "parser/parsetree.h"
 #include "partitioning/partbounds.h"
 #include "partitioning/partprune.h"
+#include "rewrite/rewriteManip.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
 
@@ -1825,7 +1826,7 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 			BooleanTest *new_booltest = (BooleanTest *) copyObject(clause);
 			NullTest   *nulltest;
 
-			/* We expect 'notclause' to only be set to true for BooleanTests */
+			/* We expect 'noteq' to only be set to true for BooleanTests */
 			Assert(IsA(clause, BooleanTest));
 
 			/* reverse the bool test */

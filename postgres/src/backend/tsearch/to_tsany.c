@@ -13,6 +13,7 @@
  */
 #include "postgres.h"
 
+#include "common/jsonapi.h"
 #include "tsearch/ts_cache.h"
 #include "tsearch/ts_utils.h"
 #include "utils/builtins.h"

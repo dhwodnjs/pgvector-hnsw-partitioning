@@ -287,13 +287,6 @@ get_call_result_type(FunctionCallInfo fcinfo,
 /*
  * get_expr_result_type
  *		As above, but work from a calling expression node tree
- *
- * Beware of using this on the funcexpr of a RTE that has a coldeflist.
- * The correct conclusion in such cases is always that the function returns
- * RECORD with the columns defined by the coldeflist fields (funccolnames etc).
- * If it does not, it's the executor's responsibility to catch the discrepancy
- * at runtime; but code processing the query in advance of that point might
- * come to inconsistent conclusions if it checks the actual expression.
  */
 TypeFuncClass
 get_expr_result_type(Node *expr,
@@ -544,8 +537,7 @@ internal_get_result_type(Oid funcid,
  * if noError is true, else throws error.
  *
  * This is a simpler version of get_expr_result_type() for use when the caller
- * is only interested in determinate rowtype results.  As with that function,
- * beware of using this on the funcexpr of a RTE that has a coldeflist.
+ * is only interested in determinate rowtype results.
  */
 TupleDesc
 get_expr_result_tupdesc(Node *expr, bool noError)

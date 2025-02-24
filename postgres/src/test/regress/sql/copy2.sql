@@ -67,27 +67,19 @@ COPY x from stdin (force_null (a), force_null (b));
 COPY x from stdin (convert_selectively (a), convert_selectively (b));
 COPY x from stdin (encoding 'sql_ascii', encoding 'sql_ascii');
 COPY x from stdin (on_error ignore, on_error ignore);
-COPY x from stdin (log_verbosity default, log_verbosity verbose);
 
 -- incorrect options
-COPY x from stdin (format BINARY, delimiter ',');
-COPY x from stdin (format BINARY, null 'x');
+COPY x to stdin (format BINARY, delimiter ',');
+COPY x to stdin (format BINARY, null 'x');
 COPY x from stdin (format BINARY, on_error ignore);
 COPY x from stdin (on_error unsupported);
-COPY x from stdin (format TEXT, force_quote(a));
-COPY x from stdin (format TEXT, force_quote *);
+COPY x to stdin (format TEXT, force_quote(a));
 COPY x from stdin (format CSV, force_quote(a));
-COPY x from stdin (format CSV, force_quote *);
-COPY x from stdin (format TEXT, force_not_null(a));
-COPY x from stdin (format TEXT, force_not_null *);
-COPY x to stdout (format CSV, force_not_null(a));
-COPY x to stdout (format CSV, force_not_null *);
-COPY x from stdin (format TEXT, force_null(a));
-COPY x from stdin (format TEXT, force_null *);
-COPY x to stdout (format CSV, force_null(a));
-COPY x to stdout (format CSV, force_null *);
-COPY x to stdout (format BINARY, on_error unsupported);
-COPY x from stdin (log_verbosity unsupported);
+COPY x to stdout (format TEXT, force_not_null(a));
+COPY x to stdin (format CSV, force_not_null(a));
+COPY x to stdout (format TEXT, force_null(a));
+COPY x to stdin (format CSV, force_null(a));
+COPY x to stdin (format BINARY, on_error unsupported);
 
 -- too many columns in column list: should fail
 COPY x (a, b, c, d, e, d, c) from stdin;
@@ -516,36 +508,15 @@ a	{2}	2
 
 5	{5}	5
 \.
-
--- want context for notices
-\set SHOW_CONTEXT always
-
-COPY check_ign_err FROM STDIN WITH (on_error ignore, log_verbosity verbose);
+COPY check_ign_err FROM STDIN WITH (on_error ignore);
 1	{1}	1
 a	{2}	2
 3	{3}	3333333333
 4	{a, 4}	4
 
 5	{5}	5
-6	a
-7	{7}	a
-8	{8}	8
 \.
-
--- tests for on_error option with log_verbosity and null constraint via domain
-CREATE DOMAIN dcheck_ign_err2 varchar(15) NOT NULL;
-CREATE TABLE check_ign_err2 (n int, m int[], k int, l dcheck_ign_err2);
-COPY check_ign_err2 FROM STDIN WITH (on_error ignore, log_verbosity verbose);
-1	{1}	1	'foo'
-2	{2}	2	\N
-\.
-
--- reset context choice
-\set SHOW_CONTEXT errors
-
 SELECT * FROM check_ign_err;
-
-SELECT * FROM check_ign_err2;
 
 -- test datatype error that can't be handled as soft: should fail
 CREATE TABLE hard_err(foo widget);
@@ -578,8 +549,6 @@ DROP VIEW instead_of_insert_tbl_view;
 DROP VIEW instead_of_insert_tbl_view_2;
 DROP FUNCTION fun_instead_of_insert_tbl();
 DROP TABLE check_ign_err;
-DROP TABLE check_ign_err2;
-DROP DOMAIN dcheck_ign_err2;
 DROP TABLE hard_err;
 
 --

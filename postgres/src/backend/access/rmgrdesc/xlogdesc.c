@@ -33,27 +33,6 @@ const struct config_enum_entry wal_level_options[] = {
 	{NULL, 0, false}
 };
 
-/*
- * Find a string representation for wal_level
- */
-static const char *
-get_wal_level_string(int wal_level)
-{
-	const struct config_enum_entry *entry;
-	const char *wal_level_str = "?";
-
-	for (entry = wal_level_options; entry->name; entry++)
-	{
-		if (entry->val == wal_level)
-		{
-			wal_level_str = entry->name;
-			break;
-		}
-	}
-
-	return wal_level_str;
-}
-
 void
 xlog_desc(StringInfo buf, XLogReaderState *record)
 {
@@ -66,7 +45,7 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 		CheckPoint *checkpoint = (CheckPoint *) rec;
 
 		appendStringInfo(buf, "redo %X/%X; "
-						 "tli %u; prev tli %u; fpw %s; wal_level %s; xid %u:%u; oid %u; multi %u; offset %u; "
+						 "tli %u; prev tli %u; fpw %s; xid %u:%u; oid %u; multi %u; offset %u; "
 						 "oldest xid %u in DB %u; oldest multi %u in DB %u; "
 						 "oldest/newest commit timestamp xid: %u/%u; "
 						 "oldest running xid %u; %s",
@@ -74,7 +53,6 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 						 checkpoint->ThisTimeLineID,
 						 checkpoint->PrevTimeLineID,
 						 checkpoint->fullPageWrites ? "true" : "false",
-						 get_wal_level_string(checkpoint->wal_level),
 						 EpochFromFullTransactionId(checkpoint->nextXid),
 						 XidFromFullTransactionId(checkpoint->nextXid),
 						 checkpoint->nextOid,
@@ -117,9 +95,20 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 	{
 		xl_parameter_change xlrec;
 		const char *wal_level_str;
+		const struct config_enum_entry *entry;
 
 		memcpy(&xlrec, rec, sizeof(xl_parameter_change));
-		wal_level_str = get_wal_level_string(xlrec.wal_level);
+
+		/* Find a string representation for wal_level */
+		wal_level_str = "?";
+		for (entry = wal_level_options; entry->name; entry++)
+		{
+			if (entry->val == xlrec.wal_level)
+			{
+				wal_level_str = entry->name;
+				break;
+			}
+		}
 
 		appendStringInfo(buf, "max_connections=%d max_worker_processes=%d "
 						 "max_wal_senders=%d max_prepared_xacts=%d "
@@ -146,10 +135,9 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 		xl_end_of_recovery xlrec;
 
 		memcpy(&xlrec, rec, sizeof(xl_end_of_recovery));
-		appendStringInfo(buf, "tli %u; prev tli %u; time %s; wal_level %s",
+		appendStringInfo(buf, "tli %u; prev tli %u; time %s",
 						 xlrec.ThisTimeLineID, xlrec.PrevTimeLineID,
-						 timestamptz_to_str(xlrec.end_time),
-						 get_wal_level_string(xlrec.wal_level));
+						 timestamptz_to_str(xlrec.end_time));
 	}
 	else if (info == XLOG_OVERWRITE_CONTRECORD)
 	{
@@ -162,10 +150,7 @@ xlog_desc(StringInfo buf, XLogReaderState *record)
 	}
 	else if (info == XLOG_CHECKPOINT_REDO)
 	{
-		int			wal_level;
-
-		memcpy(&wal_level, rec, sizeof(int));
-		appendStringInfo(buf, "wal_level %s", get_wal_level_string(wal_level));
+		/* No details to write out */
 	}
 }
 

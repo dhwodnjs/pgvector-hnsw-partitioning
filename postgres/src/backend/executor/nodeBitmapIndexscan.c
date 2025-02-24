@@ -22,10 +22,11 @@
 #include "postgres.h"
 
 #include "access/genam.h"
-#include "executor/executor.h"
+#include "executor/execdebug.h"
 #include "executor/nodeBitmapIndexscan.h"
 #include "executor/nodeIndexscan.h"
 #include "miscadmin.h"
+#include "utils/memutils.h"
 
 
 /* ----------------------------------------------------------------

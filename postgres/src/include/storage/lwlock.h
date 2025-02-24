@@ -19,7 +19,6 @@
 #endif
 
 #include "port/atomics.h"
-#include "storage/lwlocknames.h"
 #include "storage/proclist_types.h"
 
 struct PGPROC;
@@ -82,6 +81,9 @@ typedef struct NamedLWLockTranche
 
 extern PGDLLIMPORT NamedLWLockTranche *NamedLWLockTrancheArray;
 extern PGDLLIMPORT int NamedLWLockTrancheRequests;
+
+/* Names for fixed lwlocks */
+#include "storage/lwlocknames.h"
 
 /*
  * It's a bit odd to declare NUM_BUFFER_PARTITIONS and NUM_LOCK_PARTITIONS
@@ -214,7 +216,6 @@ typedef enum BuiltinTrancheIds
 	LWTRANCHE_SERIAL_SLRU,
 	LWTRANCHE_SUBTRANS_SLRU,
 	LWTRANCHE_XACT_SLRU,
-	LWTRANCHE_PARALLEL_VACUUM_DSA,
 	LWTRANCHE_FIRST_USER_DEFINED,
 }			BuiltinTrancheIds;
 

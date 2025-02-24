@@ -36,7 +36,7 @@ sub create_files
 {
 	foreach my $fn (map { $_->{name} } @_)
 	{
-		open my $file, '>', "$tempdir/$fn" or die $!;
+		open my $file, '>', "$tempdir/$fn";
 
 		print $file 'CONTENT';
 		close $file;

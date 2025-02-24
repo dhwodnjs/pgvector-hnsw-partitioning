@@ -14,7 +14,9 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/relation.h"
+#include "access/relscan.h"
 #include "access/table.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
@@ -30,10 +32,11 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "statistics/statistics.h"
-#include "utils/acl.h"
 #include "utils/builtins.h"
-#include "utils/inval.h"
 #include "utils/lsyscache.h"
+#include "utils/fmgroids.h"
+#include "utils/inval.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
@@ -495,9 +498,9 @@ CreateStatistics(CreateStatsStmt *stmt)
 	values[Anum_pg_statistic_ext_stxrelid - 1] = ObjectIdGetDatum(relid);
 	values[Anum_pg_statistic_ext_stxname - 1] = NameGetDatum(&stxname);
 	values[Anum_pg_statistic_ext_stxnamespace - 1] = ObjectIdGetDatum(namespaceId);
+	values[Anum_pg_statistic_ext_stxstattarget - 1] = Int16GetDatum(-1);
 	values[Anum_pg_statistic_ext_stxowner - 1] = ObjectIdGetDatum(stxowner);
 	values[Anum_pg_statistic_ext_stxkeys - 1] = PointerGetDatum(stxkeys);
-	nulls[Anum_pg_statistic_ext_stxstattarget - 1] = true;
 	values[Anum_pg_statistic_ext_stxkind - 1] = PointerGetDatum(stxkind);
 
 	values[Anum_pg_statistic_ext_stxexprs - 1] = exprsDatum;
@@ -606,36 +609,23 @@ AlterStatistics(AlterStatsStmt *stmt)
 	bool		repl_null[Natts_pg_statistic_ext];
 	bool		repl_repl[Natts_pg_statistic_ext];
 	ObjectAddress address;
-	int			newtarget = 0;
-	bool		newtarget_default;
+	int			newtarget = stmt->stxstattarget;
 
-	/* -1 was used in previous versions for the default setting */
-	if (stmt->stxstattarget && intVal(stmt->stxstattarget) != -1)
+	/* Limit statistics target to a sane range */
+	if (newtarget < -1)
 	{
-		newtarget = intVal(stmt->stxstattarget);
-		newtarget_default = false;
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("statistics target %d is too low",
+						newtarget)));
 	}
-	else
-		newtarget_default = true;
-
-	if (!newtarget_default)
+	else if (newtarget > MAX_STATISTICS_TARGET)
 	{
-		/* Limit statistics target to a sane range */
-		if (newtarget < 0)
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("statistics target %d is too low",
-							newtarget)));
-		}
-		else if (newtarget > MAX_STATISTICS_TARGET)
-		{
-			newtarget = MAX_STATISTICS_TARGET;
-			ereport(WARNING,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("lowering statistics target to %d",
-							newtarget)));
-		}
+		newtarget = MAX_STATISTICS_TARGET;
+		ereport(WARNING,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("lowering statistics target to %d",
+						newtarget)));
 	}
 
 	/* lookup OID of the statistics object */
@@ -686,10 +676,7 @@ AlterStatistics(AlterStatsStmt *stmt)
 
 	/* replace the stxstattarget column */
 	repl_repl[Anum_pg_statistic_ext_stxstattarget - 1] = true;
-	if (!newtarget_default)
-		repl_val[Anum_pg_statistic_ext_stxstattarget - 1] = Int16GetDatum(newtarget);
-	else
-		repl_null[Anum_pg_statistic_ext_stxstattarget - 1] = true;
+	repl_val[Anum_pg_statistic_ext_stxstattarget - 1] = Int16GetDatum(newtarget);
 
 	newtup = heap_modify_tuple(oldtup, RelationGetDescr(rel),
 							   repl_val, repl_null, repl_repl);

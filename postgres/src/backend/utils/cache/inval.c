@@ -119,6 +119,7 @@
 #include "storage/sinval.h"
 #include "storage/smgr.h"
 #include "utils/catcache.h"
+#include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"

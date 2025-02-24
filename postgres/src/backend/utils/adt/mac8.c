@@ -23,8 +23,7 @@
 
 #include "common/hashfn.h"
 #include "libpq/pqformat.h"
-#include "nodes/nodes.h"
-#include "utils/fmgrprotos.h"
+#include "utils/builtins.h"
 #include "utils/inet.h"
 
 /*

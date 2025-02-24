@@ -39,8 +39,10 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
+#include "replication/slot.h"
 #include "replication/slotsync.h"
 #include "replication/syncrep.h"
+#include "replication/walsender.h"
 #include "storage/condition_variable.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
@@ -183,12 +185,11 @@ InitProcGlobal(void)
 
 	/*
 	 * Create and initialize all the PGPROC structures we'll need.  There are
-	 * six separate consumers: (1) normal backends, (2) autovacuum workers and
-	 * special workers, (3) background workers, (4) walsenders, (5) auxiliary
-	 * processes, and (6) prepared transactions.  (For largely-historical
-	 * reasons, we combine autovacuum and special workers into one category
-	 * with a single freelist.)  Each PGPROC structure is dedicated to exactly
-	 * one of these purposes, and they do not move between groups.
+	 * five separate consumers: (1) normal backends, (2) autovacuum workers
+	 * and the autovacuum launcher, (3) background workers, (4) auxiliary
+	 * processes, and (5) prepared transactions.  Each PGPROC structure is
+	 * dedicated to exactly one of these purposes, and they do not move
+	 * between groups.
 	 */
 	procs = (PGPROC *) ShmemAlloc(TotalProcs * sizeof(PGPROC));
 	MemSet(procs, 0, TotalProcs * sizeof(PGPROC));
@@ -230,13 +231,12 @@ InitProcGlobal(void)
 		}
 
 		/*
-		 * Newly created PGPROCs for normal backends, autovacuum workers,
-		 * special workers, bgworkers, and walsenders must be queued up on the
-		 * appropriate free list.  Because there can only ever be a small,
-		 * fixed number of auxiliary processes, no free list is used in that
-		 * case; InitAuxiliaryProcess() instead uses a linear search.  PGPROCs
-		 * for prepared transactions are added to a free list by
-		 * TwoPhaseShmemInit().
+		 * Newly created PGPROCs for normal backends, autovacuum and bgworkers
+		 * must be queued up on the appropriate free list.  Because there can
+		 * only ever be a small, fixed number of auxiliary processes, no free
+		 * list is used in that case; InitAuxiliaryProcess() instead uses a
+		 * linear search.   PGPROCs for prepared transactions are added to a
+		 * free list by TwoPhaseShmemInit().
 		 */
 		if (i < MaxConnections)
 		{
@@ -244,13 +244,13 @@ InitProcGlobal(void)
 			dlist_push_tail(&ProcGlobal->freeProcs, &proc->links);
 			proc->procgloballist = &ProcGlobal->freeProcs;
 		}
-		else if (i < MaxConnections + autovacuum_max_workers + NUM_SPECIAL_WORKER_PROCS)
+		else if (i < MaxConnections + autovacuum_max_workers + 1)
 		{
-			/* PGPROC for AV or special worker, add to autovacFreeProcs list */
+			/* PGPROC for AV launcher/worker, add to autovacFreeProcs list */
 			dlist_push_tail(&ProcGlobal->autovacFreeProcs, &proc->links);
 			proc->procgloballist = &ProcGlobal->autovacFreeProcs;
 		}
-		else if (i < MaxConnections + autovacuum_max_workers + NUM_SPECIAL_WORKER_PROCS + max_worker_processes)
+		else if (i < MaxConnections + autovacuum_max_workers + 1 + max_worker_processes)
 		{
 			/* PGPROC for bgworker, add to bgworkerFreeProcs list */
 			dlist_push_tail(&ProcGlobal->bgworkerFreeProcs, &proc->links);
@@ -309,15 +309,12 @@ InitProcess(void)
 	if (MyProc != NULL)
 		elog(ERROR, "you already exist");
 
-	/*
-	 * Decide which list should supply our PGPROC.  This logic must match the
-	 * way the freelists were constructed in InitProcGlobal().
-	 */
-	if (AmAutoVacuumWorkerProcess() || AmSpecialWorkerProcess())
+	/* Decide which list should supply our PGPROC. */
+	if (IsAnyAutoVacuumProcess())
 		procgloballist = &ProcGlobal->autovacFreeProcs;
-	else if (AmBackgroundWorkerProcess())
+	else if (IsBackgroundWorker)
 		procgloballist = &ProcGlobal->bgworkerFreeProcs;
-	else if (AmWalSenderProcess())
+	else if (am_walsender)
 		procgloballist = &ProcGlobal->walsenderFreeProcs;
 	else
 		procgloballist = &ProcGlobal->freeProcs;
@@ -347,10 +344,10 @@ InitProcess(void)
 		 * in the autovacuum case?
 		 */
 		SpinLockRelease(ProcStructLock);
-		if (AmWalSenderProcess())
+		if (am_walsender)
 			ereport(FATAL,
 					(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
-					 errmsg("number of requested standby connections exceeds \"max_wal_senders\" (currently %d)",
+					 errmsg("number of requested standby connections exceeds max_wal_senders (currently %d)",
 							max_wal_senders)));
 		ereport(FATAL,
 				(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
@@ -373,8 +370,8 @@ InitProcess(void)
 	 * Slot sync worker also does not participate in it, see comments atop
 	 * 'struct bkend' in postmaster.c.
 	 */
-	if (IsUnderPostmaster && !AmAutoVacuumLauncherProcess() &&
-		!AmLogicalSlotSyncWorkerProcess())
+	if (IsUnderPostmaster && !IsAutoVacuumLauncherProcess() &&
+		!IsLogicalSlotSyncWorker())
 		MarkPostmasterChildActive();
 
 	/*
@@ -394,11 +391,11 @@ InitProcess(void)
 	MyProc->databaseId = InvalidOid;
 	MyProc->roleId = InvalidOid;
 	MyProc->tempNamespaceId = InvalidOid;
-	MyProc->isBackgroundWorker = !AmRegularBackendProcess();
+	MyProc->isBackgroundWorker = IsBackgroundWorker;
 	MyProc->delayChkptFlags = 0;
 	MyProc->statusFlags = 0;
 	/* NB -- autovac launcher intentionally does not set IS_AUTOVACUUM */
-	if (AmAutoVacuumWorkerProcess())
+	if (IsAutoVacuumWorkerProcess())
 		MyProc->statusFlags |= PROC_IS_AUTOVACUUM;
 	MyProc->lwWaiting = LW_WS_NOT_WAITING;
 	MyProc->lwWaitMode = 0;
@@ -590,7 +587,7 @@ InitAuxiliaryProcess(void)
 	MyProc->databaseId = InvalidOid;
 	MyProc->roleId = InvalidOid;
 	MyProc->tempNamespaceId = InvalidOid;
-	MyProc->isBackgroundWorker = true;
+	MyProc->isBackgroundWorker = IsBackgroundWorker;
 	MyProc->delayChkptFlags = 0;
 	MyProc->statusFlags = 0;
 	MyProc->lwWaiting = LW_WS_NOT_WAITING;
@@ -954,8 +951,8 @@ ProcKill(int code, Datum arg)
 	 * Slot sync worker is also not a postmaster child, so skip this shared
 	 * memory related processing here.
 	 */
-	if (IsUnderPostmaster && !AmAutoVacuumLauncherProcess() &&
-		!AmLogicalSlotSyncWorkerProcess())
+	if (IsUnderPostmaster && !IsAutoVacuumLauncherProcess() &&
+		!IsLogicalSlotSyncWorker())
 		MarkPostmasterChildInactive();
 
 	/* wake autovac launcher if needed -- see comments in FreeWorkerInfo */
@@ -1048,19 +1045,10 @@ AuxiliaryPidGetProc(int pid)
  * Caller must have set MyProc->heldLocks to reflect locks already held
  * on the lockable object by this process (under all XIDs).
  *
- * It's not actually guaranteed that we need to wait when this function is
- * called, because it could be that when we try to find a position at which
- * to insert ourself into the wait queue, we discover that we must be inserted
- * ahead of everyone who wants a lock that conflict with ours. In that case,
- * we get the lock immediately. Because of this, it's sensible for this function
- * to have a dontWait argument, despite the name.
- *
  * The lock table's partition lock must be held at entry, and will be held
  * at exit.
  *
- * Result: PROC_WAIT_STATUS_OK if we acquired the lock, PROC_WAIT_STATUS_ERROR
- * if not (if dontWait = true, we would have had to wait; if dontWait = false,
- * this is a deadlock).
+ * Result: PROC_WAIT_STATUS_OK if we acquired the lock, PROC_WAIT_STATUS_ERROR if not (deadlock).
  *
  * ASSUME: that no one will fiddle with the queue until after
  *		we release the partition lock.
@@ -1068,7 +1056,7 @@ AuxiliaryPidGetProc(int pid)
  * NOTES: The process queue is now a priority queue for locking.
  */
 ProcWaitStatus
-ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable, bool dontWait)
+ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable)
 {
 	LOCKMODE	lockmode = locallock->tag.mode;
 	LOCK	   *lock = locallock->lock;
@@ -1180,13 +1168,6 @@ ProcSleep(LOCALLOCK *locallock, LockMethod lockMethodTable, bool dontWait)
 			aheadRequests |= LOCKBIT_ON(proc->waitLockMode);
 		}
 	}
-
-	/*
-	 * At this point we know that we'd really need to sleep. If we've been
-	 * commanded not to do that, bail out.
-	 */
-	if (dontWait)
-		return PROC_WAIT_STATUS_ERROR;
 
 	/*
 	 * Insert self into queue, at the position determined above.

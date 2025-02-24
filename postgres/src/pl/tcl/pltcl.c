@@ -56,10 +56,6 @@ PG_MODULE_MAGIC;
 #define CONST86
 #endif
 
-#if !HAVE_TCL_VERSION(8,7)
-typedef int Tcl_Size;
-#endif
-
 /* define our text domain for translations */
 #undef TEXTDOMAIN
 #define TEXTDOMAIN PG_TEXTDOMAIN("pltcl")
@@ -991,7 +987,7 @@ pltcl_func_handler(PG_FUNCTION_ARGS, pltcl_call_state *call_state,
 		HeapTuple	tup;
 		Tcl_Obj    *resultObj;
 		Tcl_Obj   **resultObjv;
-		Tcl_Size	resultObjc;
+		int			resultObjc;
 
 		/*
 		 * Set up data about result type.  XXX it's tempting to consider
@@ -1030,10 +1026,7 @@ pltcl_func_handler(PG_FUNCTION_ARGS, pltcl_call_state *call_state,
 		/* Convert function result to tuple */
 		resultObj = Tcl_GetObjResult(interp);
 		if (Tcl_ListObjGetElements(interp, resultObj, &resultObjc, &resultObjv) == TCL_ERROR)
-			ereport(ERROR,
-					(errcode(ERRCODE_EXTERNAL_ROUTINE_EXCEPTION),
-					 errmsg("could not parse function return value: %s",
-							utf_u2e(Tcl_GetStringResult(interp)))));
+			throw_tcl_error(interp, prodesc->user_proname);
 
 		tup = pltcl_build_tuple_result(interp, resultObjv, resultObjc,
 									   call_state);
@@ -1067,7 +1060,7 @@ pltcl_trigger_handler(PG_FUNCTION_ARGS, pltcl_call_state *call_state,
 	int			tcl_rc;
 	int			i;
 	const char *result;
-	Tcl_Size	result_Objc;
+	int			result_Objc;
 	Tcl_Obj   **result_Objv;
 	int			rc PG_USED_FOR_ASSERTS_ONLY;
 
@@ -1299,7 +1292,7 @@ pltcl_trigger_handler(PG_FUNCTION_ARGS, pltcl_call_state *call_state,
 							   &result_Objc, &result_Objv) != TCL_OK)
 		ereport(ERROR,
 				(errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
-				 errmsg("could not parse trigger return value: %s",
+				 errmsg("could not split return value from trigger: %s",
 						utf_u2e(Tcl_GetStringResult(interp)))));
 
 	/* Convert function result to tuple */
@@ -1362,10 +1355,6 @@ pltcl_event_trigger_handler(PG_FUNCTION_ARGS, pltcl_call_state *call_state,
 
 /**********************************************************************
  * throw_tcl_error	- ereport an error returned from the Tcl interpreter
- *
- * Caution: use this only to report errors returned by Tcl_EvalObjEx() or
- * other variants of Tcl_Eval().  Other functions may not fill "errorInfo",
- * so it could be unset or even contain details from some previous error.
  **********************************************************************/
 static void
 throw_tcl_error(Tcl_Interp *interp, const char *proname)
@@ -2012,7 +2001,7 @@ pltcl_quote(ClientData cdata, Tcl_Interp *interp,
 	char	   *tmp;
 	const char *cp1;
 	char	   *cp2;
-	Tcl_Size	length;
+	int			length;
 
 	/************************************************************
 	 * Check call syntax
@@ -2206,7 +2195,7 @@ pltcl_returnnext(ClientData cdata, Tcl_Interp *interp,
 		if (prodesc->fn_retistuple)
 		{
 			Tcl_Obj   **rowObjv;
-			Tcl_Size	rowObjc;
+			int			rowObjc;
 
 			/* result should be a list, so break it down */
 			if (Tcl_ListObjGetElements(interp, objv[1], &rowObjc, &rowObjv) == TCL_ERROR)
@@ -2467,7 +2456,6 @@ pltcl_process_SPI_result(Tcl_Interp *interp,
 		case SPI_OK_INSERT_RETURNING:
 		case SPI_OK_DELETE_RETURNING:
 		case SPI_OK_UPDATE_RETURNING:
-		case SPI_OK_MERGE_RETURNING:
 
 			/*
 			 * Process the tuples we got
@@ -2548,7 +2536,7 @@ pltcl_SPI_prepare(ClientData cdata, Tcl_Interp *interp,
 				  int objc, Tcl_Obj *const objv[])
 {
 	volatile MemoryContext plan_cxt = NULL;
-	Tcl_Size	nargs;
+	int			nargs;
 	Tcl_Obj   **argsObj;
 	pltcl_query_desc *qdesc;
 	int			i;
@@ -2686,7 +2674,7 @@ pltcl_SPI_execute_plan(ClientData cdata, Tcl_Interp *interp,
 	const char *arrayname = NULL;
 	Tcl_Obj    *loop_body = NULL;
 	int			count = 0;
-	Tcl_Size	callObjc;
+	int			callObjc;
 	Tcl_Obj   **callObjv = NULL;
 	Datum	   *argvalues;
 	MemoryContext oldcontext = CurrentMemoryContext;

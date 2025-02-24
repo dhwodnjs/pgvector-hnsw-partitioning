@@ -71,6 +71,7 @@
  */
 #include "postgres.h"
 
+#include "access/htup_details.h"
 #include "lib/integerset.h"
 #include "port/pg_bitutils.h"
 #include "utils/memutils.h"

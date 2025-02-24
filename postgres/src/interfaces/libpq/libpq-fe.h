@@ -30,31 +30,14 @@ extern "C"
 
 /*
  * These symbols may be used in compile-time #ifdef tests for the availability
- * of v14-and-newer libpq features.
+ * of newer libpq features.
  */
-/* Features added in PostgreSQL v14: */
 /* Indicates presence of PQenterPipelineMode and friends */
 #define LIBPQ_HAS_PIPELINING 1
 /* Indicates presence of PQsetTraceFlags; also new PQtrace output format */
 #define LIBPQ_HAS_TRACE_FLAGS 1
-
-/* Features added in PostgreSQL v15: */
 /* Indicates that PQsslAttribute(NULL, "library") is useful */
 #define LIBPQ_HAS_SSL_LIBRARY_DETECTION 1
-
-/* Features added in PostgreSQL v17: */
-/* Indicates presence of PGcancelConn typedef and associated routines */
-#define LIBPQ_HAS_ASYNC_CANCEL 1
-/* Indicates presence of PQchangePassword */
-#define LIBPQ_HAS_CHANGE_PASSWORD 1
-/* Indicates presence of PQsetChunkedRowsMode, PGRES_TUPLES_CHUNK */
-#define LIBPQ_HAS_CHUNK_MODE 1
-/* Indicates presence of PQclosePrepared, PQclosePortal, etc */
-#define LIBPQ_HAS_CLOSE_PREPARED 1
-/* Indicates presence of PQsendPipelineSync */
-#define LIBPQ_HAS_SEND_PIPELINE_SYNC 1
-/* Indicates presence of PQsocketPoll, PQgetCurrentTimeUSec */
-#define LIBPQ_HAS_SOCKET_POLL 1
 
 /*
  * Option flags for PQcopyResult
@@ -89,16 +72,13 @@ typedef enum
 	CONNECTION_AUTH_OK,			/* Received authentication; waiting for
 								 * backend startup. */
 	CONNECTION_SETENV,			/* This state is no longer used. */
-	CONNECTION_SSL_STARTUP,		/* Performing SSL handshake. */
-	CONNECTION_NEEDED,			/* Internal state: connect() needed. */
+	CONNECTION_SSL_STARTUP,		/* Negotiating SSL. */
+	CONNECTION_NEEDED,			/* Internal state: connect() needed */
 	CONNECTION_CHECK_WRITABLE,	/* Checking if session is read-write. */
 	CONNECTION_CONSUME,			/* Consuming any extra messages. */
 	CONNECTION_GSS_STARTUP,		/* Negotiating GSSAPI. */
-	CONNECTION_CHECK_TARGET,	/* Internal state: checking target server
-								 * properties. */
-	CONNECTION_CHECK_STANDBY,	/* Checking if server is in standby mode. */
-	CONNECTION_ALLOCATED,		/* Waiting for connection attempt to be
-								 * started.  */
+	CONNECTION_CHECK_TARGET,	/* Checking target server properties. */
+	CONNECTION_CHECK_STANDBY	/* Checking if server is in standby mode. */
 } ConnStatusType;
 
 typedef enum
@@ -107,7 +87,8 @@ typedef enum
 	PGRES_POLLING_READING,		/* These two indicate that one may	  */
 	PGRES_POLLING_WRITING,		/* use select before polling again.   */
 	PGRES_POLLING_OK,
-	PGRES_POLLING_ACTIVE		/* unused; keep for backwards compatibility */
+	PGRES_POLLING_ACTIVE		/* unused; keep for awhile for backwards
+								 * compatibility */
 } PostgresPollingStatusType;
 
 typedef enum
@@ -128,9 +109,8 @@ typedef enum
 	PGRES_COPY_BOTH,			/* Copy In/Out data transfer in progress */
 	PGRES_SINGLE_TUPLE,			/* single tuple from larger resultset */
 	PGRES_PIPELINE_SYNC,		/* pipeline synchronization point */
-	PGRES_PIPELINE_ABORTED,		/* Command didn't run because of an abort
+	PGRES_PIPELINE_ABORTED		/* Command didn't run because of an abort
 								 * earlier in a pipeline */
-	PGRES_TUPLES_CHUNK			/* chunk of tuples from larger resultset */
 } ExecStatusType;
 
 typedef enum
@@ -185,11 +165,6 @@ typedef enum
  */
 typedef struct pg_conn PGconn;
 
-/* PGcancelConn encapsulates a cancel connection to the backend.
- * The contents of this struct are not supposed to be known to applications.
- */
-typedef struct pg_cancel_conn PGcancelConn;
-
 /* PGresult encapsulates the result of a query (or more precisely, of a single
  * SQL command --- a query string given to PQsendQuery can contain multiple
  * commands and thus return multiple PGresult objects).
@@ -217,9 +192,6 @@ typedef struct pgNotify
 	/* Fields below here are private to libpq; apps should not use 'em */
 	struct pgNotify *next;		/* list link */
 } PGnotify;
-
-/* pg_usec_time_t is like time_t, but with microsecond resolution */
-typedef pg_int64 pg_usec_time_t;
 
 /* Function types for notice-handling callbacks */
 typedef void (*PQnoticeReceiver) (void *arg, const PGresult *res);
@@ -349,34 +321,16 @@ extern PostgresPollingStatusType PQresetPoll(PGconn *conn);
 /* Synchronous (blocking) */
 extern void PQreset(PGconn *conn);
 
-/* Create a PGcancelConn that's used to cancel a query on the given PGconn */
-extern PGcancelConn *PQcancelCreate(PGconn *conn);
-
-/* issue a cancel request in a non-blocking manner */
-extern int	PQcancelStart(PGcancelConn *cancelConn);
-
-/* issue a blocking cancel request */
-extern int	PQcancelBlocking(PGcancelConn *cancelConn);
-
-/* poll a non-blocking cancel request */
-extern PostgresPollingStatusType PQcancelPoll(PGcancelConn *cancelConn);
-extern ConnStatusType PQcancelStatus(const PGcancelConn *cancelConn);
-extern int	PQcancelSocket(const PGcancelConn *cancelConn);
-extern char *PQcancelErrorMessage(const PGcancelConn *cancelConn);
-extern void PQcancelReset(PGcancelConn *cancelConn);
-extern void PQcancelFinish(PGcancelConn *cancelConn);
-
-
 /* request a cancel structure */
 extern PGcancel *PQgetCancel(PGconn *conn);
 
 /* free a cancel structure */
 extern void PQfreeCancel(PGcancel *cancel);
 
-/* deprecated version of PQcancelBlocking, but one which is signal-safe */
+/* issue a cancel request */
 extern int	PQcancel(PGcancel *cancel, char *errbuf, int errbufsize);
 
-/* deprecated version of PQcancel; not thread-safe */
+/* backwards compatible version of PQcancel; not thread-safe */
 extern int	PQrequestCancel(PGconn *conn);
 
 /* Accessor functions for PGconn objects */
@@ -509,7 +463,6 @@ extern int	PQsendQueryPrepared(PGconn *conn,
 								const int *paramFormats,
 								int resultFormat);
 extern int	PQsetSingleRowMode(PGconn *conn);
-extern int	PQsetChunkedRowsMode(PGconn *conn, int chunkSize);
 extern PGresult *PQgetResult(PGconn *conn);
 
 /* Routines for managing an asynchronous query */
@@ -690,13 +643,6 @@ extern int	lo_export(PGconn *conn, Oid lobjId, const char *filename);
 
 /* Get the version of the libpq library in use */
 extern int	PQlibVersion(void);
-
-/* Poll a socket for reading and/or writing with an optional timeout */
-extern int	PQsocketPoll(int sock, int forRead, int forWrite,
-						 pg_usec_time_t end_time);
-
-/* Get current time in the form PQsocketPoll wants */
-extern pg_usec_time_t PQgetCurrentTimeUSec(void);
 
 /* Determine length of multibyte encoded char at *s */
 extern int	PQmblen(const char *s, int encoding);

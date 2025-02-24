@@ -16,6 +16,7 @@
 
 #include "access/htup_details.h"
 #include "access/relation.h"
+#include "access/sysattr.h"
 #include "access/table.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
@@ -32,7 +33,6 @@
 #include "catalog/pg_largeobject_metadata.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
-#include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_statistic_ext.h"
@@ -43,11 +43,13 @@
 #include "catalog/pg_ts_template.h"
 #include "commands/alter.h"
 #include "commands/collationcmds.h"
+#include "commands/conversioncmds.h"
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
 #include "commands/extension.h"
 #include "commands/policy.h"
+#include "commands/proclang.h"
 #include "commands/publicationcmds.h"
 #include "commands/schemacmds.h"
 #include "commands/subscriptioncmds.h"
@@ -57,11 +59,12 @@
 #include "commands/typecmds.h"
 #include "commands/user.h"
 #include "miscadmin.h"
+#include "parser/parse_func.h"
 #include "replication/logicalworker.h"
 #include "rewrite/rewriteDefine.h"
-#include "storage/lmgr.h"
-#include "utils/acl.h"
+#include "tcop/utility.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
@@ -599,26 +602,32 @@ ExecAlterObjectSchemaStmt(AlterObjectSchemaStmt *stmt,
 /*
  * Change an object's namespace given its classOid and object Oid.
  *
- * Objects that don't have a namespace should be ignored, as should
- * dependent types such as array types.
+ * Objects that don't have a namespace should be ignored.
  *
  * This function is currently used only by ALTER EXTENSION SET SCHEMA,
- * so it only needs to cover object kinds that can be members of an
- * extension, and it can silently ignore dependent types --- we assume
- * those will be moved when their parent object is moved.
+ * so it only needs to cover object types that can be members of an
+ * extension, and it doesn't have to deal with certain special cases
+ * such as not wanting to process array types --- those should never
+ * be direct members of an extension anyway.  Nonetheless, we insist
+ * on listing all OCLASS types in the switch.
  *
  * Returns the OID of the object's previous namespace, or InvalidOid if
- * object doesn't have a schema or was ignored due to being a dependent type.
+ * object doesn't have a schema.
  */
 Oid
 AlterObjectNamespace_oid(Oid classId, Oid objid, Oid nspOid,
 						 ObjectAddresses *objsMoved)
 {
 	Oid			oldNspOid = InvalidOid;
+	ObjectAddress dep;
 
-	switch (classId)
+	dep.classId = classId;
+	dep.objectId = objid;
+	dep.objectSubId = 0;
+
+	switch (getObjectClass(&dep))
 	{
-		case RelationRelationId:
+		case OCLASS_CLASS:
 			{
 				Relation	rel;
 
@@ -631,21 +640,21 @@ AlterObjectNamespace_oid(Oid classId, Oid objid, Oid nspOid,
 				break;
 			}
 
-		case TypeRelationId:
-			oldNspOid = AlterTypeNamespace_oid(objid, nspOid, true, objsMoved);
+		case OCLASS_TYPE:
+			oldNspOid = AlterTypeNamespace_oid(objid, nspOid, objsMoved);
 			break;
 
-		case ProcedureRelationId:
-		case CollationRelationId:
-		case ConversionRelationId:
-		case OperatorRelationId:
-		case OperatorClassRelationId:
-		case OperatorFamilyRelationId:
-		case StatisticExtRelationId:
-		case TSParserRelationId:
-		case TSDictionaryRelationId:
-		case TSTemplateRelationId:
-		case TSConfigRelationId:
+		case OCLASS_PROC:
+		case OCLASS_COLLATION:
+		case OCLASS_CONVERSION:
+		case OCLASS_OPERATOR:
+		case OCLASS_OPCLASS:
+		case OCLASS_OPFAMILY:
+		case OCLASS_STATISTIC_EXT:
+		case OCLASS_TSPARSER:
+		case OCLASS_TSDICT:
+		case OCLASS_TSTEMPLATE:
+		case OCLASS_TSCONFIG:
 			{
 				Relation	catalog;
 
@@ -658,9 +667,41 @@ AlterObjectNamespace_oid(Oid classId, Oid objid, Oid nspOid,
 			}
 			break;
 
-		default:
+		case OCLASS_CAST:
+		case OCLASS_CONSTRAINT:
+		case OCLASS_DEFAULT:
+		case OCLASS_LANGUAGE:
+		case OCLASS_LARGEOBJECT:
+		case OCLASS_AM:
+		case OCLASS_AMOP:
+		case OCLASS_AMPROC:
+		case OCLASS_REWRITE:
+		case OCLASS_TRIGGER:
+		case OCLASS_SCHEMA:
+		case OCLASS_ROLE:
+		case OCLASS_ROLE_MEMBERSHIP:
+		case OCLASS_DATABASE:
+		case OCLASS_TBLSPACE:
+		case OCLASS_FDW:
+		case OCLASS_FOREIGN_SERVER:
+		case OCLASS_USER_MAPPING:
+		case OCLASS_DEFACL:
+		case OCLASS_EXTENSION:
+		case OCLASS_EVENT_TRIGGER:
+		case OCLASS_PARAMETER_ACL:
+		case OCLASS_POLICY:
+		case OCLASS_PUBLICATION:
+		case OCLASS_PUBLICATION_NAMESPACE:
+		case OCLASS_PUBLICATION_REL:
+		case OCLASS_SUBSCRIPTION:
+		case OCLASS_TRANSFORM:
 			/* ignore object types that don't have schema-qualified names */
-			Assert(get_object_attnum_namespace(classId) == InvalidAttrNumber);
+			break;
+
+			/*
+			 * There's intentionally no default: case here; we want the
+			 * compiler to warn if a new OCLASS hasn't been handled above.
+			 */
 	}
 
 	return oldNspOid;
@@ -932,9 +973,7 @@ AlterObjectOwner_internal(Oid classId, Oid objectId, Oid new_ownerId)
 
 	rel = table_open(catalogId, RowExclusiveLock);
 
-	/* Search tuple and lock it. */
-	oldtup =
-		get_catalog_object_by_oid_extended(rel, Anum_oid, objectId, true);
+	oldtup = get_catalog_object_by_oid(rel, Anum_oid, objectId);
 	if (oldtup == NULL)
 		elog(ERROR, "cache lookup failed for object %u of catalog \"%s\"",
 			 objectId, RelationGetRelationName(rel));
@@ -1034,8 +1073,6 @@ AlterObjectOwner_internal(Oid classId, Oid objectId, Oid new_ownerId)
 		/* Perform actual update */
 		CatalogTupleUpdate(rel, &newtup->t_self, newtup);
 
-		UnlockTuple(rel, &oldtup->t_self, InplaceUpdateTupleLock);
-
 		/* Update owner dependency reference */
 		changeDependencyOnOwner(classId, objectId, new_ownerId);
 
@@ -1044,8 +1081,6 @@ AlterObjectOwner_internal(Oid classId, Oid objectId, Oid new_ownerId)
 		pfree(nulls);
 		pfree(replaces);
 	}
-	else
-		UnlockTuple(rel, &oldtup->t_self, InplaceUpdateTupleLock);
 
 	/* Note the post-alter hook gets classId not catalogId */
 	InvokeObjectPostAlterHook(classId, objectId, 0);

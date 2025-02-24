@@ -175,25 +175,6 @@ deccopy(decimal *src, decimal *target)
 	memcpy(target, src, sizeof(decimal));
 }
 
-static char *
-ecpg_strndup(const char *str, size_t len)
-{
-	size_t		real_len = strlen(str);
-	int			use_len = (int) ((real_len > len) ? len : real_len);
-
-	char	   *new = malloc(use_len + 1);
-
-	if (new)
-	{
-		memcpy(new, str, use_len);
-		new[use_len] = '\0';
-	}
-	else
-		errno = ENOMEM;
-
-	return new;
-}
-
 int
 deccvasc(const char *cp, int len, decimal *np)
 {
@@ -205,8 +186,8 @@ deccvasc(const char *cp, int len, decimal *np)
 	if (risnull(CSTRINGTYPE, cp))
 		return 0;
 
-	str = ecpg_strndup(cp, len);	/* decimal_in always converts the complete
-									 * string */
+	str = pnstrdup(cp, len);	/* decimal_in always converts the complete
+								 * string */
 	if (!str)
 		ret = ECPG_INFORMIX_NUM_UNDERFLOW;
 	else
@@ -454,7 +435,6 @@ dectoint(decimal *np, int *ip)
 {
 	int			ret;
 	numeric    *nres = PGTYPESnumeric_new();
-	int			errnum;
 
 	if (nres == NULL)
 		return ECPG_INFORMIX_OUT_OF_MEMORY;
@@ -465,12 +445,10 @@ dectoint(decimal *np, int *ip)
 		return ECPG_INFORMIX_OUT_OF_MEMORY;
 	}
 
-	errno = 0;
 	ret = PGTYPESnumeric_to_int(nres, ip);
-	errnum = errno;
 	PGTYPESnumeric_free(nres);
 
-	if (ret == -1 && errnum == PGTYPES_NUM_OVERFLOW)
+	if (ret == PGTYPES_NUM_OVERFLOW)
 		ret = ECPG_INFORMIX_NUM_OVERFLOW;
 
 	return ret;
@@ -481,7 +459,6 @@ dectolong(decimal *np, long *lngp)
 {
 	int			ret;
 	numeric    *nres = PGTYPESnumeric_new();
-	int			errnum;
 
 	if (nres == NULL)
 		return ECPG_INFORMIX_OUT_OF_MEMORY;
@@ -492,12 +469,10 @@ dectolong(decimal *np, long *lngp)
 		return ECPG_INFORMIX_OUT_OF_MEMORY;
 	}
 
-	errno = 0;
 	ret = PGTYPESnumeric_to_long(nres, lngp);
-	errnum = errno;
 	PGTYPESnumeric_free(nres);
 
-	if (ret == -1 && errnum == PGTYPES_NUM_OVERFLOW)
+	if (ret == PGTYPES_NUM_OVERFLOW)
 		ret = ECPG_INFORMIX_NUM_OVERFLOW;
 
 	return ret;

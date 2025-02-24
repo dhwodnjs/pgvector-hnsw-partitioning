@@ -17,8 +17,11 @@
 #include "access/bufmask.h"
 #include "access/hash.h"
 #include "access/hash_xlog.h"
+#include "access/transam.h"
+#include "access/xlog.h"
 #include "access/xlogutils.h"
-#include "storage/standby.h"
+#include "miscadmin.h"
+#include "storage/procarray.h"
 
 /*
  * replay a hash index meta page
@@ -666,7 +669,6 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 		char	   *data;
 		Size		datalen;
 		uint16		ninserted = 0;
-		bool		mod_wbuf = false;
 
 		data = begin = XLogRecGetBlockData(record, 1, &datalen);
 
@@ -696,17 +698,6 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 
 				ninserted++;
 			}
-
-			mod_wbuf = true;
-		}
-		else
-		{
-			/*
-			 * Ensure that the required flags are set when there are no
-			 * tuples.  See _hash_freeovflpage().
-			 */
-			Assert(xldata->is_prim_bucket_same_wrt ||
-				   xldata->is_prev_bucket_same_wrt);
 		}
 
 		/*
@@ -723,15 +714,10 @@ hash_xlog_squeeze_page(XLogReaderState *record)
 			HashPageOpaque writeopaque = HashPageGetOpaque(writepage);
 
 			writeopaque->hasho_nextblkno = xldata->nextblkno;
-			mod_wbuf = true;
 		}
 
-		/* Set LSN and mark writebuf dirty iff it is modified */
-		if (mod_wbuf)
-		{
-			PageSetLSN(writepage, lsn);
-			MarkBufferDirty(writebuf);
-		}
+		PageSetLSN(writepage, lsn);
+		MarkBufferDirty(writebuf);
 	}
 
 	/* replay the record for initializing overflow buffer */
@@ -1009,11 +995,10 @@ hash_xlog_vacuum_one_page(XLogReaderState *record)
 	 * Hash index records that are marked as LP_DEAD and being removed during
 	 * hash index tuple insertion can conflict with standby queries. You might
 	 * think that vacuum records would conflict as well, but we've handled
-	 * that already.  XLOG_HEAP2_PRUNE_VACUUM_SCAN records provide the highest
-	 * xid cleaned by the vacuum of the heap and so we can resolve any
-	 * conflicts just once when that arrives.  After that we know that no
-	 * conflicts exist from individual hash index vacuum records on that
-	 * index.
+	 * that already.  XLOG_HEAP2_PRUNE records provide the highest xid cleaned
+	 * by the vacuum of the heap and so we can resolve any conflicts just once
+	 * when that arrives.  After that we know that no conflicts exist from
+	 * individual hash index vacuum records on that index.
 	 */
 	if (InHotStandby)
 	{

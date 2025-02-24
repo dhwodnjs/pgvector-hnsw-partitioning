@@ -45,7 +45,6 @@ volatile uint32 CritSectionCount = 0;
 int			MyProcPid;
 pg_time_t	MyStartTime;
 TimestampTz MyStartTimestamp;
-struct ClientSocket *MyClientSocket;
 struct Port *MyProcPort;
 int32		MyCancelKey;
 int			MyPMChildSlot;
@@ -116,6 +115,7 @@ pid_t		PostmasterPid = 0;
 bool		IsPostmasterEnvironment = false;
 bool		IsUnderPostmaster = false;
 bool		IsBinaryUpgrade = false;
+bool		IsBackgroundWorker = false;
 
 bool		ExitOnAnyError = false;
 
@@ -143,7 +143,7 @@ int			max_parallel_workers = 8;
 int			MaxBackends = 0;
 
 /* GUC parameters for vacuum */
-int			VacuumBufferUsageLimit = 2048;
+int			VacuumBufferUsageLimit = 256;
 
 int			VacuumCostPageHit = 1;
 int			VacuumCostPageMiss = 2;

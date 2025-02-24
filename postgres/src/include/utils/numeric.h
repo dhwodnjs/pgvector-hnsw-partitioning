@@ -14,7 +14,6 @@
 #ifndef _PG_NUMERIC_H_
 #define _PG_NUMERIC_H_
 
-#include "common/pg_prng.h"
 #include "fmgr.h"
 
 /*
@@ -103,8 +102,5 @@ extern Numeric numeric_mod_opt_error(Numeric num1, Numeric num2,
 									 bool *have_error);
 extern int32 numeric_int4_opt_error(Numeric num, bool *have_error);
 extern int64 numeric_int8_opt_error(Numeric num, bool *have_error);
-
-extern Numeric random_numeric(pg_prng_state *state,
-							  Numeric rmin, Numeric rmax);
 
 #endif							/* _PG_NUMERIC_H_ */

@@ -17,6 +17,7 @@
 #include "access/generic_xlog.h"
 #include "access/xlogutils.h"
 #include "miscadmin.h"
+#include "utils/memutils.h"
 
 /*-------------------------------------------------------------------------
  * Internally, a delta between pages consists of a set of fragments.  Each

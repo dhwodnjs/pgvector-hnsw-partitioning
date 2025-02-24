@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <signal.h>
 
+#include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/auxprocess.h"
@@ -23,33 +24,69 @@
 #include "postmaster/walsummarizer.h"
 #include "postmaster/walwriter.h"
 #include "replication/walreceiver.h"
+#include "storage/bufmgr.h"
+#include "storage/bufpage.h"
 #include "storage/condition_variable.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
-#include "storage/procsignal.h"
+#include "tcop/tcopprot.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
+#include "utils/rel.h"
 
 
 static void ShutdownAuxiliaryProcess(int code, Datum arg);
 
 
+/* ----------------
+ *		global variables
+ * ----------------
+ */
+
+AuxProcType MyAuxProcType = NotAnAuxProcess;	/* declared in miscadmin.h */
+
+
 /*
- *	 AuxiliaryProcessMainCommon
+ *	 AuxiliaryProcessMain
  *
- *	 Common initialization code for auxiliary processes, such as the bgwriter,
- *	 walwriter, walreceiver, and the startup process.
+ *	 The main entry point for auxiliary processes, such as the bgwriter,
+ *	 walwriter, walreceiver, bootstrapper and the shared memory checker code.
+ *
+ *	 This code is here just because of historical reasons.
  */
 void
-AuxiliaryProcessMainCommon(void)
+AuxiliaryProcessMain(AuxProcType auxtype)
 {
 	Assert(IsUnderPostmaster);
 
-	/* Release postmaster's working memory context */
-	if (PostmasterContext)
+	MyAuxProcType = auxtype;
+
+	switch (MyAuxProcType)
 	{
-		MemoryContextDelete(PostmasterContext);
-		PostmasterContext = NULL;
+		case StartupProcess:
+			MyBackendType = B_STARTUP;
+			break;
+		case ArchiverProcess:
+			MyBackendType = B_ARCHIVER;
+			break;
+		case BgWriterProcess:
+			MyBackendType = B_BG_WRITER;
+			break;
+		case CheckpointerProcess:
+			MyBackendType = B_CHECKPOINTER;
+			break;
+		case WalWriterProcess:
+			MyBackendType = B_WAL_WRITER;
+			break;
+		case WalReceiverProcess:
+			MyBackendType = B_WAL_RECEIVER;
+			break;
+		case WalSummarizerProcess:
+			MyBackendType = B_WAL_SUMMARIZER;
+			break;
+		default:
+			elog(PANIC, "unrecognized process type: %d", (int) MyAuxProcType);
+			MyBackendType = B_INVALID;
 	}
 
 	init_ps_display(NULL);
@@ -88,6 +125,41 @@ AuxiliaryProcessMainCommon(void)
 	before_shmem_exit(ShutdownAuxiliaryProcess, 0);
 
 	SetProcessingMode(NormalProcessing);
+
+	switch (MyAuxProcType)
+	{
+		case StartupProcess:
+			StartupProcessMain();
+			proc_exit(1);
+
+		case ArchiverProcess:
+			PgArchiverMain();
+			proc_exit(1);
+
+		case BgWriterProcess:
+			BackgroundWriterMain();
+			proc_exit(1);
+
+		case CheckpointerProcess:
+			CheckpointerMain();
+			proc_exit(1);
+
+		case WalWriterProcess:
+			WalWriterMain();
+			proc_exit(1);
+
+		case WalReceiverProcess:
+			WalReceiverMain();
+			proc_exit(1);
+
+		case WalSummarizerProcess:
+			WalSummarizerMain();
+			proc_exit(1);
+
+		default:
+			elog(PANIC, "unrecognized process type: %d", (int) MyAuxProcType);
+			proc_exit(1);
+	}
 }
 
 /*

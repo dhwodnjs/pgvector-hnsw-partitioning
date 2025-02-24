@@ -24,12 +24,14 @@
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "pgstat.h"
-#include "postmaster/bgworker.h"
+#include "postmaster/bgworker_internals.h"
+#include "postmaster/postmaster.h"
 #include "replication/logicallauncher.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/inet.h"
 #include "utils/timestamp.h"
 
 #define UINT32_ACCESS_ONCE(var)		 ((uint32)(*((volatile uint32 *)&(var))))
@@ -1408,7 +1410,7 @@ pg_stat_get_io(PG_FUNCTION_ARGS)
 				values[IO_COL_BACKEND_TYPE] = bktype_desc;
 				values[IO_COL_CONTEXT] = CStringGetTextDatum(context_name);
 				values[IO_COL_OBJECT] = CStringGetTextDatum(obj_name);
-				values[IO_COL_RESET_TIME] = reset_time;
+				values[IO_COL_RESET_TIME] = TimestampTzGetDatum(reset_time);
 
 				/*
 				 * Hard-code this to the value of BLCKSZ for now. Future

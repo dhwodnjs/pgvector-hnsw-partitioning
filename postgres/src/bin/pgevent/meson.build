@@ -21,11 +21,13 @@ if cc.get_id() == 'msvc'
   pgevent_link_args += '/ignore:4104'
 endif
 
-pgevent = shared_module('pgevent',
+pgevent = shared_library('pgevent',
   pgevent_sources,
   dependencies: [frontend_code],
   link_args: pgevent_link_args,
   vs_module_defs: 'pgevent.def',
-  kwargs: default_mod_args,
+  kwargs: default_lib_args + {
+    'name_prefix': '',
+  },
 )
 bin_targets += pgevent

@@ -21,15 +21,17 @@ extern PGDLLIMPORT int wal_summary_keep_time;
 
 extern Size WalSummarizerShmemSize(void);
 extern void WalSummarizerShmemInit(void);
-extern void WalSummarizerMain(char *startup_data, size_t startup_data_len) pg_attribute_noreturn();
+extern void WalSummarizerMain(void) pg_attribute_noreturn();
 
 extern void GetWalSummarizerState(TimeLineID *summarized_tli,
 								  XLogRecPtr *summarized_lsn,
 								  XLogRecPtr *pending_lsn,
 								  int *summarizer_pid);
 extern XLogRecPtr GetOldestUnsummarizedLSN(TimeLineID *tli,
-										   bool *lsn_is_exact);
+										   bool *lsn_is_exact,
+										   bool reset_pending_lsn);
 extern void SetWalSummarizerLatch(void);
-extern void WaitForWalSummarization(XLogRecPtr lsn);
+extern XLogRecPtr WaitForWalSummarization(XLogRecPtr lsn, long timeout,
+										  XLogRecPtr *pending_lsn);
 
 #endif

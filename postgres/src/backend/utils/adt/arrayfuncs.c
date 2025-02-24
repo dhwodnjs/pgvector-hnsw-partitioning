@@ -17,6 +17,7 @@
 #include <ctype.h>
 #include <math.h>
 
+#include "access/htup_details.h"
 #include "catalog/pg_type.h"
 #include "common/int.h"
 #include "funcapi.h"
@@ -2887,14 +2888,7 @@ array_set_slice(Datum arraydatum,
 						 errdetail("When assigning to a slice of an empty array value,"
 								   " slice boundaries must be fully specified.")));
 
-			/* compute "upperIndx[i] - lowerIndx[i] + 1", detecting overflow */
-			if (pg_sub_s32_overflow(upperIndx[i], lowerIndx[i], &dim[i]) ||
-				pg_add_s32_overflow(dim[i], 1, &dim[i]))
-				ereport(ERROR,
-						(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-						 errmsg("array size exceeds the maximum allowed (%d)",
-								(int) MaxArraySize)));
-
+			dim[i] = 1 + upperIndx[i] - lowerIndx[i];
 			lb[i] = lowerIndx[i];
 		}
 

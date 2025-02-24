@@ -38,7 +38,7 @@
 
 #include "postgres.h"
 
-#include "executor/executor.h"
+#include "executor/execdebug.h"
 #include "executor/execPartition.h"
 #include "executor/nodeMergeAppend.h"
 #include "lib/binaryheap.h"

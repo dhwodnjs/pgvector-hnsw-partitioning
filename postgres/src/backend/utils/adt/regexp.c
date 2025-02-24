@@ -31,6 +31,7 @@
 
 #include "catalog/pg_type.h"
 #include "funcapi.h"
+#include "miscadmin.h"
 #include "regex/regex.h"
 #include "utils/array.h"
 #include "utils/builtins.h"

@@ -16,7 +16,7 @@
 
 #include "lib/qunique.h"
 #include "tsearch/ts_utils.h"
-#include "utils/fmgrprotos.h"
+#include "utils/builtins.h"
 #include "varatt.h"
 
 Datum

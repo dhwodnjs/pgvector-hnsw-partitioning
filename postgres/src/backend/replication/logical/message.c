@@ -34,7 +34,10 @@
 #include "access/xact.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
+#include "nodes/execnodes.h"
+#include "replication/logical.h"
 #include "replication/message.h"
+#include "utils/memutils.h"
 
 /*
  * Write logical decoding message into XLog.

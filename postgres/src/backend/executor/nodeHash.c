@@ -30,18 +30,19 @@
 #include "access/parallel.h"
 #include "catalog/pg_statistic.h"
 #include "commands/tablespace.h"
-#include "executor/executor.h"
+#include "executor/execdebug.h"
 #include "executor/hashjoin.h"
 #include "executor/nodeHash.h"
 #include "executor/nodeHashjoin.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "port/atomics.h"
 #include "port/pg_bitutils.h"
 #include "utils/dynahash.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
-#include "utils/wait_event.h"
 
 static void ExecHashIncreaseNumBatches(HashJoinTable hashtable);
 static void ExecHashIncreaseNumBuckets(HashJoinTable hashtable);
@@ -1244,7 +1245,6 @@ ExecParallelHashIncreaseNumBatches(HashJoinTable hashtable)
 			if (BarrierArriveAndWait(&pstate->grow_batches_barrier,
 									 WAIT_EVENT_HASH_GROW_BATCHES_DECIDE))
 			{
-				ParallelHashJoinBatch *old_batches;
 				bool		space_exhausted = false;
 				bool		extreme_skew_detected = false;
 
@@ -1252,31 +1252,25 @@ ExecParallelHashIncreaseNumBatches(HashJoinTable hashtable)
 				ExecParallelHashEnsureBatchAccessors(hashtable);
 				ExecParallelHashTableSetCurrentBatch(hashtable, 0);
 
-				old_batches = dsa_get_address(hashtable->area, pstate->old_batches);
-
 				/* Are any of the new generation of batches exhausted? */
 				for (int i = 0; i < hashtable->nbatch; ++i)
 				{
-					ParallelHashJoinBatch *batch;
-					ParallelHashJoinBatch *old_batch;
-					int			parent;
+					ParallelHashJoinBatch *batch = hashtable->batches[i].shared;
 
-					batch = hashtable->batches[i].shared;
 					if (batch->space_exhausted ||
 						batch->estimated_size > pstate->space_allowed)
+					{
+						int			parent;
+
 						space_exhausted = true;
 
-					parent = i % pstate->old_nbatch;
-					old_batch = NthParallelHashJoinBatch(old_batches, parent);
-					if (old_batch->space_exhausted ||
-						batch->estimated_size > pstate->space_allowed)
-					{
 						/*
 						 * Did this batch receive ALL of the tuples from its
 						 * parent batch?  That would indicate that further
 						 * repartitioning isn't going to help (the hash values
 						 * are probably all the same).
 						 */
+						parent = i % pstate->old_nbatch;
 						if (batch->ntuples == hashtable->batches[parent].shared->old_ntuples)
 							extreme_skew_detected = true;
 					}

@@ -854,7 +854,6 @@ alter table atacc1 add constraint "atacc1_pkey" primary key (test);
 alter table atacc1 alter column test drop not null;
 \d atacc1
 alter table atacc1 drop constraint "atacc1_pkey";
-alter table atacc1 alter column test drop not null;
 \d atacc1
 insert into atacc1 values (null);
 alter table atacc1 alter test set not null;
@@ -920,14 +919,6 @@ insert into parent values (NULL);
 insert into child (a, b) values (NULL, 'foo');
 alter table only parent alter a set not null;
 alter table child alter a set not null;
-delete from parent;
-alter table only parent alter a set not null;
-insert into parent values (NULL);
-alter table child alter a set not null;
-insert into child (a, b) values (NULL, 'foo');
-delete from child;
-alter table child alter a set not null;
-insert into child (a, b) values (NULL, 'foo');
 drop table child;
 drop table parent;
 
@@ -1495,6 +1486,8 @@ select conname, obj_description(oid, 'pg_constraint') as desc
   order by conname;
 
 alter table at_partitioned alter column name type varchar(127);
+
+-- Note: these tests currently show the wrong behavior for comments :-(
 
 select relname,
   c.oid = oldoid as orig_oid,
@@ -2348,6 +2341,9 @@ ALTER TABLE atnotnull1
   ADD COLUMN a INT,
   ALTER a SET NOT NULL;
 ALTER TABLE atnotnull1
+  ADD COLUMN b INT,
+  ADD NOT NULL b;
+ALTER TABLE atnotnull1
   ADD COLUMN c INT,
   ADD PRIMARY KEY (c);
 \d+ atnotnull1
@@ -2423,13 +2419,6 @@ CREATE TABLE parent (LIKE list_parted);
 CREATE TABLE child () INHERITS (parent);
 ALTER TABLE list_parted ATTACH PARTITION child FOR VALUES IN (1);
 ALTER TABLE list_parted ATTACH PARTITION parent FOR VALUES IN (1);
-DROP TABLE child;
--- now it should work, with a little tweak
-ALTER TABLE parent ADD CONSTRAINT check_a CHECK (a > 0);
-ALTER TABLE list_parted ATTACH PARTITION parent FOR VALUES IN (1);
--- test insert/update, per bug #18550
-INSERT INTO parent VALUES (1);
-UPDATE parent SET a = 2 WHERE a = 1;
 DROP TABLE parent CASCADE;
 
 -- check any TEMP-ness

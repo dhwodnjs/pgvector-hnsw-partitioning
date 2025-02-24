@@ -195,8 +195,8 @@ mkdir($tempdir) unless -d $tempdir;
 
 my $cmd = "dumpbin /nologo /symbols /out:$tmpfile " . join(' ', @files);
 
-system($cmd) == 0 or die "Could not call dumpbin";
-rename($tmpfile, $symfile) or die $!;
+system($cmd) && die "Could not call dumpbin";
+rename($tmpfile, $symfile);
 extract_syms($symfile, \%def);
 print "\n";
 

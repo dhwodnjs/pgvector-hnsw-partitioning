@@ -31,6 +31,7 @@
 #include "common/int.h"
 #include "miscadmin.h"
 #include "storage/indexfsm.h"
+#include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "utils/memdebug.h"

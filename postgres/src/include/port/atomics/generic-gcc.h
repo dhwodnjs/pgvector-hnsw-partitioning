@@ -240,7 +240,6 @@ static inline bool
 pg_atomic_compare_exchange_u64_impl(volatile pg_atomic_uint64 *ptr,
 									uint64 *expected, uint64 newval)
 {
-	AssertPointerAlignment(expected, 8);
 	return __atomic_compare_exchange_n(&ptr->value, expected, newval, false,
 									   __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
 }
@@ -254,8 +253,6 @@ pg_atomic_compare_exchange_u64_impl(volatile pg_atomic_uint64 *ptr,
 {
 	bool	ret;
 	uint64	current;
-
-	AssertPointerAlignment(expected, 8);
 	current = __sync_val_compare_and_swap(&ptr->value, *expected, newval);
 	ret = current == *expected;
 	*expected = current;

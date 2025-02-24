@@ -13,9 +13,11 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_collation.h"
 #include "common/string.h"
 #include "storage/fd.h"
 #include "tsearch/ts_locale.h"
+#include "tsearch/ts_public.h"
 
 static void tsearch_readline_callback(void *arg);
 

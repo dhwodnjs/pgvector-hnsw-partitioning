@@ -347,18 +347,6 @@ UNION ALL
 SELECT t1.id, t2.path, t2 FROM t AS t1 JOIN t AS t2 ON
 (t1.id=t2.id);
 
-CREATE TEMP TABLE duplicates (a INT NOT NULL);
-INSERT INTO duplicates VALUES(1), (1);
-
--- Try out a recursive UNION case where the non-recursive part's table slot
--- uses TTSOpsBufferHeapTuple and contains duplicate rows.
-WITH RECURSIVE cte (a) as (
-	SELECT a FROM duplicates
-	UNION
-	SELECT a FROM cte
-)
-SELECT a FROM cte;
-
 -- test that column statistics from a materialized CTE are available
 -- to upper planner (otherwise, we'd get a stupider plan)
 explain (costs off)
@@ -368,13 +356,6 @@ select count(*) from tenk1 a
 
 explain (costs off)
 with x as materialized (insert into tenk1 default values returning unique1)
-select count(*) from tenk1 a
-  where unique1 in (select * from x);
-
--- test that pathkeys from a materialized CTE are propagated up to the
--- outer query
-explain (costs off)
-with x as materialized (select unique1 from tenk1 b order by unique1)
 select count(*) from tenk1 a
   where unique1 in (select * from x);
 
@@ -918,35 +899,6 @@ WITH RECURSIVE x(n) AS (SELECT n FROM x)
 
 -- recursive term in the left hand side (strictly speaking, should allow this)
 WITH RECURSIVE x(n) AS (SELECT n FROM x UNION ALL SELECT 1)
-	SELECT * FROM x;
-
--- allow this, because we historically have
-WITH RECURSIVE x(n) AS (
-  WITH x1 AS (SELECT 1 AS n)
-    SELECT 0
-    UNION
-    SELECT * FROM x1)
-	SELECT * FROM x;
-
--- but this should be rejected
-WITH RECURSIVE x(n) AS (
-  WITH x1 AS (SELECT 1 FROM x)
-    SELECT 0
-    UNION
-    SELECT * FROM x1)
-	SELECT * FROM x;
-
--- and this too
-WITH RECURSIVE x(n) AS (
-  (WITH x1 AS (SELECT 1 FROM x) SELECT * FROM x1)
-  UNION
-  SELECT 0)
-	SELECT * FROM x;
-
--- and this
-WITH RECURSIVE x(n) AS (
-  SELECT 0 UNION SELECT 1
-  ORDER BY (SELECT n FROM x))
 	SELECT * FROM x;
 
 CREATE TEMPORARY TABLE y (a INTEGER);
@@ -1636,14 +1588,6 @@ VALUES(FALSE);
 -- no RETURNING in a referenced data-modifying WITH
 WITH t AS (
 	INSERT INTO y VALUES(0)
-)
-SELECT * FROM t;
-
--- RETURNING tries to return its own output
-WITH RECURSIVE t(action, a) AS (
-	MERGE INTO y USING (VALUES (11)) v(a) ON y.a = v.a
-		WHEN NOT MATCHED THEN INSERT VALUES (v.a)
-		RETURNING merge_action(), (SELECT a FROM t)
 )
 SELECT * FROM t;
 

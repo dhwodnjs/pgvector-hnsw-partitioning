@@ -1,7 +1,7 @@
 # Copyright (c) 2021-2024, PostgreSQL Global Development Group
 
 use strict;
-use warnings FATAL => 'all';
+use warnings;
 use File::Compare;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
@@ -51,6 +51,7 @@ my $summarized_lsn = $node1->safe_psql('postgres', <<EOM);
 SELECT MAX(end_lsn) AS summarized_lsn FROM pg_available_wal_summaries()
 EOM
 note("after insert, summarized through $summarized_lsn");
+note_wal_summary_dir("after insert", $node1);
 
 # Update a row in the first block of the table and trigger a checkpoint.
 $node1->safe_psql('postgres', <<EOM);
@@ -74,16 +75,18 @@ SELECT tli, start_lsn, end_lsn from pg_available_wal_summaries()
 	WHERE end_lsn > '$summarized_lsn'
 EOM
 my @lines = split(/\n/, $details);
-is(0 + @lines, 1, "got exactly one new WAL summary");
+is(0+@lines, 1, "got exactly one new WAL summary");
 my ($tli, $start_lsn, $end_lsn) = split(/\|/, $lines[0]);
 note("examining summary for TLI $tli from $start_lsn to $end_lsn");
+note_wal_summary_dir("after new summary", $node1);
 
 # Reconstruct the full pathname for the WAL summary file.
 my $filename = sprintf "%s/pg_wal/summaries/%08s%08s%08s%08s%08s.summary",
-  $node1->data_dir, $tli,
-  split(m@/@, $start_lsn),
-  split(m@/@, $end_lsn);
+					   $node1->data_dir, $tli,
+					   split(m@/@, $start_lsn),
+					   split(m@/@, $end_lsn);
 ok(-f $filename, "WAL summary file exists");
+note_wal_summary_dir("after existence check", $node1);
 
 # Run pg_walsummary on it. We expect exactly two blocks to be modified,
 # block 0 and one other.
@@ -92,6 +95,17 @@ note($stdout);
 @lines = split(/\n/, $stdout);
 like($stdout, qr/FORK main: block 0$/m, "stdout shows block 0 modified");
 is($stderr, '', 'stderr is empty');
-is(0 + @lines, 2, "UPDATE modified 2 blocks");
+is(0+@lines, 2, "UPDATE modified 2 blocks");
+note_wal_summary_dir("after pg_walsummary run", $node1);
 
 done_testing();
+
+# XXX. Temporary debugging code.
+sub note_wal_summary_dir
+{
+	my ($flair, $node) = @_;
+
+	my $wsdir = sprintf "%s/pg_wal/summaries", $node->data_dir;
+	my @wsfiles = grep { $_ ne '.' && $_ ne '..' } slurp_dir($wsdir);
+	note("$flair pg_wal/summaries has: @wsfiles");
+}

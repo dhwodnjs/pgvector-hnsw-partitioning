@@ -44,14 +44,19 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
-#include "access/relation.h"
+#include "access/heapam.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "access/transam.h"
+#include "access/xlog.h"
 #include "catalog/index.h"
+#include "catalog/pg_amproc.h"
 #include "catalog/pg_type.h"
-#include "nodes/execnodes.h"
+#include "commands/defrem.h"
+#include "nodes/makefuncs.h"
 #include "pgstat.h"
+#include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "utils/ruleutils.h"
@@ -242,9 +247,10 @@ index_insert_cleanup(Relation indexRelation,
 					 IndexInfo *indexInfo)
 {
 	RELATION_CHECKS;
+	Assert(indexInfo);
 
-	if (indexRelation->rd_indam->aminsertcleanup)
-		indexRelation->rd_indam->aminsertcleanup(indexRelation, indexInfo);
+	if (indexRelation->rd_indam->aminsertcleanup && indexInfo->ii_AmCache)
+		indexRelation->rd_indam->aminsertcleanup(indexInfo);
 }
 
 /*
@@ -448,10 +454,13 @@ index_restrpos(IndexScanDesc scan)
 
 /*
  * index_parallelscan_estimate - estimate shared memory for parallel scan
+ *
+ * Currently, we don't pass any information to the AM-specific estimator,
+ * so it can probably only return a constant.  In the future, we might need
+ * to pass more information.
  */
 Size
-index_parallelscan_estimate(Relation indexRelation, int nkeys, int norderbys,
-							Snapshot snapshot)
+index_parallelscan_estimate(Relation indexRelation, Snapshot snapshot)
 {
 	Size		nbytes;
 
@@ -470,8 +479,7 @@ index_parallelscan_estimate(Relation indexRelation, int nkeys, int norderbys,
 	 */
 	if (indexRelation->rd_indam->amestimateparallelscan != NULL)
 		nbytes = add_size(nbytes,
-						  indexRelation->rd_indam->amestimateparallelscan(nkeys,
-																		  norderbys));
+						  indexRelation->rd_indam->amestimateparallelscan());
 
 	return nbytes;
 }

@@ -68,9 +68,6 @@ MERGE INTO ro_view13 AS t USING (VALUES (2, 'Row 2')) AS v(a,b) ON t.a = v.a
   WHEN MATCHED THEN UPDATE SET b = v.b;
 MERGE INTO ro_view13 AS t USING (VALUES (3, 'Row 3')) AS v(a,b) ON t.a = v.a
   WHEN NOT MATCHED THEN INSERT VALUES (v.a, v.b);
-MERGE INTO ro_view13 AS t USING (VALUES (2, 'Row 2')) AS v(a,b) ON t.a = v.a
-  WHEN MATCHED THEN DO NOTHING
-  WHEN NOT MATCHED THEN DO NOTHING; -- should be OK to do nothing
 MERGE INTO ro_view13 AS t USING (VALUES (3, 'Row 3')) AS v(a,b) ON t.a = v.a
   WHEN MATCHED THEN DO NOTHING
   WHEN NOT MATCHED THEN DO NOTHING; -- should be OK to do nothing
@@ -124,8 +121,6 @@ DELETE FROM rw_view16 WHERE a=-3; -- should be OK
 -- Read-only views
 INSERT INTO ro_view17 VALUES (3, 'ROW 3');
 DELETE FROM ro_view18;
-MERGE INTO ro_view18 AS t USING (VALUES (1, 'Row 1')) AS v(a,b) ON t.a = v.a
-  WHEN MATCHED THEN DO NOTHING; -- should be OK to do nothing
 UPDATE ro_view19 SET last_value=1000;
 UPDATE ro_view20 SET b=upper(b);
 
@@ -180,18 +175,7 @@ MERGE INTO rw_view1 t
                 (2, 'ROW 2'), (3, 'ROW 3')) AS v(a,b) ON t.a = v.a
   WHEN MATCHED AND t.a <= 1 THEN UPDATE SET b = v.b
   WHEN MATCHED THEN DELETE
-  WHEN NOT MATCHED AND a > 0 THEN INSERT (a) VALUES (v.a)
-  RETURNING merge_action(), v.*, t.*;
-SELECT * FROM base_tbl ORDER BY a;
-
-MERGE INTO rw_view1 t
-  USING (VALUES (0, 'R0'), (1, 'R1'),
-                (2, 'R2'), (3, 'R3')) AS v(a,b) ON t.a = v.a
-  WHEN MATCHED AND t.a <= 1 THEN UPDATE SET b = v.b
-  WHEN MATCHED THEN DELETE
-  WHEN NOT MATCHED BY SOURCE THEN DELETE
-  WHEN NOT MATCHED AND a > 0 THEN INSERT (a) VALUES (v.a)
-  RETURNING merge_action(), v.*, t.*;
+  WHEN NOT MATCHED AND a > 0 THEN INSERT (a) VALUES (v.a);
 SELECT * FROM base_tbl ORDER BY a;
 
 EXPLAIN (costs off) UPDATE rw_view1 SET a=6 WHERE a=5;
@@ -205,11 +189,6 @@ EXPLAIN (costs off)
 MERGE INTO rw_view1 t
   USING (SELECT * FROM generate_series(1,5)) AS s(a) ON t.a = s.a
   WHEN MATCHED THEN UPDATE SET b = 'Updated';
-
-EXPLAIN (costs off)
-MERGE INTO rw_view1 t
-  USING (SELECT * FROM generate_series(1,5)) AS s(a) ON t.a = s.a
-  WHEN NOT MATCHED BY SOURCE THEN DELETE;
 
 EXPLAIN (costs off)
 MERGE INTO rw_view1 t
@@ -267,17 +246,7 @@ MERGE INTO rw_view2 t
   USING (VALUES (3, 'R3'), (4, 'R4'), (5, 'R5')) AS v(a,b) ON aaa = v.a
   WHEN MATCHED AND aaa = 3 THEN DELETE
   WHEN MATCHED THEN UPDATE SET bbb = v.b
-  WHEN NOT MATCHED THEN INSERT (aaa) VALUES (v.a)
-  RETURNING merge_action(), v.*, t.*;
-SELECT * FROM rw_view2 ORDER BY aaa;
-
-MERGE INTO rw_view2 t
-  USING (VALUES (4, 'r4'), (5, 'r5'), (6, 'r6')) AS v(a,b) ON aaa = v.a
-  WHEN MATCHED AND aaa = 4 THEN DELETE
-  WHEN MATCHED THEN UPDATE SET bbb = v.b
-  WHEN NOT MATCHED THEN INSERT (aaa) VALUES (v.a)
-  WHEN NOT MATCHED BY SOURCE THEN UPDATE SET bbb = 'Not matched by source'
-  RETURNING merge_action(), v.*, t.*;
+  WHEN NOT MATCHED THEN INSERT (aaa) VALUES (v.a);
 SELECT * FROM rw_view2 ORDER BY aaa;
 
 EXPLAIN (costs off) UPDATE rw_view2 SET aaa=5 WHERE aaa=4;
@@ -489,16 +458,7 @@ MERGE INTO rw_view2 t
   USING (SELECT x, 'R'||x FROM generate_series(0,3) x) AS s(a,b) ON t.a = s.a
   WHEN MATCHED AND t.a <= 1 THEN DELETE
   WHEN MATCHED THEN UPDATE SET b = s.b
-  WHEN NOT MATCHED AND s.a > 0 THEN INSERT VALUES (s.a, s.b)
-  RETURNING merge_action(), s.*, t.*;
-SELECT * FROM base_tbl ORDER BY a;
-
-MERGE INTO rw_view2 t
-  USING (SELECT x, 'r'||x FROM generate_series(0,2) x) AS s(a,b) ON t.a = s.a
-  WHEN MATCHED THEN UPDATE SET b = s.b
-  WHEN NOT MATCHED AND s.a > 0 THEN INSERT VALUES (s.a, s.b)
-  WHEN NOT MATCHED BY SOURCE THEN UPDATE SET b = 'Not matched by source'
-  RETURNING merge_action(), s.*, t.*;
+  WHEN NOT MATCHED AND s.a > 0 THEN INSERT VALUES (s.a, s.b);
 SELECT * FROM base_tbl ORDER BY a;
 
 EXPLAIN (costs off) UPDATE rw_view2 SET a=3 WHERE a=2;
@@ -1111,7 +1071,6 @@ CREATE VIEW rw_view1 AS
 
 INSERT INTO rw_view1 VALUES (null, null, 1.1, null); -- should fail
 INSERT INTO rw_view1 (s, c, a) VALUES (null, null, 1.1); -- should fail
-INSERT INTO rw_view1 (s, c, a) VALUES (default, default, 1.1); -- should fail
 INSERT INTO rw_view1 (a) VALUES (1.1) RETURNING a, s, c; -- OK
 UPDATE rw_view1 SET s = s WHERE a = 1.1; -- should fail
 UPDATE rw_view1 SET a = 1.05 WHERE a = 1.1 RETURNING s; -- OK

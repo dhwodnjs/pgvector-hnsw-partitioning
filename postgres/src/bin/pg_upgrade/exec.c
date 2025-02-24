@@ -44,7 +44,8 @@ get_bin_version(ClusterInfo *cluster)
 
 	if ((output = popen(cmd, "r")) == NULL ||
 		fgets(cmd_output, sizeof(cmd_output), output) == NULL)
-		pg_fatal("could not get pg_ctl version data using %s: %m", cmd);
+		pg_fatal("could not get pg_ctl version data using %s: %s",
+				 cmd, strerror(errno));
 
 	rc = pclose(output);
 	if (rc != 0)
@@ -241,7 +242,8 @@ pid_lock_file_exists(const char *datadir)
 	{
 		/* ENOTDIR means we will throw a more useful error later */
 		if (errno != ENOENT && errno != ENOTDIR)
-			pg_fatal("could not open file \"%s\" for reading: %m", path);
+			pg_fatal("could not open file \"%s\" for reading: %s",
+					 path, strerror(errno));
 
 		return false;
 	}
@@ -320,8 +322,8 @@ check_single_dir(const char *pg_data, const char *subdir)
 			 subdir);
 
 	if (stat(subDirName, &statBuf) != 0)
-		report_status(PG_FATAL, "check for \"%s\" failed: %m",
-					  subDirName);
+		report_status(PG_FATAL, "check for \"%s\" failed: %s",
+					  subDirName, strerror(errno));
 	else if (!S_ISDIR(statBuf.st_mode))
 		report_status(PG_FATAL, "\"%s\" is not a directory",
 					  subDirName);
@@ -386,8 +388,8 @@ check_bin_dir(ClusterInfo *cluster, bool check_versions)
 
 	/* check bindir */
 	if (stat(cluster->bindir, &statBuf) != 0)
-		report_status(PG_FATAL, "check for \"%s\" failed: %m",
-					  cluster->bindir);
+		report_status(PG_FATAL, "check for \"%s\" failed: %s",
+					  cluster->bindir, strerror(errno));
 	else if (!S_ISDIR(statBuf.st_mode))
 		report_status(PG_FATAL, "\"%s\" is not a directory",
 					  cluster->bindir);

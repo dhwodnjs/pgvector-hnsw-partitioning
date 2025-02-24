@@ -44,6 +44,7 @@
 #include "storage/pg_shmem.h"
 #include "storage/shmem.h"
 #include "utils/freepage.h"
+#include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 

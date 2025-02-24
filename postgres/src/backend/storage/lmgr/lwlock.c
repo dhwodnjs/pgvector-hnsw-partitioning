@@ -81,6 +81,9 @@
 #include "pgstat.h"
 #include "port/pg_bitutils.h"
 #include "postmaster/postmaster.h"
+#include "replication/slot.h"
+#include "storage/ipc.h"
+#include "storage/predicate.h"
 #include "storage/proc.h"
 #include "storage/proclist.h"
 #include "storage/spin.h"
@@ -111,9 +114,9 @@ StaticAssertDecl(LW_VAL_EXCLUSIVE > (uint32) MAX_BACKENDS,
 /*
  * There are three sorts of LWLock "tranches":
  *
- * 1. The individually-named locks defined in lwlocklist.h each have their
- * own tranche.  We absorb the names of these tranches from there into
- * BuiltinTrancheNames here.
+ * 1. The individually-named locks defined in lwlocknames.h each have their
+ * own tranche.  The names of these tranches appear in IndividualLWLockNames[]
+ * in lwlocknames.c.
  *
  * 2. There are some predefined tranches for built-in groups of locks.
  * These are listed in enum BuiltinTrancheIds in lwlock.h, and their names
@@ -126,10 +129,9 @@ StaticAssertDecl(LW_VAL_EXCLUSIVE > (uint32) MAX_BACKENDS,
  * All these names are user-visible as wait event names, so choose with care
  * ... and do not forget to update the documentation's list of wait events.
  */
+extern const char *const IndividualLWLockNames[];	/* in lwlocknames.c */
+
 static const char *const BuiltinTrancheNames[] = {
-#define PG_LWLOCK(id, lockname) [id] = CppAsString(lockname),
-#include "storage/lwlocklist.h"
-#undef PG_LWLOCK
 	[LWTRANCHE_XACT_BUFFER] = "XactBuffer",
 	[LWTRANCHE_COMMITTS_BUFFER] = "CommitTsBuffer",
 	[LWTRANCHE_SUBTRANS_BUFFER] = "SubtransBuffer",
@@ -161,14 +163,13 @@ static const char *const BuiltinTrancheNames[] = {
 	[LWTRANCHE_LAUNCHER_HASH] = "LogicalRepLauncherHash",
 	[LWTRANCHE_DSM_REGISTRY_DSA] = "DSMRegistryDSA",
 	[LWTRANCHE_DSM_REGISTRY_HASH] = "DSMRegistryHash",
-	[LWTRANCHE_COMMITTS_SLRU] = "CommitTsSLRU",
+	[LWTRANCHE_COMMITTS_SLRU] = "CommitTSSLRU",
 	[LWTRANCHE_MULTIXACTOFFSET_SLRU] = "MultixactOffsetSLRU",
 	[LWTRANCHE_MULTIXACTMEMBER_SLRU] = "MultixactMemberSLRU",
 	[LWTRANCHE_NOTIFY_SLRU] = "NotifySLRU",
 	[LWTRANCHE_SERIAL_SLRU] = "SerialSLRU",
 	[LWTRANCHE_SUBTRANS_SLRU] = "SubtransSLRU",
 	[LWTRANCHE_XACT_SLRU] = "XactSLRU",
-	[LWTRANCHE_PARALLEL_VACUUM_DSA] = "ParallelVacuumDSA",
 };
 
 StaticAssertDecl(lengthof(BuiltinTrancheNames) ==
@@ -744,7 +745,11 @@ LWLockReportWaitEnd(void)
 static const char *
 GetLWTrancheName(uint16 trancheId)
 {
-	/* Built-in tranche or individual LWLock? */
+	/* Individual LWLock? */
+	if (trancheId < NUM_INDIVIDUAL_LWLOCKS)
+		return IndividualLWLockNames[trancheId];
+
+	/* Built-in tranche? */
 	if (trancheId < LWTRANCHE_FIRST_USER_DEFINED)
 		return BuiltinTrancheNames[trancheId];
 

@@ -132,10 +132,8 @@ typedef struct ExprState
 	bool	   *innermost_domainnull;
 
 	/*
-	 * For expression nodes that support soft errors. Should be set to NULL if
-	 * the caller wants errors to be thrown. Callers that do not want errors
-	 * thrown should set it to a valid ErrorSaveContext before calling
-	 * ExecInitExprRec().
+	 * For expression nodes that support soft errors.  Should be set to NULL
+	 * before calling ExecInitExprRec() if the caller wants errors thrown.
 	 */
 	ErrorSaveContext *escontext;
 } ExprState;
@@ -484,9 +482,6 @@ typedef struct ResultRelInfo
 	/* Have the projection and the slots above been initialized? */
 	bool		ri_projectNewInfoValid;
 
-	/* updates do LockTuple() before oldtup read; see README.tuplock */
-	bool		ri_needLockTagTuple;
-
 	/* triggers to be fired, if any */
 	TriggerDesc *ri_TrigDesc;
 
@@ -549,11 +544,9 @@ typedef struct ResultRelInfo
 	/* ON CONFLICT evaluation state */
 	OnConflictSetState *ri_onConflict;
 
-	/* for MERGE, lists of MergeActionState (one per MergeMatchKind) */
-	List	   *ri_MergeActions[NUM_MERGE_MATCH_KINDS];
-
-	/* for MERGE, expr state for checking the join condition */
-	ExprState  *ri_MergeJoinCondition;
+	/* for MERGE, lists of MergeActionState */
+	List	   *ri_matchedMergeAction;
+	List	   *ri_notMatchedMergeAction;
 
 	/* partition check expression state (NULL if not set up yet) */
 	ExprState  *ri_PartitionCheckExpr;
@@ -1015,77 +1008,6 @@ typedef struct DomainConstraintState
 	ExprState  *check_exprstate;	/* check_expr's eval state, or NULL */
 } DomainConstraintState;
 
-/*
- * State for JsonExpr evaluation, too big to inline.
- *
- * This contains the information going into and coming out of the
- * EEOP_JSONEXPR_PATH eval step.
- */
-typedef struct JsonExprState
-{
-	/* original expression node */
-	JsonExpr   *jsexpr;
-
-	/* value/isnull for formatted_expr */
-	NullableDatum formatted_expr;
-
-	/* value/isnull for pathspec */
-	NullableDatum pathspec;
-
-	/* JsonPathVariable entries for passing_values */
-	List	   *args;
-
-	/*
-	 * Output variables that drive the EEOP_JUMP_IF_NOT_TRUE steps that are
-	 * added for ON ERROR and ON EMPTY expressions, if any.
-	 *
-	 * Reset for each evaluation of EEOP_JSONEXPR_PATH.
-	 */
-
-	/* Set to true if jsonpath evaluation cause an error.  */
-	NullableDatum error;
-
-	/* Set to true if the jsonpath evaluation returned 0 items. */
-	NullableDatum empty;
-
-	/*
-	 * Addresses of steps that implement the non-ERROR variant of ON EMPTY and
-	 * ON ERROR behaviors, respectively.
-	 */
-	int			jump_empty;
-	int			jump_error;
-
-	/*
-	 * Address of the step to coerce the result value of jsonpath evaluation
-	 * to the RETURNING type.  -1 if no coercion if JsonExpr.use_io_coercion
-	 * is true.
-	 */
-	int			jump_eval_coercion;
-
-	/*
-	 * Address to jump to when skipping all the steps after performing
-	 * ExecEvalJsonExprPath() so as to return whatever the JsonPath* function
-	 * returned as is, that is, in the cases where there's no error and no
-	 * coercion is necessary.
-	 */
-	int			jump_end;
-
-	/*
-	 * RETURNING type input function invocation info when
-	 * JsonExpr.use_io_coercion is true.
-	 */
-	FunctionCallInfo input_fcinfo;
-
-	/*
-	 * For error-safe evaluation of coercions.  When the ON ERROR behavior is
-	 * not ERROR, a pointer to this is passed to ExecInitExprRec() when
-	 * initializing the coercion expressions or to ExecInitJsonCoercion().
-	 *
-	 * Reset for each evaluation of EEOP_JSONEXPR_PATH.
-	 */
-	ErrorSaveContext escontext;
-} JsonExprState;
-
 
 /* ----------------------------------------------------------------
  *				 Executor State Trees
@@ -1403,16 +1325,6 @@ typedef struct ModifyTableState
 	/* Flags showing which subcommands are present INS/UPD/DEL/DO NOTHING */
 	int			mt_merge_subcommands;
 
-	/* For MERGE, the action currently being executed */
-	MergeActionState *mt_merge_action;
-
-	/*
-	 * For MERGE, if there is a pending NOT MATCHED [BY TARGET] action to be
-	 * performed, this will be the last tuple read from the subplan; otherwise
-	 * it will be NULL --- see the comments in ExecMerge().
-	 */
-	TupleTableSlot *mt_merge_pending_not_matched;
-
 	/* tuple counters for MERGE */
 	double		mt_merge_inserted;
 	double		mt_merge_updated;
@@ -1694,8 +1606,6 @@ typedef struct IndexScanState
  *		TableSlot		   slot for holding tuples fetched from the table
  *		VMBuffer		   buffer in use for visibility map testing, if any
  *		PscanLen		   size of parallel index-only scan descriptor
- *		NameCStringAttNums attnums of name typed columns to pad to NAMEDATALEN
- *		NameCStringCount   number of elements in the NameCStringAttNums array
  * ----------------
  */
 typedef struct IndexOnlyScanState
@@ -1715,8 +1625,6 @@ typedef struct IndexOnlyScanState
 	TupleTableSlot *ioss_TableSlot;
 	Buffer		ioss_VMBuffer;
 	Size		ioss_PscanLen;
-	AttrNumber *ioss_NameCStringAttNums;
-	int			ioss_NameCStringCount;
 } IndexOnlyScanState;
 
 /* ----------------
@@ -1781,6 +1689,7 @@ typedef enum
  *		prefetch_target			current target prefetch distance
  *		state					current state of the TIDBitmap
  *		cv						conditional wait variable
+ *		phs_snapshot_data		snapshot data shared to workers
  * ----------------
  */
 typedef struct ParallelBitmapHeapState
@@ -1792,6 +1701,7 @@ typedef struct ParallelBitmapHeapState
 	int			prefetch_target;
 	SharedBitmapState state;
 	ConditionVariable cv;
+	char		phs_snapshot_data[FLEXIBLE_ARRAY_MEMBER];
 } ParallelBitmapHeapState;
 
 /* ----------------
@@ -1801,13 +1711,17 @@ typedef struct ParallelBitmapHeapState
  *		tbm				   bitmap obtained from child index scan(s)
  *		tbmiterator		   iterator for scanning current pages
  *		tbmres			   current-page data
- *		pvmbuffer		   buffer for visibility-map lookups of prefetched pages
+ *		can_skip_fetch	   can we potentially skip tuple fetches in this scan?
+ *		return_empty_tuples number of empty tuples to return
+ *		vmbuffer		   buffer for visibility-map lookups
+ *		pvmbuffer		   ditto, for prefetched pages
  *		exact_pages		   total number of exact pages retrieved
  *		lossy_pages		   total number of lossy pages retrieved
  *		prefetch_iterator  iterator for prefetching ahead of current page
  *		prefetch_pages	   # pages prefetch iterator is ahead of current
  *		prefetch_target    current target prefetch distance
  *		prefetch_maximum   maximum value for prefetch_target
+ *		pscan_len		   size of the shared memory for parallel bitmap
  *		initialized		   is node is ready to iterate
  *		shared_tbmiterator	   shared iterator
  *		shared_prefetch_iterator shared iterator for prefetching
@@ -1821,6 +1735,9 @@ typedef struct BitmapHeapScanState
 	TIDBitmap  *tbm;
 	TBMIterator *tbmiterator;
 	TBMIterateResult *tbmres;
+	bool		can_skip_fetch;
+	int			return_empty_tuples;
+	Buffer		vmbuffer;
 	Buffer		pvmbuffer;
 	long		exact_pages;
 	long		lossy_pages;
@@ -1828,6 +1745,7 @@ typedef struct BitmapHeapScanState
 	int			prefetch_pages;
 	int			prefetch_target;
 	int			prefetch_maximum;
+	Size		pscan_len;
 	bool		initialized;
 	TBMSharedIterator *shared_tbmiterator;
 	TBMSharedIterator *shared_prefetch_iterator;
@@ -1842,6 +1760,7 @@ typedef struct BitmapHeapScanState
  *		NumTids		   number of tids in this scan
  *		TidPtr		   index of currently fetched tid
  *		TidList		   evaluated item pointers (array of size NumTids)
+ *		htup		   currently-fetched tuple, if any
  * ----------------
  */
 typedef struct TidScanState
@@ -1852,6 +1771,7 @@ typedef struct TidScanState
 	int			tss_NumTids;
 	int			tss_TidPtr;
 	ItemPointerData *tss_TidList;
+	HeapTupleData tss_htup;
 } TidScanState;
 
 /* ----------------
@@ -1962,8 +1882,6 @@ typedef struct TableFuncScanState
 	ExprState  *rowexpr;		/* state for row-generating expression */
 	List	   *colexprs;		/* state for column-generating expression */
 	List	   *coldefexprs;	/* state for column default expressions */
-	List	   *colvalexprs;	/* state for column value expressions */
-	List	   *passingvalexprs;	/* state for PASSING argument expressions */
 	List	   *ns_names;		/* same as TableFunc.ns_names */
 	List	   *ns_uris;		/* list of states of namespace URI exprs */
 	Bitmapset  *notnulls;		/* nullability flag for each output column */
@@ -2535,6 +2453,7 @@ typedef struct AggState
 #define FIELDNO_AGGSTATE_ALL_PERGROUPS 53
 	AggStatePerGroup *all_pergroups;	/* array of first ->pergroups, than
 										 * ->hash_pergroup */
+	ProjectionInfo *combinedproj;	/* projection machinery */
 	SharedAggInfo *shared_info; /* one entry per worker */
 } AggState;
 

@@ -11,8 +11,8 @@
 
 #include <ctype.h>
 
-#include "common/string.h"
 #include "pg_upgrade.h"
+#include "common/string.h"
 
 
 /*
@@ -126,7 +126,8 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 		fflush(NULL);
 
 		if ((output = popen(cmd, "r")) == NULL)
-			pg_fatal("could not get control data using %s: %m", cmd);
+			pg_fatal("could not get control data using %s: %s",
+					 cmd, strerror(errno));
 
 		/* we have the result of cmd in "output". so parse it line by line now */
 		while (fgets(bufin, sizeof(bufin), output))
@@ -196,7 +197,8 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 	fflush(NULL);
 
 	if ((output = popen(cmd, "r")) == NULL)
-		pg_fatal("could not get control data using %s: %m", cmd);
+		pg_fatal("could not get control data using %s: %s",
+				 cmd, strerror(errno));
 
 	/* Only in <= 9.2 */
 	if (GET_MAJOR_VERSION(cluster->major_version) <= 902)

@@ -20,14 +20,9 @@
 
 struct JsonManifestParseContext;
 typedef struct JsonManifestParseContext JsonManifestParseContext;
-typedef struct JsonManifestParseIncrementalState JsonManifestParseIncrementalState;
 
-typedef void (*json_manifest_version_callback) (JsonManifestParseContext *,
-												int manifest_version);
-typedef void (*json_manifest_system_identifier_callback) (JsonManifestParseContext *,
-														  uint64 manifest_system_identifier);
 typedef void (*json_manifest_per_file_callback) (JsonManifestParseContext *,
-												 const char *pathname,
+												 char *pathname,
 												 size_t size, pg_checksum_type checksum_type,
 												 int checksum_length, uint8 *checksum_payload);
 typedef void (*json_manifest_per_wal_range_callback) (JsonManifestParseContext *,
@@ -40,19 +35,12 @@ typedef void (*json_manifest_error_callback) (JsonManifestParseContext *,
 struct JsonManifestParseContext
 {
 	void	   *private_data;
-	json_manifest_version_callback version_cb;
-	json_manifest_system_identifier_callback system_identifier_cb;
 	json_manifest_per_file_callback per_file_cb;
 	json_manifest_per_wal_range_callback per_wal_range_cb;
 	json_manifest_error_callback error_cb;
 };
 
 extern void json_parse_manifest(JsonManifestParseContext *context,
-								const char *buffer, size_t size);
-extern JsonManifestParseIncrementalState *json_parse_manifest_incremental_init(JsonManifestParseContext *context);
-extern void json_parse_manifest_incremental_chunk(JsonManifestParseIncrementalState *incstate,
-												  const char *chunk, size_t size,
-												  bool is_last);
-extern void json_parse_manifest_incremental_shutdown(JsonManifestParseIncrementalState *incstate);
+								char *buffer, size_t size);
 
 #endif

@@ -17,6 +17,9 @@
 #include "nodes/execnodes.h"
 #include "nodes/extensible.h"
 #include "nodes/plannodes.h"
+#include "parser/parsetree.h"
+#include "utils/hsearch.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 
 static TupleTableSlot *ExecCustomScan(PlanState *pstate);

@@ -11,7 +11,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <pgtypes_date.h>
-#include <pgtypes_error.h>
 #include <pgtypes_timestamp.h>
 #include <pgtypes_interval.h>
 
@@ -23,10 +22,8 @@
 
 
 
-#line 9 "dt_test.pgc"
+#line 8 "dt_test.pgc"
 
-
-static void check_errno(void);
 
 int
 main(void)
@@ -37,19 +34,19 @@ main(void)
 		  
 		 
 	
-#line 17 "dt_test.pgc"
+#line 14 "dt_test.pgc"
  date date1 ;
  
-#line 18 "dt_test.pgc"
+#line 15 "dt_test.pgc"
  timestamp ts1 ;
  
-#line 19 "dt_test.pgc"
+#line 16 "dt_test.pgc"
  interval * iv1 , iv2 ;
  
-#line 20 "dt_test.pgc"
+#line 17 "dt_test.pgc"
  char * text ;
 /* exec sql end declare section */
-#line 21 "dt_test.pgc"
+#line 18 "dt_test.pgc"
 
 	date date2;
 	int mdy[3] = { 4, 19, 1998 };
@@ -60,31 +57,31 @@ main(void)
 
 	ECPGdebug(1, stderr);
 	/* exec sql whenever sqlerror  do sqlprint ( ) ; */
-#line 30 "dt_test.pgc"
+#line 27 "dt_test.pgc"
 
 	{ ECPGconnect(__LINE__, 0, "ecpg1_regression" , NULL, NULL , NULL, 0); 
-#line 31 "dt_test.pgc"
+#line 28 "dt_test.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint ( );}
-#line 31 "dt_test.pgc"
+#line 28 "dt_test.pgc"
 
 	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "create table date_test ( d date , ts timestamp )", ECPGt_EOIT, ECPGt_EORT);
-#line 32 "dt_test.pgc"
+#line 29 "dt_test.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint ( );}
-#line 32 "dt_test.pgc"
+#line 29 "dt_test.pgc"
 
 	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "set datestyle to iso", ECPGt_EOIT, ECPGt_EORT);
-#line 33 "dt_test.pgc"
+#line 30 "dt_test.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint ( );}
-#line 33 "dt_test.pgc"
+#line 30 "dt_test.pgc"
 
 	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "set intervalstyle to postgres_verbose", ECPGt_EOIT, ECPGt_EORT);
-#line 34 "dt_test.pgc"
+#line 31 "dt_test.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint ( );}
-#line 34 "dt_test.pgc"
+#line 31 "dt_test.pgc"
 
 
 	date1 = PGTYPESdate_from_asc(d1, NULL);
@@ -95,10 +92,10 @@ if (sqlca.sqlcode < 0) sqlprint ( );}
 	ECPGt_NO_INDICATOR, NULL , 0L, 0L, 0L, 
 	ECPGt_timestamp,&(ts1),(long)1,(long)1,sizeof(timestamp), 
 	ECPGt_NO_INDICATOR, NULL , 0L, 0L, 0L, ECPGt_EOIT, ECPGt_EORT);
-#line 39 "dt_test.pgc"
+#line 36 "dt_test.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint ( );}
-#line 39 "dt_test.pgc"
+#line 36 "dt_test.pgc"
 
 
 	{ ECPGdo(__LINE__, 0, 1, NULL, 0, ECPGst_normal, "select * from date_test where d = $1 ", 
@@ -108,10 +105,10 @@ if (sqlca.sqlcode < 0) sqlprint ( );}
 	ECPGt_NO_INDICATOR, NULL , 0L, 0L, 0L, 
 	ECPGt_timestamp,&(ts1),(long)1,(long)1,sizeof(timestamp), 
 	ECPGt_NO_INDICATOR, NULL , 0L, 0L, 0L, ECPGt_EORT);
-#line 41 "dt_test.pgc"
+#line 38 "dt_test.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint ( );}
-#line 41 "dt_test.pgc"
+#line 38 "dt_test.pgc"
 
 
 	text = PGTYPESdate_to_asc(date1);
@@ -266,17 +263,8 @@ if (sqlca.sqlcode < 0) sqlprint ( );}
 	PGTYPESchar_free(text);
 
 	ts1 = PGTYPEStimestamp_from_asc("1994-02-11 26:10:35", NULL);
-	/* failure, check error code */
-	check_errno();
 	text = PGTYPEStimestamp_to_asc(ts1);
 	printf("timestamp_to_asc3: %s\n", text);
-	PGTYPESchar_free(text);
-
-	ts1 = PGTYPEStimestamp_from_asc("AM95000062", NULL);
-	/* failure, check error code */
-	check_errno();
-	text = PGTYPEStimestamp_to_asc(ts1);
-	printf("timestamp_to_asc4: %s\n", text);
 	PGTYPESchar_free(text);
 
 /*	abc-03:10:35-def-02/11/94-gh  */
@@ -465,35 +453,17 @@ if (sqlca.sqlcode < 0) sqlprint ( );}
 	free(out);
 
 	{ ECPGtrans(__LINE__, NULL, "rollback");
-#line 393 "dt_test.pgc"
+#line 381 "dt_test.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint ( );}
-#line 393 "dt_test.pgc"
+#line 381 "dt_test.pgc"
 
         { ECPGdisconnect(__LINE__, "CURRENT");
-#line 394 "dt_test.pgc"
+#line 382 "dt_test.pgc"
 
 if (sqlca.sqlcode < 0) sqlprint ( );}
-#line 394 "dt_test.pgc"
+#line 382 "dt_test.pgc"
 
 
 	return 0;
-}
-
-static void
-check_errno(void)
-{
-	switch(errno)
-	{
-		case 0:
-			printf("(no errno set) - ");
-			break;
-		case PGTYPES_TS_BAD_TIMESTAMP:
-			printf("(errno == PGTYPES_TS_BAD_TIMESTAMP) - ");
-			break;
-		default:
-			printf("(unknown errno (%d))\n", errno);
-			printf("(libc: (%s)) ", strerror(errno));
-			break;
-	}
 }

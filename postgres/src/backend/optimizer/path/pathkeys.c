@@ -19,7 +19,9 @@
 
 #include "access/stratnum.h"
 #include "catalog/pg_opfamily.h"
+#include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/plannodes.h"
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
@@ -384,7 +386,7 @@ group_keys_reorder_by_pathkeys(List *pathkeys, List **group_pathkeys,
 	 * *group_pathkeys containing grouping pathkeys altogether with aggregate
 	 * pathkeys.  If we process aggregate pathkeys we could get an invalid
 	 * result of get_sortgroupref_clause_noerr(), because their
-	 * pathkey->pk_eclass->ec_sortref doesn't reference query targetlist.  So,
+	 * pathkey->pk_eclass->ec_sortref doesn't referece query targetlist.  So,
 	 * we allocate a separate list of pathkeys for lookups.
 	 */
 	grouping_pathkeys = list_copy_head(*group_pathkeys, num_groupby_pathkeys);
@@ -448,31 +450,51 @@ group_keys_reorder_by_pathkeys(List *pathkeys, List **group_pathkeys,
 }
 
 /*
+ * pathkeys_are_duplicate
+ *		Check if give pathkeys are already contained the list of
+ *		PathKeyInfo's.
+ */
+static bool
+pathkeys_are_duplicate(List *infos, List *pathkeys)
+{
+	ListCell   *lc;
+
+	foreach(lc, infos)
+	{
+		PathKeyInfo *info = lfirst_node(PathKeyInfo, lc);
+
+		if (compare_pathkeys(pathkeys, info->pathkeys) == PATHKEYS_EQUAL)
+			return true;
+	}
+	return false;
+}
+
+/*
  * get_useful_group_keys_orderings
  *		Determine which orderings of GROUP BY keys are potentially interesting.
  *
- * Returns a list of GroupByOrdering items, each representing an interesting
+ * Returns a list of PathKeyInfo items, each representing an interesting
  * ordering of GROUP BY keys.  Each item stores pathkeys and clauses in the
  * matching order.
  *
- * The function considers (and keeps) following GROUP BY orderings:
+ * The function considers (and keeps) multiple GROUP BY orderings:
  *
- * - GROUP BY keys as ordered by preprocess_groupclause() to match target
- *   ORDER BY clause (as much as possible),
- * - GROUP BY keys reordered to match 'path' ordering (as much as possible).
+ * - the original ordering, as specified by the GROUP BY clause,
+ * - GROUP BY keys reordered to match 'path' ordering (as much as possible),
+ * - GROUP BY keys to match target ORDER BY clause (as much as possible).
  */
 List *
 get_useful_group_keys_orderings(PlannerInfo *root, Path *path)
 {
 	Query	   *parse = root->parse;
 	List	   *infos = NIL;
-	GroupByOrdering *info;
+	PathKeyInfo *info;
 
 	List	   *pathkeys = root->group_pathkeys;
 	List	   *clauses = root->processed_groupClause;
 
 	/* always return at least the original pathkeys/clauses */
-	info = makeNode(GroupByOrdering);
+	info = makeNode(PathKeyInfo);
 	info->pathkeys = pathkeys;
 	info->clauses = clauses;
 	infos = lappend(infos, info);
@@ -506,9 +528,9 @@ get_useful_group_keys_orderings(PlannerInfo *root, Path *path)
 
 		if (n > 0 &&
 			(enable_incremental_sort || n == root->num_groupby_pathkeys) &&
-			compare_pathkeys(pathkeys, root->group_pathkeys) != PATHKEYS_EQUAL)
+			!pathkeys_are_duplicate(infos, pathkeys))
 		{
-			info = makeNode(GroupByOrdering);
+			info = makeNode(PathKeyInfo);
 			info->pathkeys = pathkeys;
 			info->clauses = clauses;
 
@@ -516,34 +538,31 @@ get_useful_group_keys_orderings(PlannerInfo *root, Path *path)
 		}
 	}
 
-#ifdef USE_ASSERT_CHECKING
+	/*
+	 * Try reordering pathkeys to minimize the sort cost (this time consider
+	 * the ORDER BY clause).
+	 */
+	if (root->sort_pathkeys &&
+		!pathkeys_contained_in(root->sort_pathkeys, root->group_pathkeys))
 	{
-		GroupByOrdering *pinfo = linitial_node(GroupByOrdering, infos);
-		ListCell   *lc;
+		int			n;
 
-		/* Test consistency of info structures */
-		for_each_from(lc, infos, 1)
+		n = group_keys_reorder_by_pathkeys(root->sort_pathkeys, &pathkeys,
+										   &clauses,
+										   root->num_groupby_pathkeys);
+
+		if (n > 0 &&
+			(enable_incremental_sort || n == list_length(root->sort_pathkeys)) &&
+			!pathkeys_are_duplicate(infos, pathkeys))
 		{
-			ListCell   *lc1,
-					   *lc2;
+			info = makeNode(PathKeyInfo);
+			info->pathkeys = pathkeys;
+			info->clauses = clauses;
 
-			info = lfirst_node(GroupByOrdering, lc);
-
-			Assert(list_length(info->clauses) == list_length(pinfo->clauses));
-			Assert(list_length(info->pathkeys) == list_length(pinfo->pathkeys));
-			Assert(list_difference(info->clauses, pinfo->clauses) == NIL);
-			Assert(list_difference_ptr(info->pathkeys, pinfo->pathkeys) == NIL);
-
-			forboth(lc1, info->clauses, lc2, info->pathkeys)
-			{
-				SortGroupClause *sgc = lfirst_node(SortGroupClause, lc1);
-				PathKey    *pk = lfirst_node(PathKey, lc2);
-
-				Assert(pk->pk_eclass->ec_sortref == sgc->tleSortGroupRef);
-			}
+			infos = lappend(infos, info);
 		}
 	}
-#endif
+
 	return infos;
 }
 
@@ -1338,8 +1357,7 @@ make_pathkeys_for_sortclauses(PlannerInfo *root,
 													&sortclauses,
 													tlist,
 													false,
-													&sortable,
-													false);
+													&sortable);
 	/* It's caller error if not all clauses were sortable */
 	Assert(sortable);
 	return result;
@@ -1363,17 +1381,13 @@ make_pathkeys_for_sortclauses(PlannerInfo *root,
  * to remove any clauses that can be proven redundant via the eclass logic.
  * Even though we'll have to hash in that case, we might as well not hash
  * redundant columns.)
- *
- * If set_ec_sortref is true then sets the value of the pathkey's
- * EquivalenceClass unless it's already initialized.
  */
 List *
 make_pathkeys_for_sortclauses_extended(PlannerInfo *root,
 									   List **sortclauses,
 									   List *tlist,
 									   bool remove_redundant,
-									   bool *sortable,
-									   bool set_ec_sortref)
+									   bool *sortable)
 {
 	List	   *pathkeys = NIL;
 	ListCell   *l;
@@ -1397,15 +1411,6 @@ make_pathkeys_for_sortclauses_extended(PlannerInfo *root,
 										   sortcl->nulls_first,
 										   sortcl->tleSortGroupRef,
 										   true);
-		if (pathkey->pk_eclass->ec_sortref == 0 && set_ec_sortref)
-		{
-			/*
-			 * Copy the sortref if it hasn't been set yet.  That may happen if
-			 * the EquivalenceClass was constructed from a WHERE clause, i.e.
-			 * it doesn't have a target reference at all.
-			 */
-			pathkey->pk_eclass->ec_sortref = sortcl->tleSortGroupRef;
-		}
 
 		/* Canonical form eliminates redundant ordering keys */
 		if (!pathkey_is_redundant(pathkey, pathkeys))
@@ -2189,22 +2194,6 @@ pathkeys_useful_for_grouping(PlannerInfo *root, List *pathkeys)
 }
 
 /*
- * pathkeys_useful_for_setop
- *		Count the number of leading common pathkeys root's 'setop_pathkeys' in
- *		'pathkeys'.
- */
-static int
-pathkeys_useful_for_setop(PlannerInfo *root, List *pathkeys)
-{
-	int			n_common_pathkeys;
-
-	(void) pathkeys_count_contained_in(root->setop_pathkeys, pathkeys,
-									   &n_common_pathkeys);
-
-	return n_common_pathkeys;
-}
-
-/*
  * truncate_useless_pathkeys
  *		Shorten the given pathkey list to just the useful pathkeys.
  */
@@ -2221,9 +2210,6 @@ truncate_useless_pathkeys(PlannerInfo *root,
 	if (nuseful2 > nuseful)
 		nuseful = nuseful2;
 	nuseful2 = pathkeys_useful_for_grouping(root, pathkeys);
-	if (nuseful2 > nuseful)
-		nuseful = nuseful2;
-	nuseful2 = pathkeys_useful_for_setop(root, pathkeys);
 	if (nuseful2 > nuseful)
 		nuseful = nuseful2;
 

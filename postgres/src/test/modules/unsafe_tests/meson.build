@@ -7,12 +7,9 @@ tests += {
   'regress': {
     'sql': [
       'rolenames',
-      'setconfig',
       'alter_system_table',
       'guc_privs',
     ],
-    'regress_args': ['--create-role=regress_authenticated_user_sr',
-                     '--create-role=regress_authenticated_user_ssa'],
     'runningcheck': false,
   },
 }

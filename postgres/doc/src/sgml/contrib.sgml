@@ -127,6 +127,7 @@ CREATE EXTENSION <replaceable>extension_name</replaceable>;
   component for details.
  </para>
 
+ &adminpack;
  &amcheck;
  &auth-delay;
  &auto-explain;

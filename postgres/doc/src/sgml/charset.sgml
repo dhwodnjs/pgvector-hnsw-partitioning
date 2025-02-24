@@ -342,14 +342,22 @@ initdb --locale=sv_SE
    <title>Locale Providers</title>
 
    <para>
-    A locale provider specifies which library defines the locale behavior for
-    collations and character classifications.
+    <productname>PostgreSQL</productname> supports multiple <firstterm>locale
+    providers</firstterm>.  This specifies which library supplies the locale
+    data.  One standard provider name is <literal>libc</literal>, which uses
+    the locales provided by the operating system C library.  These are the
+    locales used by most tools provided by the operating system.  Another
+    provider is <literal>icu</literal>, which uses the external
+    ICU<indexterm><primary>ICU</primary></indexterm> library.  ICU locales can
+    only be used if support for ICU was configured when PostgreSQL was built.
    </para>
 
    <para>
     The commands and tools that select the locale settings, as described
-    above, each have an option to select the locale provider. Here is an
-    example to initialize a database cluster using the ICU provider:
+    above, each have an option to select the locale provider.  The examples
+    shown earlier all use the <literal>libc</literal> provider, which is the
+    default.  Here is an example to initialize a database cluster using the
+    ICU provider:
 <programlisting>
 initdb --locale-provider=icu --icu-locale=en
 </programlisting>
@@ -362,84 +370,12 @@ initdb --locale-provider=icu --icu-locale=en
    </para>
 
    <para>
-    Regardless of the locale provider, the operating system is still used to
-    provide some locale-aware behavior, such as messages (see <xref
-    linkend="guc-lc-messages"/>).
+    Which locale provider to use depends on individual requirements.  For most
+    basic uses, either provider will give adequate results.  For the libc
+    provider, it depends on what the operating system offers; some operating
+    systems are better than others.  For advanced uses, ICU offers more locale
+    variants and customization options.
    </para>
-
-   <para>
-    The available locale providers are listed below:
-   </para>
-
-   <variablelist>
-    <varlistentry>
-     <term><literal>builtin</literal></term>
-     <listitem>
-      <para>
-       The <literal>builtin</literal> provider uses built-in operations. Only
-       the <literal>C</literal> and <literal>C.UTF-8</literal> locales are
-       supported for this provider.
-      </para>
-      <para>
-       The <literal>C</literal> locale behavior is identical to the
-       <literal>C</literal> locale in the libc provider. When using this
-       locale, the behavior may depend on the database encoding.
-      </para>
-      <para>
-       The <literal>C.UTF-8</literal> locale is available only for when the
-       database encoding is <literal>UTF-8</literal>, and the behavior is
-       based on Unicode. The collation uses the code point values only. The
-       regular expression character classes are based on the "POSIX
-       Compatible" semantics, and the case mapping is the "simple" variant.
-      </para>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><literal>icu</literal></term>
-     <listitem>
-      <para>
-       The <literal>icu</literal> provider uses the external
-       ICU<indexterm><primary>ICU</primary></indexterm>
-       library. <productname>PostgreSQL</productname> must have been
-       configured with support.
-      </para>
-      <para>
-       ICU provides collation and character classification behavior that is
-       independent of the operating system and database encoding, which is
-       preferable if you expect to transition to other platforms without any
-       change in results. <literal>LC_COLLATE</literal> and
-       <literal>LC_CTYPE</literal> can be set independently of the ICU
-       locale.
-      </para>
-      <note>
-       <para>
-        For the ICU provider, results may depend on the version of the ICU
-        library used, as it is updated to reflect changes in natural language
-        over time.
-       </para>
-      </note>
-     </listitem>
-    </varlistentry>
-
-    <varlistentry>
-     <term><literal>libc</literal></term>
-     <listitem>
-      <para>
-       The <literal>libc</literal> provider uses the operating system's C
-       library. The collation and character classification behavior is
-       controlled by the settings <literal>LC_COLLATE</literal> and
-       <literal>LC_CTYPE</literal>, so they cannot be set independently.
-      </para>
-      <note>
-       <para>
-        The same locale name may have different behavior on different
-        platforms when using the libc provider.
-       </para>
-      </note>
-     </listitem>
-    </varlistentry>
-   </variablelist>
   </sect2>
 
   <sect2 id="icu-locales">
@@ -887,23 +823,6 @@ SELECT * FROM test1 ORDER BY a || b COLLATE "fr_FR";
      </varlistentry>
 
      <varlistentry>
-      <term><literal>pg_c_utf8</literal></term>
-      <listitem>
-       <para>
-        This collation sorts by Unicode code point values rather than natural
-        language order.  For the functions <function>lower</function>,
-        <function>initcap</function>, and <function>upper</function>, it uses
-        Unicode simple case mapping.  For pattern matching (including regular
-        expressions), it uses the POSIX Compatible variant of Unicode <ulink
-        url="https://www.unicode.org/reports/tr18/#Compatibility_Properties">Compatibility
-        Properties</ulink>.  Behavior is efficient and stable within a
-        <productname>Postgres</productname> major version.  This collation is
-        only available for encoding <literal>UTF8</literal>.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
       <term><literal>C</literal> (equivalent to <literal>POSIX</literal>)</term>
       <listitem>
        <para>
@@ -1320,9 +1239,7 @@ SELECT 'w;x*y-z' = 'wxyz' COLLATE num_ignore_punct; -- true
         </row>
         <row>
          <entry>level4</entry>
-         <entry>Punctuation<footnote><para>only with
-         <literal>ka-shifted</literal>; see <xref
-         linkend="icu-collation-settings-table"/></para></footnote></entry>
+         <entry>Punctuation</entry>
          <entry><literal>true</literal></entry>
          <entry><literal>true</literal></entry>
          <entry><literal>false</literal></entry>
@@ -1704,7 +1621,7 @@ ORDER BY c COLLATE ebcdic;
      </listitem>
      <listitem>
       <para>
-       <ulink url="https://www.rfc-editor.org/info/bcp47">BCP 47</ulink>
+       <ulink url="https://tools.ietf.org/html/bcp47">BCP 47</ulink>
       </para>
      </listitem>
      <listitem>
@@ -3401,7 +3318,7 @@ RESET client_encoding;
       </varlistentry>
 
       <varlistentry>
-       <term><ulink url="https://datatracker.ietf.org/doc/html/rfc3629">RFC 3629</ulink></term>
+       <term><ulink url="https://tools.ietf.org/html/rfc3629">RFC 3629</ulink></term>
 
        <listitem>
         <para>

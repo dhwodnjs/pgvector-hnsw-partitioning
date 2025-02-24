@@ -37,6 +37,7 @@
 #include <math.h>
 
 #include "access/htup_details.h"
+#include "access/stratnum.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
@@ -1505,7 +1506,7 @@ pattern_char_isalpha(char c, bool is_multibyte,
 		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
 	else if (is_multibyte && IS_HIGHBIT_SET(c))
 		return true;
-	else if (locale && locale->provider != COLLPROVIDER_LIBC)
+	else if (locale && locale->provider == COLLPROVIDER_ICU)
 		return IS_HIGHBIT_SET(c) ||
 			(c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
 	else if (locale && locale->provider == COLLPROVIDER_LIBC)
