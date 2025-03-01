@@ -130,7 +130,6 @@ HnswInsertAppendPage(Relation index, Buffer *nbuf, Page *npage, GenericXLogState
 
 	/* Update previous buffer */
 	HnswPageGetOpaque(page)->nextblkno = BufferGetBlockNumber(*nbuf);
-//    elog(WARNING, "new page blkno: %d", (int)HnswPageGetOpaque(page)->nextblkno);
 }
 
 /*
@@ -345,16 +344,6 @@ AddElementOnDisk(Relation index, HnswElement e, int m, BlockNumber insertPage, B
 static int
 ComparePageNeighbors(const void *a, const void *b)
 {
-
-//    HnswPageNeighborCount *pageA = (HnswPageNeighborCount *)a;
-//    HnswPageNeighborCount *pageB = (HnswPageNeighborCount *)b;
-//
-//    // 1. neighborCount 비교 (내림차순)
-//    if (pageB->neighborCount != pageA->neighborCount)
-//        return pageB->neighborCount - pageA->neighborCount;
-//
-//    // 2. neighborCount가 동일할 경우 blkno 비교 (오름차순)
-//    return pageA->blkno - pageB->blkno;
     return ((HnswPageNeighborCount *)b)->neighborCount - ((HnswPageNeighborCount *)a)->neighborCount;
 }
 
@@ -363,9 +352,6 @@ ComparePageNeighbors(const void *a, const void *b)
 HnswInsertPageCandidate
 CalculatePartitionNeighborCount(HnswElement element)
 {
-//    HnswInsertPageCandidate *pageCandidates;
-//    int maxPages = HNSW_DEFAULT_M * 2 + MAX_INSERT_POOL_SIZE;  /* Assume max pages for now */ // m*2 + MAX_INSERT_POOL
-//    MemoryContext oldCtx;
     char *base = NULL;
 
     HnswInsertPageCandidate pageCandidates = palloc(sizeof(HnswInsertPageCandidateData));
@@ -373,7 +359,7 @@ CalculatePartitionNeighborCount(HnswElement element)
 
     HnswNeighborArray *neighbors = HnswGetNeighbors(base, element, 0);
 
-    // by partitionid
+    // by partitionId
     for (int i = 0; i < neighbors->length; i++) {
 
         HnswCandidate *hc = &neighbors->items[i];
@@ -409,986 +395,6 @@ CalculatePartitionNeighborCount(HnswElement element)
 
 
     return pageCandidates;
-}
-
-
-/*
- * Add to element and neighbor pages
- */
-static void
-AddElementOnDiskWithPartition(Relation index, HnswElement e, int m, BlockNumber insertPage, BlockNumber *updatedInsertPage,
-                            bool building, HnswInsertPagePool insertPagePool,  HnswInsertPagePool *updatedInsertPagePool)
-{
-    Buffer		buf;
-    Page		page;
-    GenericXLogState *state;
-    Size		etupSize;
-    Size		ntupSize;
-    Size		combinedSize;
-    Size		maxSize;
-    Size		minCombinedSize;
-    HnswElementTuple etup;
-    BlockNumber currentPage = insertPage;
-    HnswNeighborTuple ntup;
-    Buffer		nbuf;
-    Page		npage;
-    OffsetNumber freeOffno = InvalidOffsetNumber;
-    OffsetNumber freeNeighborOffno = InvalidOffsetNumber;
-    BlockNumber newInsertPage = InvalidBlockNumber;
-    uint8		tupleVersion;
-    char	   *base = NULL;
-
-    BlockNumber tempPageNo;
-    Buffer tempBuf;
-    Page tempPage;
-    GenericXLogState *tempState;
-    BlockNumber newExtendedPage;
-    int tempPid;
-
-    bool pidExist, extendedExist;
-    int pidE, extendId;
-
-    /* Calculate sizes */
-    etupSize = HNSW_ELEMENT_TUPLE_SIZE(VARSIZE_ANY(HnswPtrAccess(base, e->value)));
-    ntupSize = HNSW_NEIGHBOR_TUPLE_SIZE(e->level, m);
-    combinedSize = etupSize + ntupSize + sizeof(ItemIdData);
-    maxSize = HNSW_MAX_SIZE;
-    minCombinedSize = etupSize + HNSW_NEIGHBOR_TUPLE_SIZE(0, m) + sizeof(ItemIdData);
-
-    /* Prepare element tuple */
-    etup = palloc0(etupSize);
-    HnswSetElementTuple(base, etup, e);
-
-    /* Prepare neighbor tuple */
-    ntup = palloc0(ntupSize);
-    HnswSetNeighborTuple(base, ntup, e, m);
-
-    //// neighbor 정보 받아옴 (original, blkno-cnt)
-    HnswInsertPageCandidate pageCandidates = CalculatePartitionNeighborCount(e);
-    // insert되는 애들에 대해서는 고려하지 않는 편이 나은 걸로 보여지고 있음. 근데 .. neighbor가 insert된 애들 중에도 있을텐데 ..? .. 왜지
-//    qsort(pageCandidates->items, pageCandidates->length, sizeof(HnswPageNeighborCount), ComparePageNeighbors);
-//    e->pid = pageCandidates->items[0].pid;
-//    HnswSetElementTuple(base, etup, e);
-
-//    //// 기존의 insertpagepool과 pageCandidates 를 통합
-//    GetInsertPagePoolInfo(index, &newPoolSize, newInsertPagePool);
-
-
-
-
-    // 각 insertpage entry에 대해 pagecandidate 확인해서 pageCandidate 업데이트
-    for (int i = 0; i < insertPagePool->poolSize; i++)
-    {
-        int pid = insertPagePool->items[i].pid;
-        BlockNumber extendedPage = insertPagePool->items[i].extendedPage;
-
-//        elog(WARNING, "INVALID: original %d, extended %d", originalPage, extendedPage);
-
-        // 만약에 pool에 이미 extend page가 존재한다면,
-        if (pid != -2) {
-
-            pidExist = false;
-            pidE = -1;
-
-            /* Replace classic page with its inserted page */
-            for (int j = 0; j < pageCandidates->length; j++) {
-                // page candidate의 originalPage, extendedPage 존재 여부 확인
-                if (pageCandidates->items[j].pid == pid) {
-                    pidExist = true;
-                    pidE = j;
-                }
-            }
-
-            if (pidExist){
-                pageCandidates->items[pidE].pageType = EXTENDED_PAGE;
-                pageCandidates->items[pidE].blkno = extendedPage;
-            }
-        }
-
-
-        if (pid == -2 && extendedPage != InvalidBlockNumber){
-            pageCandidates->items[pageCandidates->length].pid = pid;
-            pageCandidates->items[pageCandidates->length].neighborCount = 0;
-            pageCandidates->items[pageCandidates->length].pageType = SPARE_PAGE;
-            pageCandidates->items[pageCandidates->length].blkno = extendedPage;
-            pageCandidates->length++;
-        }
-    }
-
-    qsort(pageCandidates->items, pageCandidates->length, sizeof(HnswPageNeighborCount), ComparePageNeighbors);
-
-
-    // 현재 insert page 읽어옴 .. -> index 유지 용도
-    buf = ReadBuffer(index, currentPage);
-    LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-//    elog(WARNING, "                          ****                          ");
-//    elog(WARNING, "start insert ~");
-//    elog(WARNING, "current insert page: BlockNumber = %u", currentPage);
-
-    if (building)
-    {
-        state = NULL;
-        page = BufferGetPage(buf);
-    }
-    else
-    {
-        state = GenericXLogStart(index);
-//        elog(WARNING, "GenericXLogStart called for main page: BlockNumber = %u", BufferGetBlockNumber(buf));
-        page = GenericXLogRegisterBuffer(state, buf, 0);
-    }
-//    elog(WARNING, "          ****             ");
-
-
-//
-//// insertPagePool 정보 로그 출력
-//    elog(WARNING, "Insert Page Pool (Size: %d)", insertPagePool->poolSize);
-//    for (int p = 0; p < insertPagePool->poolSize; p++) {
-//        int pid = insertPagePool->items[p].pid;
-//        BlockNumber ep = insertPagePool->items[p].extendedPage;
-//
-//        elog(WARNING, "[Pool Entry %d] pid: %d, extendedPage: %u",
-//             p,
-//             pid,
-//             ep);
-//    }
-//
-//    // pageCandidates 정보 로그 출력
-//    elog(WARNING, "Page Candidates (Total: %d)", pageCandidates->length);
-//    for (int i = 0; i < pageCandidates->length; i++) {
-//        elog(WARNING, "[Candidate %d] pid: %d, neighborCount: %d, pageType: %d, extendedPage: %u",
-//             i,
-//             pageCandidates->items[i].pid,
-//             pageCandidates->items[i].neighborCount,
-//             pageCandidates->items[i].pageType,
-//             pageCandidates->items[i].blkno);
-//    }
-
-
-    bool useTempBuf = false;
-    bool found = false;
-
-
-//    elog(WARNING, "insertPagePool->poolSize: %d", insertPagePool->poolSize);
-
-    // 나머지 candidate 페이지에 대해 ..
-    for (int i = 0; i < pageCandidates->length; i++) {
-        // 페이지 불러옴
-        tempPid = pageCandidates->items[i].pid;
-        tempPageNo = pageCandidates->items[i].blkno;
-//        elog(WARNING, "Pid = %d", tempPid);
-
-
-        if (pageCandidates->items[i].pageType == ORIGINAL_PAGE) {
-            if (tempPid == -2){
-                continue;
-            }
-
-            if (insertPagePool->poolSize < MAX_INSERT_POOL_SIZE) {
-                // tempPageNo 가 invalid일거임 -> 하나 추가해줘야 됨..
-//                elog(WARNING, "***** 1. [ORIGINAL - EXTEND]");
-
-                Buffer newbuf;
-                Page newpage;
-
-                // 기존의 insert page 뒤에 페이지 하나 추가함 -> 여기에 insert할거
-                HnswInsertAppendPage(index, &newbuf, &newpage, state, page, building);
-
-                /* Commit */
-                if (building)
-                    MarkBufferDirty(buf);
-                else
-                    GenericXLogFinish(state);
-
-                /* Unlock previous buffer */
-                UnlockReleaseBuffer(buf);
-
-
-                /* Prepare new buffer */
-                buf = newbuf;
-                if (building) {
-                    state = NULL;
-                    page = BufferGetPage(buf);
-                } else {
-                    state = GenericXLogStart(index);
-                    page = GenericXLogRegisterBuffer(state, buf, 0);
-                }
-
-                nbuf = buf;
-                npage = page;
-
-                // 새로운 페이지 추가 -> origin-page 와 extended-page 연결해줘야됨
-                newExtendedPage = BufferGetBlockNumber(newbuf);
-
-                // insert page pool의 어느 자리가 비어있을 지 어케 앎? -> 이거는 앞에서부터 차곡차곡 .. 쌓는다 가정 ..
-
-                insertPagePool->items[insertPagePool->poolSize].pid = tempPid;
-                insertPagePool->items[insertPagePool->poolSize].extendedPage = newExtendedPage;
-                insertPagePool->poolSize++;
-
-//                found = true; // newextendedpage에 저장 -> buf, page 제대로 반영됨.
-                break;
-            } else {
-                continue;
-//                elog(WARNING, "moving to next ...");
-//
-//                if (currentPage != tempPageNo) {
-//
-//                    // max_pool 상태라면 buffer 놓고 continue
-//                    if (building)
-//                        MarkBufferDirty(tempBuf);
-//                    else
-//                        GenericXLogFinish(tempState);
-//                    UnlockReleaseBuffer(tempBuf);
-//
-//                    elog(WARNING, "unlock buf ...");
-//                }
-            }
-
-        } else {
-//            elog(WARNING, "Block Number = %u", tempPageNo);
-
-            if (currentPage == tempPageNo) {
-                tempBuf = buf;
-                tempPage = page;
-                tempState = state;
-            } else {
-                useTempBuf = true;
-                tempBuf = ReadBuffer(index, tempPageNo);
-                LockBuffer(tempBuf, BUFFER_LOCK_EXCLUSIVE);
-
-//                elog(WARNING, "candidate page: BlockNumber = %u (PageType = %d), neighbor count = %d",
-//                     tempPageNo, pageCandidates->items[i].pageType, pageCandidates->items[i].neighborCount);
-
-                if (building) {
-                    tempState = NULL;
-                    tempPage = BufferGetPage(tempBuf);
-                } else {
-                    tempState = GenericXLogStart(index);
-//                    elog(WARNING, "GenericXLogStart called for candidate page: BlockNumber = %u",
-//                         BufferGetBlockNumber(tempBuf));
-                    tempPage = GenericXLogRegisterBuffer(tempState, tempBuf, 0);
-                }
-            }
-
-
-            if (pageCandidates->items[i].pageType == EXTENDED_PAGE) {
-                // 페이지 불러옴
-
-//                elog(WARNING, "Page type: Extended");
-
-                if (PageGetFreeSpace(tempPage) >= combinedSize) {
-//                    elog(WARNING, "********** 2-1. [EXTENDED - INSERT]");
-
-//                    elog(WARNING, "[INSERT] free space (%zu) >= combined size (%zu)",
-//                         PageGetFreeSpace(tempPage), combinedSize);
-
-                    // 자리 남아있으면 extended page에 넣고, 남은 자리 확인, 꽉 차면 바로 pool에서 제거
-                    nbuf = tempBuf;
-                    npage = tempPage;
-                    found = true;
-
-                    /* 페이지가 꽉 차면 Insert Page Pool에서 제거 */
-                    if (PageGetFreeSpace(tempPage) < combinedSize * 2) {
-//                        elog(WARNING, "    [REMOVED]");
-//                        elog(WARNING, "Insert Page Pool (Size: %d)", insertPagePool->poolSize);
-//                        for (int p = 0; p < insertPagePool->poolSize; p++) {
-//                            int pid = insertPagePool->items[p].pid;
-//                            BlockNumber ep = insertPagePool->items[p].extendedPage;
-//
-//                            elog(WARNING, "[Pool Entry %d] pid: %d, extendedPage: %u",
-//                                 p,
-//                                 pid,
-//                                 ep);
-//                        }
-                        for (int j = 0; j < insertPagePool->poolSize; j++) {
-                            if (insertPagePool->items[j].extendedPage == tempPageNo) {
-
-                                /* 마지막 페이지와 바꿔서 pool 크기 줄임 */ // poolsize 같은걸 meta에 저장하는 함수 만들어야됨
-
-                                insertPagePool->items[j] = insertPagePool->items[insertPagePool->poolSize - 1];
-                                insertPagePool->poolSize--; //
-//                                elog(WARNING, "    [REMOVED DONE] id: %d, tempNo: %d, pool size: %d", j, (int)tempPageNo,  insertPagePool->poolSize);
-//                                elog(WARNING, "Insert Page Pool (Size: %d)", insertPagePool->poolSize);
-//                                for (int p = 0; p < insertPagePool->poolSize; p++) {
-//                                    int pid = insertPagePool->items[p].pid;
-//                                    BlockNumber ep = insertPagePool->items[p].extendedPage;
-//
-//                                    elog(WARNING, "[Pool Entry %d] pid: %d, extendedPage: %u",
-//                                         p,
-//                                         pid,
-//                                         ep);
-//                                }
-                                break;
-                            }
-                        }
-                    }
-                    break;
-
-                } else {
-//                    elog(WARNING, "[EXTEND] free space (%zu) < combined size (%zu)",
-//                         PageGetFreeSpace(tempPage), combinedSize);
-//                    elog(WARNING, "********** 2-2. [EXTENDED - EXTEND]");
-                    // 자리 없다는 의미니까 ,, pool에서 없애버려야 됨.. -> 업데이트만 해주면 됨.
-                    // 새로 하나 만들어서,,
-                    // max_pool 상태 아니라면 extended page 만들고 metap 업데이트
-
-                    Buffer newbuf;
-                    Page newpage;
-
-                    // 기존의 insert page 뒤에 페이지 하나 추가함 -> 여기에 insert할거
-                    HnswInsertAppendPage(index, &newbuf, &newpage, state, page, building);
-
-                    /* Commit */
-                    if (building)
-                        MarkBufferDirty(buf);
-                    else
-                        GenericXLogFinish(state);
-
-                    /* Unlock previous buffer */
-                    UnlockReleaseBuffer(buf);
-
-                    /* Prepare new buffer */
-                    buf = newbuf;
-                    if (building) {
-                        state = NULL;
-                        page = BufferGetPage(buf);
-                    } else {
-                        state = GenericXLogStart(index);
-                        page = GenericXLogRegisterBuffer(state, buf, 0);
-                    }
-
-                    nbuf = buf;
-                    npage = page;
-
-                    // 새로운 페이지 추가 -> origin-page 와 extended-page 연결해줘야됨
-                    newExtendedPage = BufferGetBlockNumber(newbuf);
-
-                    // 기존 pool 에서 찾아서 업데이트
-                    for (int j = 0; j < insertPagePool->poolSize; j++) {
-                        if (insertPagePool->items[j].extendedPage == tempPageNo) {
-                            //                        insertPagePool->items[j].originalPage = tempPageNo;
-                            insertPagePool->items[j].extendedPage = newExtendedPage;
-                            break;
-                        }
-                    }
-                    //                found = true;
-                    break;
-                }
-            } else if (pageCandidates->items[i].pageType == SPARE_PAGE) {
-//                elog(WARNING, "Page type: SPARE");
-
-                if (PageGetFreeSpace(tempPage) >= combinedSize) {
-//                    elog(WARNING, "*************** 3-1. [SPARE - INSERT]");
-//                    elog(WARNING, "[INSERT] free space (%zu) >= combined size (%zu)",
-//                         PageGetFreeSpace(tempPage), combinedSize);
-
-                    nbuf = tempBuf;
-                    npage = tempPage;
-                    found = true; //// tempBuf에 저장한다고 알려줘야됨 !!!!!! -> buf, page 반영X
-
-                    break;
-
-                } else {
-                    // max_pool 상태 아니라면 extended page 만들고 metap에 추가
-//                    elog(WARNING, "*************** 3-2. [SPARE - EXTEND]");
-//                    elog(WARNING, "[EXTEND] free space (%zu) < combined size (%zu)",
-//                         PageGetFreeSpace(tempPage), combinedSize);
-
-                    Buffer newbuf;
-                    Page newpage;
-
-
-                    // 기존의 insert page 뒤에 페이지 하나 추가함 -> 여기에 insert할거
-                    HnswInsertAppendPage(index, &newbuf, &newpage, state, page, building);
-
-                    /* Commit */
-                    if (building)
-                        MarkBufferDirty(buf);
-                    else
-                        GenericXLogFinish(state);
-
-                    /* Unlock previous buffer */
-                    UnlockReleaseBuffer(buf);
-
-
-                    /* Prepare new buffer */
-                    buf = newbuf;
-                    if (building) {
-                        state = NULL;
-                        page = BufferGetPage(buf);
-                    } else {
-                        state = GenericXLogStart(index);
-                        page = GenericXLogRegisterBuffer(state, buf, 0);
-                    }
-
-                    nbuf = buf;
-                    npage = page;
-
-                    // 새로운 페이지 추가 -> origin-page 와 extended-page 연결해줘야됨
-                    newExtendedPage = BufferGetBlockNumber(newbuf);
-
-                    // 기존 pool 에서 찾아서 업데이트
-                    for (int j = 0; j < insertPagePool->poolSize; j++) {
-                        if (insertPagePool->items[j].extendedPage == tempPageNo) {
-                            insertPagePool->items[j].pid = -2;
-                            insertPagePool->items[j].extendedPage = newExtendedPage;
-                            break;
-                        }
-                    }
-
-
-                    //                found = true; // newextendedpage에 저장 -> buf, page 제대로 반영됨.
-                    break;
-                }
-            }
-        }
-    }
-
-
-//    elog(WARNING, "                          ****                          ");
-
-    e->pid = tempPid;
-    HnswSetElementTuple(base, etup, e); // 왜 오히려 안좋아지는지 .. 의문 ... 왜일까 ..
-//    elog(WARNING, "e->pid: %d", e->pid);
-
-    if (found)
-    {
-        // tempBuf에 저장
-        e->blkno = BufferGetBlockNumber(tempBuf);
-        e->neighborPage = BufferGetBlockNumber(tempBuf);
-        newInsertPage = currentPage;
-
-        e->offno = OffsetNumberNext(PageGetMaxOffsetNumber(tempPage));
-//        if (nbuf == buf)
-        e->neighborOffno = OffsetNumberNext(e->offno);
-//        else
-//            e->neighborOffno = FirstOffsetNumber;
-
-
-    } else
-    {
-        // 새로운 블록에 저장
-        e->blkno = BufferGetBlockNumber(buf);
-        e->neighborPage = BufferGetBlockNumber(nbuf);
-        newInsertPage = e->neighborPage;
-
-
-        e->offno = OffsetNumberNext(PageGetMaxOffsetNumber(page));
-//        if (nbuf == buf)
-        e->neighborOffno = OffsetNumberNext(e->offno);
-//        else
-//            e->neighborOffno = FirstOffsetNumber;
-
-    }
-
-//    elog(WARNING, "Attempting to add element at offno: %u on page: %u",
-//         e->offno, e->blkno);
-//
-//    elog(WARNING, "Attempting to add neighbor at neighborOffno: %u on page: %u",
-//         e->neighborOffno, e->neighborPage);
-
-
-    ItemPointerSet(&etup->neighbortid, e->neighborPage, e->neighborOffno);
-
-    if (found)
-    {
-        if (PageAddItem(tempPage, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != e->offno){
-            elog(WARNING, "so sad ...");
-            elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
-
-        }
-
-        if (PageAddItem(tempPage, (Item) ntup, ntupSize, InvalidOffsetNumber, false, false) != e->neighborOffno){
-            elog(WARNING, "OMG ....");
-            elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
-
-        }
-    } else
-    {
-        if (PageAddItem(page, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != e->offno){
-            elog(WARNING, "so sad ...");
-            elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
-
-        }
-
-
-        if (PageAddItem(npage, (Item) ntup, ntupSize, InvalidOffsetNumber, false, false) != e->neighborOffno){
-            elog(WARNING, "OMG ....");
-            elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
-
-        }
-    }
-
-
-//    elog(WARNING, "                          ****                          ");
-//    elog(WARNING, "                          ****                          ");
-//    elog(WARNING, "                          ****                          ");
-//    elog(WARNING, "                          ****                          ");
-
-
-//    /* Commit */
-    // lock 여부 .. 확인해야 되는데 귀찮아서 일단 그냥 rule-base로 구현 ..
-
-//    elog(WARNING, "log1");
-//    // Commit changes
-//    if (state != NULL) {
-//        GenericXLogFinish(state);
-//    }
-//    if (useTempBuf){
-//        elog(WARNING, "log2");
-//        if (tempState != NULL && tempState != state) {
-//            GenericXLogFinish(tempState);
-//        }
-//    }
-//
-//    if (buf != InvalidBuffer) {
-//        UnlockReleaseBuffer(buf);
-//    }
-//    elog(WARNING, "log4");
-//    if (nbuf != InvalidBuffer && nbuf != buf) {
-//        UnlockReleaseBuffer(nbuf);
-//    }
-//    elog(WARNING, "log5");
-//
-//    if (useTempBuf){
-//
-//        if (tempBuf != InvalidBuffer){
-//            elog(WARNING, "invalid buffer");
-//            if (tempBuf != buf && tempBuf != nbuf) {
-//                elog(WARNING, "Releasing tempBuf: BlockNumber = %u", BufferGetBlockNumber(tempBuf));
-//                UnlockReleaseBuffer(tempBuf);
-//            }
-//        }
-//
-//    }
-//
-//    elog(WARNING, "log6");
-
-    GenericXLogFinish(state);
-    if (useTempBuf){
-        GenericXLogFinish(tempState);
-    }
-
-    UnlockReleaseBuffer(buf); // nbuf==buf인 상황만 고려
-    if (useTempBuf){
-        UnlockReleaseBuffer(tempBuf);
-    }
-
-
-
-        /* Update the insert page */
-    if (BlockNumberIsValid(newInsertPage) && newInsertPage != insertPage)
-        *updatedInsertPage = newInsertPage;
-
-
-    *updatedInsertPagePool = insertPagePool;
-
-
-}
-
-
-
-/*
- * Add to element and neighbor pages
- */
-static void
-AddElementOnDiskWithPartitionCount(Relation index, HnswElement e, int m, BlockNumber insertPage, BlockNumber *updatedInsertPage,
-                              bool building, HnswInsertPagePool insertPagePool,  HnswInsertPagePool *updatedInsertPagePool)
-{
-    Buffer		buf;
-    Page		page;
-    GenericXLogState *state;
-    Size		etupSize;
-    Size		ntupSize;
-    Size		combinedSize;
-    Size		maxSize;
-    Size		minCombinedSize;
-    HnswElementTuple etup;
-    BlockNumber currentPage = insertPage;
-    HnswNeighborTuple ntup;
-    Buffer		nbuf;
-    Page		npage;
-    OffsetNumber freeOffno = InvalidOffsetNumber;
-    OffsetNumber freeNeighborOffno = InvalidOffsetNumber;
-    BlockNumber newInsertPage = InvalidBlockNumber;
-    uint8		tupleVersion;
-    char	   *base = NULL;
-
-    BlockNumber tempPageNo;
-    Buffer tempBuf;
-    Page tempPage;
-    GenericXLogState *tempState;
-    BlockNumber newExtendedPage;
-    int tempPid;
-
-    bool pidExist, extendedExist;
-    int pidE, extendId;
-
-    /* Calculate sizes */
-    etupSize = HNSW_ELEMENT_TUPLE_SIZE(VARSIZE_ANY(HnswPtrAccess(base, e->value)));
-    ntupSize = HNSW_NEIGHBOR_TUPLE_SIZE(e->level, m);
-    combinedSize = etupSize + ntupSize + sizeof(ItemIdData);
-    maxSize = HNSW_MAX_SIZE;
-    minCombinedSize = etupSize + HNSW_NEIGHBOR_TUPLE_SIZE(0, m) + sizeof(ItemIdData);
-
-    /* Prepare element tuple */
-    etup = palloc0(etupSize);
-    HnswSetElementTuple(base, etup, e);
-
-    /* Prepare neighbor tuple */
-    ntup = palloc0(ntupSize);
-    HnswSetNeighborTuple(base, ntup, e, m);
-
-    //// neighbor 정보 받아옴 (original, blkno-cnt)
-    HnswInsertPageCandidate pageCandidates = CalculatePartitionNeighborCount(e);
-
-
-
-    // 각 insertpage entry에 대해 pagecandidate 확인해서 pageCandidate 업데이트
-    for (int i = 0; i < insertPagePool->poolSize; i++)
-    {
-        int pid = insertPagePool->items[i].pid;
-        BlockNumber extendedPage = insertPagePool->items[i].extendedPage;
-
-//        elog(WARNING, "INVALID: original %d, extended %d", originalPage, extendedPage);
-
-        // 만약에 pool에 이미 extend page가 존재한다면,
-        if (pid != -2) {
-
-            pidExist = false;
-            pidE = -1;
-
-            /* Replace classic page with its inserted page */
-            for (int j = 0; j < pageCandidates->length; j++) {
-                // page candidate의 originalPage, extendedPage 존재 여부 확인
-                if (pageCandidates->items[j].pid == pid) {
-                    pidExist = true;
-                    pidE = j;
-                }
-            }
-
-            if (pidExist){
-                pageCandidates->items[pidE].pageType = EXTENDED_PAGE;
-                pageCandidates->items[pidE].blkno = extendedPage;
-            }
-        }
-
-
-        if (pid == -2 && extendedPage != InvalidBlockNumber){
-            pageCandidates->items[pageCandidates->length].pid = pid;
-            pageCandidates->items[pageCandidates->length].neighborCount = 0;
-            pageCandidates->items[pageCandidates->length].pageType = SPARE_PAGE;
-            pageCandidates->items[pageCandidates->length].blkno = extendedPage;
-            pageCandidates->length++;
-        }
-    }
-
-    qsort(pageCandidates->items, pageCandidates->length, sizeof(HnswPageNeighborCount), ComparePageNeighbors);
-
-
-    // 현재 insert page 읽어옴 .. -> index 유지 용도
-    buf = ReadBuffer(index, currentPage);
-    LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-//    elog(WARNING, "                          ****                          ");
-//    elog(WARNING, "start insert ~");
-//    elog(WARNING, "current insert page: BlockNumber = %u", currentPage);
-
-    if (building)
-    {
-        state = NULL;
-        page = BufferGetPage(buf);
-    }
-    else
-    {
-        state = GenericXLogStart(index);
-//        elog(WARNING, "GenericXLogStart called for main page: BlockNumber = %u", BufferGetBlockNumber(buf));
-        page = GenericXLogRegisterBuffer(state, buf, 0);
-    }
-//    elog(WARNING, "          ****             ");
-
-
-////
-//// insertPagePool 정보 로그 출력
-//    elog(WARNING, "Insert Page Pool (Size: %d)", insertPagePool->poolSize);
-//    for (int p = 0; p < insertPagePool->poolSize; p++) {
-//        int pid = insertPagePool->items[p].pid;
-//        BlockNumber ep = insertPagePool->items[p].extendedPage;
-//
-//        elog(WARNING, "[Pool Entry %d] pid: %d, extendedPage: %u",
-//             p,
-//             pid,
-//             ep);
-//    }
-//
-//    // pageCandidates 정보 로그 출력
-//    elog(WARNING, "Page Candidates (Total: %d)", pageCandidates->length);
-//    for (int i = 0; i < pageCandidates->length; i++) {
-//        elog(WARNING, "[Candidate %d] pid: %d, neighborCount: %d, pageType: %d, extendedPage: %u",
-//             i,
-//             pageCandidates->items[i].pid,
-//             pageCandidates->items[i].neighborCount,
-//             pageCandidates->items[i].pageType,
-//             pageCandidates->items[i].blkno);
-//    }
-
-
-    bool useTempBuf = false;
-    bool found = false;
-
-
-//    elog(WARNING, "insertPagePool->poolSize: %d", insertPagePool->poolSize);
-
-    // 나머지 candidate 페이지에 대해 ..
-    for (int i = 0; i < pageCandidates->length; i++) {
-        // 페이지 불러옴
-        tempPid = pageCandidates->items[i].pid;
-        tempPageNo = pageCandidates->items[i].blkno;
-//        elog(WARNING, "Pid = %d", tempPid);
-
-
-        if (pageCandidates->items[i].pageType == ORIGINAL_PAGE) {
-            continue;
-
-        }
-
-        if (tempPageNo == InvalidBlockNumber) {
-//            elog(WARNING, "Page type: EXTENDED (new)");
-
-
-            Buffer newbuf;
-            Page newpage;
-
-            // 기존의 insert page 뒤에 페이지 하나 추가함 -> 여기에 insert할거
-            HnswInsertAppendPage(index, &newbuf, &newpage, state, page, building);
-
-            /* Commit */
-            if (building)
-                MarkBufferDirty(buf);
-            else
-                GenericXLogFinish(state);
-
-            /* Unlock previous buffer */
-            UnlockReleaseBuffer(buf);
-
-            /* Prepare new buffer */
-            buf = newbuf;
-            if (building) {
-                state = NULL;
-                page = BufferGetPage(buf);
-            } else {
-                state = GenericXLogStart(index);
-                page = GenericXLogRegisterBuffer(state, buf, 0);
-            }
-
-            nbuf = buf;
-            npage = page;
-
-            // 새로운 페이지 추가 -> origin-page 와 extended-page 연결해줘야됨
-            newExtendedPage = BufferGetBlockNumber(newbuf);
-
-            // 기존 pool 에서 찾아서 업데이트
-            for (int j = 0; j < insertPagePool->poolSize; j++) {
-                if (insertPagePool->items[j].pid == tempPid) {
-                    //                        insertPagePool->items[j].originalPage = tempPageNo;
-                    insertPagePool->items[j].extendedPage = newExtendedPage;
-                    break;
-                }
-            }
-            //                found = true;
-            break;
-
-        }
-
-        // tempPageNo != invalid -> 페이지 존재
-
-        if (currentPage == tempPageNo) {
-            tempBuf = buf;
-            tempPage = page;
-            tempState = state;
-        } else {
-            useTempBuf = true;
-            tempBuf = ReadBuffer(index, tempPageNo);
-            LockBuffer(tempBuf, BUFFER_LOCK_EXCLUSIVE);
-
-//                elog(WARNING, "candidate page: BlockNumber = %u (PageType = %d), neighbor count = %d",
-//                     tempPageNo, pageCandidates->items[i].pageType, pageCandidates->items[i].neighborCount);
-
-            if (building) {
-                tempState = NULL;
-                tempPage = BufferGetPage(tempBuf);
-            } else {
-                tempState = GenericXLogStart(index);
-//                    elog(WARNING, "GenericXLogStart called for candidate page: BlockNumber = %u",
-//                         BufferGetBlockNumber(tempBuf));
-                tempPage = GenericXLogRegisterBuffer(tempState, tempBuf, 0);
-            }
-        }
-
-        if (pageCandidates->items[i].pageType == EXTENDED_PAGE){
-//            elog(WARNING, "Page type: EXTENDED ");
-        } else{
-//            elog(WARNING, "Page type: SPARE ");
-        }
-
-        if (PageGetFreeSpace(tempPage) >= combinedSize) {
-//            elog(WARNING, "[INSERT] free space (%zu) > combined size (%zu)",
-//                 PageGetFreeSpace(tempPage), combinedSize);
-
-//            elog(WARNING, "INSERT");
-            nbuf = tempBuf;
-            npage = tempPage;
-            found = true;
-            break;
-
-        } else {
-//            elog(WARNING, "[EXTEND] free space (%zu) < combined size (%zu)",
-//                 PageGetFreeSpace(tempPage), combinedSize);
-
-            // 자리 없다는 의미니까 ,, pool에서 없애버려야 됨.. -> 업데이트만 해주면 됨.
-            // 새로 하나 만들어서,,
-            // max_pool 상태 아니라면 extended page 만들고 metap 업데이트
-//            elog(WARNING, "EXTEND");
-
-            Buffer newbuf;
-            Page newpage;
-
-            // 기존의 insert page 뒤에 페이지 하나 추가함 -> 여기에 insert할거
-            HnswInsertAppendPage(index, &newbuf, &newpage, state, page, building);
-
-            /* Commit */
-            if (building)
-                MarkBufferDirty(buf);
-            else
-                GenericXLogFinish(state);
-
-            /* Unlock previous buffer */
-            UnlockReleaseBuffer(buf);
-
-            /* Prepare new buffer */
-            buf = newbuf;
-            if (building) {
-                state = NULL;
-                page = BufferGetPage(buf);
-            } else {
-                state = GenericXLogStart(index);
-                page = GenericXLogRegisterBuffer(state, buf, 0);
-            }
-
-            nbuf = buf;
-            npage = page;
-
-            // 새로운 페이지 추가 -> origin-page 와 extended-page 연결해줘야됨
-            newExtendedPage = BufferGetBlockNumber(newbuf);
-
-            // 기존 pool 에서 찾아서 업데이트
-            for (int j = 0; j < insertPagePool->poolSize; j++) {
-                if (insertPagePool->items[j].extendedPage == tempPageNo) {
-                    //                        insertPagePool->items[j].originalPage = tempPageNo;
-                    insertPagePool->items[j].extendedPage = newExtendedPage;
-                    break;
-                }
-            }
-            //                found = true;
-            break;
-        }
-    }
-
-
-
-//    elog(WARNING, "                          ****                          ");
-
-    e->pid = tempPid;
-    HnswSetElementTuple(base, etup, e); // 왜 오히려 안좋아지는지 .. 의문 ... 왜일까 ..
-//    elog(WARNING, "e->pid: %d", e->pid);
-
-    if (found)
-    {
-        // tempBuf에 저장
-        e->blkno = BufferGetBlockNumber(tempBuf);
-        e->neighborPage = BufferGetBlockNumber(tempBuf);
-        newInsertPage = currentPage;
-
-        e->offno = OffsetNumberNext(PageGetMaxOffsetNumber(tempPage));
-//        if (nbuf == buf)
-        e->neighborOffno = OffsetNumberNext(e->offno);
-//        else
-//            e->neighborOffno = FirstOffsetNumber;
-
-
-    } else
-    {
-        // 새로운 블록에 저장
-        e->blkno = BufferGetBlockNumber(buf);
-        e->neighborPage = BufferGetBlockNumber(nbuf);
-        newInsertPage = e->neighborPage;
-
-
-        e->offno = OffsetNumberNext(PageGetMaxOffsetNumber(page));
-//        if (nbuf == buf)
-        e->neighborOffno = OffsetNumberNext(e->offno);
-//        else
-//            e->neighborOffno = FirstOffsetNumber;
-
-    }
-
-//    elog(WARNING, "Attempting to add element at offno: %u on page: %u",
-//         e->offno, e->blkno);
-//
-//    elog(WARNING, "Attempting to add neighbor at neighborOffno: %u on page: %u",
-//         e->neighborOffno, e->neighborPage);
-
-
-    ItemPointerSet(&etup->neighbortid, e->neighborPage, e->neighborOffno);
-
-    if (found)
-    {
-        if (PageAddItem(tempPage, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != e->offno){
-            elog(WARNING, "so sad ...");
-            elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
-
-        }
-
-        if (PageAddItem(tempPage, (Item) ntup, ntupSize, InvalidOffsetNumber, false, false) != e->neighborOffno){
-            elog(WARNING, "OMG ....");
-            elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
-
-        }
-    } else
-    {
-        if (PageAddItem(page, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != e->offno){
-            elog(WARNING, "so sad ...");
-            elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
-
-        }
-
-
-        if (PageAddItem(npage, (Item) ntup, ntupSize, InvalidOffsetNumber, false, false) != e->neighborOffno){
-            elog(WARNING, "OMG ....");
-            elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
-
-        }
-    }
-
-    GenericXLogFinish(state);
-    if (useTempBuf){
-        GenericXLogFinish(tempState);
-    }
-
-    UnlockReleaseBuffer(buf); // nbuf==buf인 상황만 고려
-    if (useTempBuf){
-        UnlockReleaseBuffer(tempBuf);
-    }
-
-
-
-    /* Update the insert page */
-    if (BlockNumberIsValid(newInsertPage) && newInsertPage != insertPage)
-        *updatedInsertPage = newInsertPage;
-
-
-    *updatedInsertPagePool = insertPagePool;
-
-
 }
 
 
@@ -1440,30 +446,15 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
     ntup = palloc0(ntupSize);
     HnswSetNeighborTuple(base, ntup, e, m);
 
-    //// neighbor 정보 받아옴 (original, blkno-cnt)
     HnswInsertPageCandidate pageCandidates = CalculatePartitionNeighborCount(e);
-
-//    elog(WARNING, "hellp");
-
-//    BlockNumber partitionPageArray[5]
 
     Buffer partBuf;
     Page partRawPage;
     HnswPartitionPage partPage;
-//    elog(WARNING, "hellp");
 
     for (int i = 1; i <= partitionPageCount; i++)
     {
         BlockNumber partBlkno = i;
-
-//        if (partBlkno == InvalidBlockNumber)
-//            break;
-
-//        elog(WARNING, "hellp");
-
-
-        // 이렇게 가져오면 안되는듯 ..? 아마 ...??? 여기만 좀이따 와서 수정
-        // 생각해보니까 그냥 metap에 Partitionpage 몇개인지만 명시해두면 됨
 
         partBuf = ReadBuffer(index, partBlkno);
         LockBuffer(partBuf, BUFFER_LOCK_SHARE);
@@ -1476,10 +467,6 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
 
             int pid = partPage->entries[j].pid;
             BlockNumber extendedPage = partPage->entries[j].extendedPage;
-
-//        elog(WARNING, "INVALID: original %d, extended %d", originalPage, extendedPage);
-
-            // 만약에 pool에 이미 extend page가 존재한다면,
             if (pid != -2) {
 
                 pidExist = false;
@@ -1487,13 +474,11 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
 
                 /* Replace classic page with its inserted page */
                 for (int k = 0; k < pageCandidates->length; k++) {
-                    // page candidate의  extendedPage 존재 여부 확인
                     if (pageCandidates->items[k].pid == pid) {
 
                         pageCandidates->items[k].pageType = EXTENDED_PAGE;
                         pageCandidates->items[k].blkno = extendedPage;
 
-                        //
                         pageCandidates->items[k].partBlkno = partBlkno;
                         pageCandidates->items[k].partArrIdx = j;
 
@@ -1519,16 +504,9 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
 
 
     qsort(pageCandidates->items, pageCandidates->length, sizeof(HnswPageNeighborCount), ComparePageNeighbors);
-//    elog(WARNING, "first partition: %d", pageCandidates->items[0].pid);
 
-
-    // 현재 insert page 읽어옴 .. -> index 유지 용도
     buf = ReadBuffer(index, currentPage);
     LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-//    elog(WARNING, "                          ****                          ");
-//    elog(WARNING, "start insert ~");
-//    elog(WARNING, "current insert page: BlockNumber = %u", currentPage);
-
     if (building)
     {
         state = NULL;
@@ -1537,49 +515,17 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
     else
     {
         state = GenericXLogStart(index);
-//        elog(WARNING, "GenericXLogStart called for main page: BlockNumber = %u", BufferGetBlockNumber(buf));
         page = GenericXLogRegisterBuffer(state, buf, 0);
     }
-//    elog(WARNING, "          ****             ");
-
-
-////
-//// insertPagePool 정보 로그 출력
-//    elog(WARNING, "Insert Page Pool (Size: %d)", insertPagePool->poolSize);
-//    for (int p = 0; p < insertPagePool->poolSize; p++) {
-//        int pid = insertPagePool->items[p].pid;
-//        BlockNumber ep = insertPagePool->items[p].extendedPage;
-//
-//        elog(WARNING, "[Pool Entry %d] pid: %d, extendedPage: %u",
-//             p,
-//             pid,
-//             ep);
-//    }
-//
-//    // pageCandidates 정보 로그 출력
-//    elog(WARNING, "Page Candidates (Total: %d)", pageCandidates->length);
-//    for (int i = 0; i < pageCandidates->length; i++) {
-//        elog(WARNING, "[Candidate %d] pid: %d, neighborCount: %d, pageType: %d, extendedPage: %u",
-//             i,
-//             pageCandidates->items[i].pid,
-//             pageCandidates->items[i].neighborCount,
-//             pageCandidates->items[i].pageType,
-//             pageCandidates->items[i].blkno);
-//    }
 
 
     bool useTempBuf = false;
     bool found = false;
 
 
-//    elog(WARNING, "insertPagePool->poolSize: %d", insertPagePool->poolSize);
-
-    // 나머지 candidate 페이지에 대해 ..
     for (int i = 0; i < pageCandidates->length; i++) {
-        // 페이지 불러옴
         tempPid = pageCandidates->items[i].pid;
         tempPageNo = pageCandidates->items[i].blkno;
-//        elog(WARNING, "Pid = %d", tempPid);
 
 
         if (pageCandidates->items[i].pageType == ORIGINAL_PAGE) {
@@ -1588,13 +534,11 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
         }
 
         if (tempPageNo == InvalidBlockNumber) {
-//            elog(WARNING, "Page type: EXTENDED (new)");
 
 
             Buffer newbuf;
             Page newpage;
 
-            // 기존의 insert page 뒤에 페이지 하나 추가함 -> 여기에 insert할거
             HnswInsertAppendPage(index, &newbuf, &newpage, state, page, building);
 
             /* Commit */
@@ -1619,18 +563,14 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
             nbuf = buf;
             npage = page;
 
-            // 새로운 페이지 추가 -> origin-page 와 extended-page 연결해줘야됨
             newExtendedPage = BufferGetBlockNumber(newbuf);
 
-            // 아래 자리의 blkno, arrayidx의 extendedpage를 업데이트 해주면 됨.
-            // forknumber 수정해야됨 !!!!!!!
             HnswUpdatePartitionPage(index, building, MAIN_FORKNUM, pageCandidates->items[i].partBlkno, pageCandidates->items[i].partArrIdx, newExtendedPage);
 
             break;
 
         }
 
-        // tempPageNo != invalid -> 페이지 존재
 
         if (currentPage == tempPageNo) {
             tempBuf = buf;
@@ -1641,49 +581,27 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
             tempBuf = ReadBuffer(index, tempPageNo);
             LockBuffer(tempBuf, BUFFER_LOCK_EXCLUSIVE);
 
-//                elog(WARNING, "candidate page: BlockNumber = %u (PageType = %d), neighbor count = %d",
-//                     tempPageNo, pageCandidates->items[i].pageType, pageCandidates->items[i].neighborCount);
-
             if (building) {
                 tempState = NULL;
                 tempPage = BufferGetPage(tempBuf);
             } else {
                 tempState = GenericXLogStart(index);
-//                    elog(WARNING, "GenericXLogStart called for candidate page: BlockNumber = %u",
-//                         BufferGetBlockNumber(tempBuf));
                 tempPage = GenericXLogRegisterBuffer(tempState, tempBuf, 0);
             }
         }
-//
-//        if (pageCandidates->items[i].pageType == EXTENDED_PAGE){
-//            elog(WARNING, "Page type: EXTENDED ");
-//        } else{
-//            elog(WARNING, "Page type: SPARE ");
-//        }
+
 
         if (PageGetFreeSpace(tempPage) >= combinedSize) {
-//            elog(WARNING, "[INSERT] free space (%zu) > combined size (%zu)",
-//                 PageGetFreeSpace(tempPage), combinedSize);
-
-//            elog(WARNING, "INSERT");
             nbuf = tempBuf;
             npage = tempPage;
             found = true;
             break;
 
         } else {
-//            elog(WARNING, "[EXTEND] free space (%zu) < combined size (%zu)",
-//                 PageGetFreeSpace(tempPage), combinedSize);
-
-            // 자리 없다는 의미니까 ,, pool에서 없애버려야 됨.. -> 업데이트만 해주면 됨.
-            // 새로 하나 만들어서,,
-            // max_pool 상태 아니라면 extended page 만들고 metap 업데이트
-//            elog(WARNING, "EXTEND");
 
             Buffer newbuf;
             Page newpage;
 
-            // 기존의 insert page 뒤에 페이지 하나 추가함 -> 여기에 insert할거
             HnswInsertAppendPage(index, &newbuf, &newpage, state, page, building);
 
             /* Commit */
@@ -1708,12 +626,8 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
             nbuf = buf;
             npage = page;
 
-            // 새로운 페이지 추가 -> origin-page 와 extended-page 연결해줘야됨
             newExtendedPage = BufferGetBlockNumber(newbuf);
 
-
-            // 아래 자리의 blkno, arrayidx의 extendedpage를 업데이트 해주면 됨.
-            // forknu 수정 필요
             HnswUpdatePartitionPage(index, building, MAIN_FORKNUM, pageCandidates->items[i].partBlkno, pageCandidates->items[i].partArrIdx, newExtendedPage);
 
             break;
@@ -1722,11 +636,8 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
 
 
 
-//    elog(WARNING, "                          ****                          ");
-
     e->pid = tempPid;
-    HnswSetElementTuple(base, etup, e); // 왜 오히려 안좋아지는지 .. 의문 ... 왜일까 ..
-//    elog(WARNING, "e->pid: %d", e->pid);
+    HnswSetElementTuple(base, etup, e);
 
     if (found)
     {
@@ -1736,61 +647,43 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
         newInsertPage = currentPage;
 
         e->offno = OffsetNumberNext(PageGetMaxOffsetNumber(tempPage));
-//        if (nbuf == buf)
         e->neighborOffno = OffsetNumberNext(e->offno);
-//        else
-//            e->neighborOffno = FirstOffsetNumber;
 
 
     } else
     {
-        // 새로운 블록에 저장
         e->blkno = BufferGetBlockNumber(buf);
         e->neighborPage = BufferGetBlockNumber(nbuf);
         newInsertPage = e->neighborPage;
 
 
         e->offno = OffsetNumberNext(PageGetMaxOffsetNumber(page));
-//        if (nbuf == buf)
         e->neighborOffno = OffsetNumberNext(e->offno);
-//        else
-//            e->neighborOffno = FirstOffsetNumber;
 
     }
-
-//    elog(WARNING, "Attempting to add element at offno: %u on page: %u",
-//         e->offno, e->blkno);
-//
-//    elog(WARNING, "Attempting to add neighbor at neighborOffno: %u on page: %u",
-//         e->neighborOffno, e->neighborPage);
-
 
     ItemPointerSet(&etup->neighbortid, e->neighborPage, e->neighborOffno);
 
     if (found)
     {
         if (PageAddItem(tempPage, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != e->offno){
-            elog(WARNING, "so sad ...");
             elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
 
         }
 
         if (PageAddItem(tempPage, (Item) ntup, ntupSize, InvalidOffsetNumber, false, false) != e->neighborOffno){
-            elog(WARNING, "OMG ....");
             elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
 
         }
     } else
     {
         if (PageAddItem(page, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != e->offno){
-            elog(WARNING, "so sad ...");
             elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
 
         }
 
 
         if (PageAddItem(npage, (Item) ntup, ntupSize, InvalidOffsetNumber, false, false) != e->neighborOffno){
-            elog(WARNING, "OMG ....");
             elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
 
         }
@@ -1801,19 +694,14 @@ AddElementOnDiskWithPartitionPage(Relation index, HnswElement e, int m, BlockNum
         GenericXLogFinish(tempState);
     }
 
-    UnlockReleaseBuffer(buf); // nbuf==buf인 상황만 고려
+    UnlockReleaseBuffer(buf);
     if (useTempBuf){
         UnlockReleaseBuffer(tempBuf);
     }
 
-
-
     /* Update the insert page */
     if (BlockNumberIsValid(newInsertPage) && newInsertPage != insertPage)
         *updatedInsertPage = newInsertPage;
-
-//
-//    *updatedInsertPagePool = insertPagePool;
 
 
 }
@@ -2167,49 +1055,6 @@ UpdateGraphOnDisk(Relation index, HnswSupport * support, HnswElement element, in
  * Update graph on disk
  */
 static void
-UpdateGraphOnDiskWithPartition(Relation index, HnswSupport * support, HnswElement element, int m, int efConstruction, HnswElement entryPoint, bool building, HnswInsertPagePool insertPagePool)
-{
-    BlockNumber newInsertPage = InvalidBlockNumber;
-    HnswInsertPagePool newInsertPagePool = NULL;
-
-    /* Look for duplicate */
-    if (FindDuplicateOnDisk(index, element, building)){
-        elog(WARNING, "duplicate !!!");
-        return;
-    }
-
-
-//    AddElementOnDisk(index, element, m, GetInsertPage(index), &newInsertPage, building);
-//    AddElementOnDiskWithPool(index, element, m, GetInsertPage(index), &newInsertPage, building, insertPagePool);
-
-//    AddElementOnDiskWithPartition(index, element, m, GetInsertPage(index), &newInsertPage, building, insertPagePool, &newInsertPagePool);
-    AddElementOnDiskWithPartitionCount(index, element, m, GetInsertPage(index), &newInsertPage, building, insertPagePool, &newInsertPagePool);
-
-//    elog(WARNING, "poolSize: %d", newInsertPagePool->poolSize);
-
-    /* Update insert page if needed */
-    if (BlockNumberIsValid(newInsertPage))
-        HnswUpdateMetaPage(index, 0, NULL, newInsertPage, MAIN_FORKNUM, building);
-
-
-    HnswUpdateMetaPageWithPartition(index, 0, NULL, InvalidBlockNumber, MAIN_FORKNUM, building, newInsertPagePool);
-
-    /* Update neighbors */
-    HnswUpdateNeighborsOnDisk(index, support, element, m, false, building);
-
-//    UpdateInsertPagePool(index, insertPagePool, MAIN_FORKNUM, building);
-
-    /* Update entry point if needed */
-    if (entryPoint == NULL || element->level > entryPoint->level)
-        HnswUpdateMetaPage(index, HNSW_UPDATE_ENTRY_GREATER, element, InvalidBlockNumber, MAIN_FORKNUM, building);
-
-}
-
-
-/*
- * Update graph on disk
- */
-static void
 UpdateGraphOnDiskWithPartitionPage(Relation index, HnswSupport * support, HnswElement element, int m, int efConstruction, HnswElement entryPoint, bool building, int partitionPageCount)
 {
     BlockNumber newInsertPage = InvalidBlockNumber;
@@ -2217,25 +1062,18 @@ UpdateGraphOnDiskWithPartitionPage(Relation index, HnswSupport * support, HnswEl
 
     /* Look for duplicate */
     if (FindDuplicateOnDisk(index, element, building)){
-        elog(WARNING, "duplicate !!!");
         return;
     }
 
 //    AddElementOnDiskWithPartition(index, element, m, GetInsertPage(index), &newInsertPage, building, insertPagePool, &newInsertPagePool);
     AddElementOnDiskWithPartitionPage(index, element, m, GetInsertPage(index), &newInsertPage, building,  partitionPageCount);
 
-//    elog(WARNING, "poolSize: %d", newInsertPagePool->poolSize);
-
     /* Update insert page if needed */
     if (BlockNumberIsValid(newInsertPage))
         HnswUpdateMetaPage(index, 0, NULL, newInsertPage, MAIN_FORKNUM, building);
 
-//    HnswUpdateMetaPageWithPartition(index, 0, NULL, InvalidBlockNumber, MAIN_FORKNUM, building, newInsertPagePool);
-
     /* Update neighbors */
     HnswUpdateNeighborsOnDisk(index, support, element, m, false, building);
-
-//    UpdateInsertPagePool(index, insertPagePool, MAIN_FORKNUM, building);
 
     /* Update entry point if needed */
     if (entryPoint == NULL || element->level > entryPoint->level)
@@ -2297,63 +1135,6 @@ HnswInsertTupleOnDisk(Relation index, HnswSupport * support, Datum value, ItemPo
 	return true;
 }
 
-
-bool
-HnswInsertTupleOnDiskWithPartition(Relation index, HnswSupport * support, Datum value, ItemPointer heaptid, bool building)
-{
-    HnswElement entryPoint;
-    HnswElement element;
-    int			m;
-    int			efConstruction = HnswGetEfConstruction(index);
-    LOCKMODE	lockmode = ShareLock;
-    char	   *base = NULL;
-
-    HnswInsertPagePool insertPagePool;
-
-    /*
-     * Get a shared lock. This allows vacuum to ensure no in-flight inserts
-     * before repairing graph. Use a page lock so it does not interfere with
-     * buffer lock (or reads when vacuuming).
-     */
-    LockPage(index, HNSW_UPDATE_LOCK, lockmode);
-
-    /* Get m and entry point */
-    HnswGetMetaPageInfoWithPartition(index, &m, &entryPoint, &insertPagePool);
-
-    /* Create an element */
-    element = HnswInitElement(base, heaptid, m, HnswGetMl(m), HnswGetMaxLevel(m), NULL);
-    HnswPtrStore(base, element->value, DatumGetPointer(value));
-
-    /* Prevent concurrent inserts when likely updating entry point */
-    if (entryPoint == NULL || element->level > entryPoint->level)
-    {
-        /* Release shared lock */
-        UnlockPage(index, HNSW_UPDATE_LOCK, lockmode);
-
-        /* Get exclusive lock */
-        lockmode = ExclusiveLock;
-        LockPage(index, HNSW_UPDATE_LOCK, lockmode);
-
-        /* Get latest entry point after lock is acquired */
-        entryPoint = HnswGetEntryPoint(index);
-    }
-
-    /* Find neighbors for element */
-    HnswFindElementNeighbors(base, element, entryPoint, index, support, m, efConstruction, false);
-
-    /* Update graph on disk */
-    UpdateGraphOnDiskWithPartition(index, support, element, m, efConstruction, entryPoint, building, insertPagePool);
-
-    /* Release lock */
-    UnlockPage(index, HNSW_UPDATE_LOCK, lockmode);
-
-//    elog(INFO, "insert done (on-disk)");
-
-    return true;
-}
-
-
-
 bool
 HnswInsertTupleOnDiskWithPartitionPage(Relation index, HnswSupport * support, Datum value, ItemPointer heaptid, bool building)
 {
@@ -2400,14 +1181,11 @@ HnswInsertTupleOnDiskWithPartitionPage(Relation index, HnswSupport * support, Da
     /* Find neighbors for element */
     HnswFindElementNeighbors(base, element, entryPoint, index, support, m, efConstruction, false);
 
-//    elog(WARNING, "INSERT START");
     /* Update graph on disk */
     UpdateGraphOnDiskWithPartitionPage(index, support, element, m, efConstruction, entryPoint, building,  partitionPageCount);
 
     /* Release lock */
     UnlockPage(index, HNSW_UPDATE_LOCK, lockmode);
-
-//    elog(INFO, "insert done (on-disk)");
 
     return true;
 }
@@ -2430,7 +1208,6 @@ HnswInsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid
 		return;
 
 //	HnswInsertTupleOnDisk(index, &support, value, heaptid, false);
-//    HnswInsertTupleOnDiskWithPartition(index, &support, value, heaptid, false);
     HnswInsertTupleOnDiskWithPartitionPage(index, &support, value, heaptid, false);
 }
 

@@ -31,7 +31,7 @@ endif
 # - GCC (needs -ftree-vectorize OR -O3) - https://gcc.gnu.org/projects/tree-ssa/vectorization.html
 # - Clang (could use pragma instead) - https://llvm.org/docs/Vectorizers.html
 PG_CFLAGS += $(OPTFLAGS) -ftree-vectorize -fassociative-math -fno-signed-zeros -fno-trapping-math
-PG_CFLAGS += -g -O0
+#PG_CFLAGS += -g -O0
 
 # Debug GCC auto-vectorization
 # PG_CFLAGS += -fopt-info-vec
