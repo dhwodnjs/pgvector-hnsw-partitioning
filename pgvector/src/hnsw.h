@@ -459,6 +459,7 @@ typedef union
 	struct pointerhash_hash *pointers;
 	struct offsethash_hash *offsets;
 	struct tidhash_hash *tids;
+    struct pagehash_hash *pages;
 }			visited_hash;
 
 typedef union
@@ -480,6 +481,7 @@ typedef struct HnswScanOpaqueData
 	double		previousDistance;
 	Size		maxMemory;
 	MemoryContext tmpCtx;
+    int64 pages;
 
 	/* Support functions */
 	HnswSupport support;
@@ -522,7 +524,7 @@ bool		HnswCheckNorm(HnswSupport * support, Datum value);
 Buffer		HnswNewBuffer(Relation index, ForkNumber forkNum);
 void		HnswInitPage(Buffer buf, Page page);
 void		HnswInit(void);
-List	   *HnswSearchLayer(char *base, HnswQuery * q, List *ep, int ef, int lc, Relation index, HnswSupport * support, int m, bool inserting, HnswElement skipElement, visited_hash * v, pairingheap **discarded, bool initVisited, int64 *tuples);
+List	   *HnswSearchLayer(char *base, HnswQuery * q, List *ep, int ef, int lc, Relation index, HnswSupport * support, int m, bool inserting, HnswElement skipElement, visited_hash * v, pairingheap **discarded, bool initVisited, int64 *tuples, int64 *pages);
 HnswElement HnswGetEntryPoint(Relation index);
 void		HnswGetMetaPageInfo(Relation index, int *m, HnswElement * entryPoint);
 void	   *HnswAlloc(HnswAllocator * allocator, Size size);
@@ -618,5 +620,20 @@ typedef struct OffsetHashEntry
 #define SH_SCOPE extern
 #define SH_DECLARE
 #include "lib/simplehash.h"
+
+// 방문한 page 수 count 위함
+typedef struct PageHashEntry
+{
+    BlockNumber page;
+    char		status;
+}			PageHashEntry;
+
+#define SH_PREFIX pagehash
+#define SH_ELEMENT_TYPE PageHashEntry
+#define SH_KEY_TYPE BlockNumber
+#define SH_SCOPE extern
+#define SH_DECLARE
+#include "lib/simplehash.h"
+
 
 #endif

@@ -37,11 +37,11 @@ GetScanItems(IndexScanDesc scan, Datum value)
 
 	for (int lc = entryPoint->level; lc >= 1; lc--)
 	{
-		w = HnswSearchLayer(base, q, ep, 1, lc, index, support, m, false, NULL, NULL, NULL, true, NULL);
+		w = HnswSearchLayer(base, q, ep, 1, lc, index, support, m, false, NULL, NULL, NULL, true, NULL, NULL);
 		ep = w;
 	}
 
-	return HnswSearchLayer(base, q, ep, hnsw_ef_search, 0, index, support, m, false, NULL, &so->v, hnsw_iterative_scan != HNSW_ITERATIVE_SCAN_OFF ? &so->discarded : NULL, true, &so->tuples);
+	return HnswSearchLayer(base, q, ep, hnsw_ef_search, 0, index, support, m, false, NULL, &so->v, hnsw_iterative_scan != HNSW_ITERATIVE_SCAN_OFF ? &so->discarded : NULL, true, &so->tuples, &so->pages);
 }
 
 /*
@@ -72,7 +72,7 @@ ResumeScanItems(IndexScanDesc scan)
 		ep = lappend(ep, sc);
 	}
 
-	return HnswSearchLayer(base, &so->q, ep, batch_size, 0, index, &so->support, so->m, false, NULL, &so->v, &so->discarded, false, &so->tuples);
+	return HnswSearchLayer(base, &so->q, ep, batch_size, 0, index, &so->support, so->m, false, NULL, &so->v, &so->discarded, false, &so->tuples, &so->pages);
 }
 
 /*
@@ -162,6 +162,7 @@ hnswrescan(IndexScanDesc scan, ScanKey keys, int nkeys, ScanKey orderbys, int no
 	so->v.tids = NULL;
 	so->discarded = NULL;
 	so->tuples = 0;
+    so->pages = 0;
 	so->previousDistance = -get_float8_infinity();
 	MemoryContextReset(so->tmpCtx);
 
@@ -308,7 +309,11 @@ hnswgettuple(IndexScanDesc scan, ScanDirection dir)
 		scan->xs_heaptid = *heaptid;
 		scan->xs_recheck = false;
 		scan->xs_recheckorderby = false;
-		return true;
+
+//        elog(WARNING, "visited node: %d, visited page: %d", so->tuples, so->pages); // 몇 개 노드를 방문하는지?..
+
+
+        return true;
 	}
 
 	MemoryContextSwitchTo(oldCtx);

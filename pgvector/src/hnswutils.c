@@ -100,6 +100,24 @@ hash_offset(Size offset)
 #define SH_DEFINE
 #include "lib/simplehash.h"
 
+/* Page hash table */
+static uint32
+hash_page(BlockNumber page)
+{
+    return murmurhash64((uint64) page);
+}
+
+#define SH_PREFIX		pagehash
+#define SH_ELEMENT_TYPE	PageHashEntry
+#define SH_KEY_TYPE		BlockNumber
+#define	SH_KEY			page
+#define SH_HASH_KEY(tb, key)	hash_page(key)
+#define SH_EQUAL(tb, a, b)		(a == b)
+#define	SH_SCOPE		extern
+#define SH_DEFINE
+#include "lib/simplehash.h"
+
+
 /*
  * Get the max number of connections in an upper layer for each element in the index
  */
@@ -823,8 +841,10 @@ CompareFurthestCandidates(const pairingheap_node *a, const pairingheap_node *b, 
 static inline void
 InitVisited(char *base, visited_hash * v, bool inMemory, int ef, int m)
 {
-	if (!inMemory)
-		v->tids = tidhash_create(CurrentMemoryContext, ef * m * 2, NULL);
+	if (!inMemory) {
+        v->tids = tidhash_create(CurrentMemoryContext, ef * m * 2, NULL);
+        v->pages = pagehash_create(CurrentMemoryContext, ef * m * 2, NULL); // page 정보 추가
+    }
 	else if (base != NULL)
 		v->offsets = offsethash_create(CurrentMemoryContext, ef * m * 2, NULL);
 	else
@@ -835,7 +855,7 @@ InitVisited(char *base, visited_hash * v, bool inMemory, int ef, int m)
  * Add to visited
  */
 static inline void
-AddToVisited(char *base, visited_hash * v, HnswElementPtr elementPtr, bool inMemory, bool *found)
+AddToVisited(char *base, visited_hash * v, HnswElementPtr elementPtr, bool inMemory, bool *found, bool *page_found)
 {
 	if (!inMemory)
 	{
@@ -844,7 +864,18 @@ AddToVisited(char *base, visited_hash * v, HnswElementPtr elementPtr, bool inMem
 
 		ItemPointerSet(&indextid, element->blkno, element->offno);
 		tidhash_insert(v->tids, indextid, found);
-	}
+
+
+//        bool		page_found;  // 추가된 부분
+        BlockNumber blkno;  // 블록 번호 추출
+
+        // BlockNumber 추출
+        blkno = ItemPointerGetBlockNumber(&indextid);
+
+        // PageHash 추가 (중복 검사)
+        pagehash_insert(v->pages, blkno, page_found);
+
+    }
 	else if (base != NULL)
 	{
 		HnswElement element = HnswPtrAccess(base, elementPtr);
@@ -881,7 +912,7 @@ CountElement(HnswElement skipElement, HnswElement e)
  * Load unvisited neighbors from memory
  */
 static void
-HnswLoadUnvisitedFromMemory(char *base, HnswElement element, HnswUnvisited * unvisited, int *unvisitedLength, visited_hash * v, int lc, HnswNeighborArray * localNeighborhood, Size neighborhoodSize)
+HnswLoadUnvisitedFromMemory(char *base, HnswElement element, HnswUnvisited * unvisited, int *unvisitedLength, visited_hash * v, int lc, HnswNeighborArray * localNeighborhood, Size neighborhoodSize, int *unvisitedPageLength)
 {
 	/* Get the neighborhood at layer lc */
 	HnswNeighborArray *neighborhood = HnswGetNeighbors(base, element, lc);
@@ -892,16 +923,23 @@ HnswLoadUnvisitedFromMemory(char *base, HnswElement element, HnswUnvisited * unv
 	LWLockRelease(&element->lock);
 
 	*unvisitedLength = 0;
+    *unvisitedPageLength = 0;
 
 	for (int i = 0; i < localNeighborhood->length; i++)
 	{
 		HnswCandidate *hc = &localNeighborhood->items[i];
 		bool		found;
+        bool		page_found;  // 추가된 부분
 
-		AddToVisited(base, v, hc->element, true, &found);
+		AddToVisited(base, v, hc->element, true, &found, &page_found);
 
 		if (!found)
 			unvisited[(*unvisitedLength)++].element = HnswPtrAccess(base, hc->element);
+
+
+        if (!page_found){
+            (*unvisitedPageLength)++;
+        }
 	}
 }
 
@@ -944,11 +982,12 @@ HnswLoadNeighborTids(HnswElement element, ItemPointerData *indextids, Relation i
  * Load unvisited neighbors from disk
  */
 static void
-HnswLoadUnvisitedFromDisk(HnswElement element, HnswUnvisited * unvisited, int *unvisitedLength, visited_hash * v, Relation index, int m, int lm, int lc)
+HnswLoadUnvisitedFromDisk(HnswElement element, HnswUnvisited * unvisited, int *unvisitedLength, visited_hash * v, Relation index, int m, int lm, int lc, int *unvisitedPageLength)
 {
 	ItemPointerData indextids[HNSW_MAX_M * 2];
 
 	*unvisitedLength = 0;
+    *unvisitedPageLength = 0;
 
 	if (!HnswLoadNeighborTids(element, indextids, index, m, lm, lc))
 		return;
@@ -958,13 +997,26 @@ HnswLoadUnvisitedFromDisk(HnswElement element, HnswUnvisited * unvisited, int *u
 		ItemPointer indextid = &indextids[i];
 		bool		found;
 
+        bool		page_found;  // 추가된 부분
+        BlockNumber blkno;  // 블록 번호 추출
+
 		if (!ItemPointerIsValid(indextid))
 			break;
 
 		tidhash_insert(v->tids, *indextid, &found);
 
+        // BlockNumber 추출
+        blkno = ItemPointerGetBlockNumber(indextid);
+
+        // PageHash 추가 (중복 검사)
+        pagehash_insert(v->pages, blkno, &page_found);
+
 		if (!found)
 			unvisited[(*unvisitedLength)++].indextid = *indextid;
+
+        if (!page_found){
+            (*unvisitedPageLength)++;
+        }
 	}
 }
 
@@ -972,7 +1024,7 @@ HnswLoadUnvisitedFromDisk(HnswElement element, HnswUnvisited * unvisited, int *u
  * Algorithm 2 from paper
  */
 List *
-HnswSearchLayer(char *base, HnswQuery * q, List *ep, int ef, int lc, Relation index, HnswSupport * support, int m, bool inserting, HnswElement skipElement, visited_hash * v, pairingheap **discarded, bool initVisited, int64 *tuples)
+HnswSearchLayer(char *base, HnswQuery * q, List *ep, int ef, int lc, Relation index, HnswSupport * support, int m, bool inserting, HnswElement skipElement, visited_hash * v, pairingheap **discarded, bool initVisited, int64 *tuples, int64 *pages)
 {
 	List	   *w = NIL;
 	pairingheap *C = pairingheap_allocate(CompareNearestCandidates, NULL);
@@ -985,6 +1037,8 @@ HnswSearchLayer(char *base, HnswQuery * q, List *ep, int ef, int lc, Relation in
 	int			lm = HnswGetLayerM(m, lc);
 	HnswUnvisited *unvisited = palloc(lm * sizeof(HnswUnvisited));
 	int			unvisitedLength;
+    int			unvisitedPageLength;
+
 	bool		inMemory = index == NULL;
 
 	if (v == NULL)
@@ -1013,14 +1067,18 @@ HnswSearchLayer(char *base, HnswQuery * q, List *ep, int ef, int lc, Relation in
 	{
 		HnswSearchCandidate *sc = (HnswSearchCandidate *) lfirst(lc2);
 		bool		found;
+        bool		page_found;  // 추가된 부분
 
 		if (initVisited)
 		{
-			AddToVisited(base, v, sc->element, inMemory, &found);
+			AddToVisited(base, v, sc->element, inMemory, &found, &page_found);
 
 			/* OK to count elements instead of tuples */
 			if (tuples != NULL)
 				(*tuples)++;
+
+            if (pages != NULL)
+                (*pages)++;
 		}
 
 		pairingheap_add(C, &sc->c_node);
@@ -1047,13 +1105,16 @@ HnswSearchLayer(char *base, HnswQuery * q, List *ep, int ef, int lc, Relation in
 		cElement = HnswPtrAccess(base, c->element);
 
 		if (inMemory)
-			HnswLoadUnvisitedFromMemory(base, cElement, unvisited, &unvisitedLength, v, lc, localNeighborhood, neighborhoodSize);
+			HnswLoadUnvisitedFromMemory(base, cElement, unvisited, &unvisitedLength, v, lc, localNeighborhood, neighborhoodSize, &unvisitedPageLength);
 		else
-			HnswLoadUnvisitedFromDisk(cElement, unvisited, &unvisitedLength, v, index, m, lm, lc);
+			HnswLoadUnvisitedFromDisk(cElement, unvisited, &unvisitedLength, v, index, m, lm, lc, &unvisitedPageLength);
 
 		/* OK to count elements instead of tuples */
 		if (tuples != NULL)
 			(*tuples) += unvisitedLength;
+
+        if (pages != NULL)
+            (*pages) += unvisitedPageLength;
 
 		for (int i = 0; i < unvisitedLength; i++)
 		{
@@ -1455,7 +1516,7 @@ HnswFindElementNeighbors(char *base, HnswElement element, HnswElement entryPoint
 	/* 1st phase: greedy search to insert level */
 	for (int lc = entryLevel; lc >= level + 1; lc--)
 	{
-		w = HnswSearchLayer(base, &q, ep, 1, lc, index, support, m, true, skipElement, NULL, NULL, true, NULL);
+		w = HnswSearchLayer(base, &q, ep, 1, lc, index, support, m, true, skipElement, NULL, NULL, true, NULL, NULL);
 		ep = w;
 	}
 
@@ -1474,7 +1535,7 @@ HnswFindElementNeighbors(char *base, HnswElement element, HnswElement entryPoint
 		List	   *lw = NIL;
 		ListCell   *lc2;
 
-		w = HnswSearchLayer(base, &q, ep, efConstruction, lc, index, support, m, true, skipElement, NULL, NULL, true, NULL);
+		w = HnswSearchLayer(base, &q, ep, efConstruction, lc, index, support, m, true, skipElement, NULL, NULL, true, NULL, NULL);
 
 		/* Convert search candidates to candidates */
 		foreach(lc2, w)

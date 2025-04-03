@@ -53,6 +53,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/datum.h"
 #include "utils/memutils.h"
+#include "utils/hsearch.h"
 
 #if PG_VERSION_NUM >= 140000
 #include "utils/backend_progress.h"
@@ -69,7 +70,9 @@
 #define PARALLEL_KEY_HNSW_AREA			UINT64CONST(0xA000000000000002)
 #define PARALLEL_KEY_QUERY_TEXT			UINT64CONST(0xA000000000000003)
 
-#include "miscadmin.h"  // GetCurrentTimestamp()
+#include "miscadmin.h"  // GetCurrentTimestamp()\
+
+#include "ivfflat.h"
 
 /*
  * Create the metapage
@@ -399,12 +402,15 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
     page = BufferGetPage(buf);
     HnswInitPage(buf, page);
 
+    int element_per_page_counter = 0;
+
 
     /* Iterate through partitions */
     for (unsigned i = 0; i < partitionstate->numPartitions; i++) {
         HnswPartition *partition = &partitionstate->partitions[i];
 
         for (unsigned j = 0; j < partition->size; j++) {
+            element_per_page_counter++;
             HnswElement element = HnswPtrAccess(base, partition->nodes[j]);
             Size etupSize;
             Size ntupSize;
@@ -429,7 +435,8 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
             HnswSetElementTuple(base, etup, element);
 
             /* Keep element and neighbors on the same page if possible */
-            if (PageGetFreeSpace(page) < etupSize || (combinedSize <= maxSize && PageGetFreeSpace(page) < combinedSize)){
+            if ( element_per_page_counter > 3 || PageGetFreeSpace(page) < etupSize || (combinedSize <= maxSize && PageGetFreeSpace(page) < combinedSize)){
+                element_per_page_counter = 1;
                 HnswBuildAppendPage(index, &buf, &page, forkNum);
             }
 
@@ -529,6 +536,12 @@ WriteNeighborTuples(HnswBuildState * buildstate)
 }
 
 
+static int
+compareBlockNumber(const void *a, const void *b)
+{
+    return (*(BlockNumber *)a - *(BlockNumber *)b);
+}
+
 /*
  * Write neighbor tuples
  */
@@ -583,6 +596,79 @@ WriteNeighborTuplesWithPartitions(HnswBuildState * buildstate, HnswPartitionStat
         }
     }
 
+
+    int totalUniqueCount = 0;  // 전체 유니크 개수 합산
+    int totalElements = 0;      // 전체 element 개수
+    int totalSameCount = 0;
+
+    // neighbor spread ratio
+    for (unsigned i = 0; i < partitionstate->numPartitions; i++)
+    {
+        HnswPartition *partition = &partitionstate->partitions[i];
+
+
+        for (unsigned j = 0; j < partition->size; j++)
+        {
+            HnswElement element = HnswPtrAccess(base, partition->nodes[j]);
+            HnswNeighborArray *neighbors = HnswGetNeighbors(base, element, 0);
+
+
+            BlockNumber uniqueBlknoList[48] = {0};
+            int uniqueBlknoCount = 0;
+
+
+            for (int k = 0; k < neighbors->length; k++) {
+                HnswElementPtr neighborPtr = neighbors->items[k].element;
+                HnswElement neighborElement = HnswPtrAccess(base, neighborPtr);
+
+                if (neighborElement == NULL)
+                {
+                    elog(ERROR, "neighborElement is NULL");
+                    continue;
+                }
+
+                BlockNumber blkno = neighborElement->blkno;
+
+                if (uniqueBlknoCount < 48)
+                {
+                    uniqueBlknoList[uniqueBlknoCount++] = blkno;
+                }
+
+            }
+
+// 정렬 후 중복 개수 세기
+            qsort(uniqueBlknoList, uniqueBlknoCount, sizeof(BlockNumber), compareBlockNumber);
+            int uniqueCount = 1;  // 첫 번째 값은 항상 유니크
+            int sameCount = 0;
+
+            for (int p = 1; p < uniqueBlknoCount; p++)
+            {
+                if (uniqueBlknoList[p] != uniqueBlknoList[p - 1])
+                {
+                    uniqueCount++;  // 이전 값과 다를 경우만 증가
+                }
+
+                if (uniqueBlknoList[p] == element->blkno){
+                    sameCount++;
+                }
+            }
+
+            // 유니크 개수를 누적
+            totalUniqueCount += uniqueCount;
+            totalSameCount += sameCount;
+            totalElements++;
+
+        }
+    }
+
+    // 평균 계산 및 출력
+    if (totalElements > 0)
+    {
+        double avgUniqueCount = (double) totalUniqueCount / totalElements;
+        double avgSameCount = (double) totalSameCount / totalElements;
+        elog(WARNING, "Average unique neighbor blkno count: %.2f", avgUniqueCount);
+        elog(WARNING, "Average same neighbor blkno count: %.2f", avgSameCount);
+    }
 
     pfree(ntup);
 
@@ -701,6 +787,8 @@ SelectPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPa
 
     HnswElement element = HnswPtrAccess(base, elementPtr);
     HnswNeighborArray *neighbors = HnswGetNeighbors(base, element, 0);
+
+    // neighbor page 하나씩 확인하면서, neighbor가 가장 많은 페이지에 노드 할당
     for (int j = 0; j < neighbors->length; j++)
     {
         HnswElementPtr neighborPtr = neighbors->items[j].element;
@@ -716,8 +804,52 @@ SelectPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPa
             bestPartition = pid;
             maxScore = score;
         }
-
     }
+
+    elog(WARNING, "maxScore: %d", maxScore);
+
+
+
+//    // 각 partition에 대해 cluster coeff를 계산하고,, coeff가 가장 큰 곳에 할당
+//    int maxSharedCount = -1;
+//
+//    // A의 neighbor 목록 수집
+//    int numNeighbors = neighbors->length;
+//    HnswElementPtr *neighborPtrs = palloc(sizeof(HnswElementPtr) * numNeighbors);
+//    for (int i = 0; i < numNeighbors; i++) {
+//        neighborPtrs[i] = neighbors->items[i].element;
+//    }
+//
+//    // 각 partition에 대해 A의 neighbor들과 파티션 노드들의 neighbor 간 연결 수 계산
+//    for (int pid = 0; pid < oldPartitionstate->numPartitions; pid++) {
+//        if (newPartitionstate->partitions[pid].size >= newPartitionstate->partitions[pid].capacity)
+//            continue;
+//
+//        int sharedCount = 0;
+//
+//        for (int i = 0; i < newPartitionstate->partitions[pid].size; i++) {
+//            HnswElementPtr partElemPtr = newPartitionstate->partitions[pid].nodes[i];
+//            HnswElement partElem = HnswPtrAccess(base, partElemPtr);
+//            HnswNeighborArray *partNeighbors = HnswGetNeighbors(base, partElem, 0);
+//
+//            // 파티션 노드의 neighbor가 A의 neighbor와 겹치는 경우 count
+//            for (int j = 0; j < partNeighbors->length; j++) {
+//                HnswElementPtr neighborOfPart = partNeighbors->items[j].element;
+//
+//                for (int k = 0; k < numNeighbors; k++) {
+//                    if (HnswPtrEqual(base, neighborOfPart, neighborPtrs[k])) {
+//                        sharedCount++;
+//                        break;
+//                    }
+//                }
+//            }
+//        }
+//
+//        if (sharedCount > maxSharedCount) {
+//            maxSharedCount = sharedCount;
+//            bestPartition = pid;
+//        }
+//    }
 
 
     if (bestPartition < newPartitionstate->numPartitions){
@@ -796,6 +928,7 @@ HnswPartitionGraphLDG(HnswBuildState *buildstate, HnswPartitionState *oldPartiti
     }
 }
 
+//  이걸 clustering 한 다음에 각 cluster에 대해 수행하고 합칠 수 있나? TODO
 static HnswPartitionState *
 HnswPartitionGraph(HnswBuildState *buildstate)
 {
@@ -963,7 +1096,7 @@ CountOverlapRatioForInsert(HnswBuildState *buildstate, HnswPartitionState *parti
     }
 
     qsort(countPartitionstate->partitions, countPartitionstate->numPartitions, sizeof(HnswPartition), ComparePartitionSizeDesc);
-
+//
 //    int cluster_coeff = 0;
 //
 //    while (!HnswPtrIsNull(base, iter)){
@@ -1832,7 +1965,6 @@ BuildGraph(HnswBuildState * buildstate, ForkNumber forkNum)
 	if (buildstate->hnswleader)
 		HnswEndParallel(buildstate->hnswleader);
 }
-
 static void
 BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
 {
@@ -1865,8 +1997,8 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
     /* Flush pages */
     if (!buildstate->graph->flushed)
     {
-
         /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
+        // partition graph
         HnswPartitionState *partitionstate;
         partitionstate = HnswPartitionGraph(buildstate);
 
@@ -1886,6 +2018,8 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
     if (buildstate->hnswleader)
         HnswEndParallel(buildstate->hnswleader);
 }
+
+
 
 /*
  * Build the index
