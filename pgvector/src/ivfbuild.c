@@ -400,7 +400,7 @@ FreeBuildState(IvfflatBuildState * buildstate)
 /*
  * Compute centers
  */
-static void
+void
 ComputeCenters(IvfflatBuildState * buildstate)
 {
 	int			numSamples;

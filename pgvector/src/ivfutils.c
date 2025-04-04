@@ -45,6 +45,7 @@ int
 IvfflatGetLists(Relation index)
 {
 	IvfflatOptions *opts = (IvfflatOptions *) index->rd_options;
+    opts = NULL;
 
 	if (opts)
 		return opts->lists;
@@ -324,7 +325,8 @@ BitSumCenter(Pointer v, float *x)
 const		IvfflatTypeInfo *
 IvfflatGetTypeInfo(Relation index)
 {
-	FmgrInfo   *procinfo = IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_INFO_PROC);
+//	FmgrInfo   *procinfo = IvfflatOptionalProcInfo(index, IVFFLAT_TYPE_INFO_PROC);
+    FmgrInfo   *procinfo = NULL;
 
 	if (procinfo == NULL)
 	{

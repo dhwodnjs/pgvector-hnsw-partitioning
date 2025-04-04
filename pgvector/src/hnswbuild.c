@@ -53,6 +53,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/datum.h"
 #include "utils/memutils.h"
+#include "ivfflat.h"
 
 #if PG_VERSION_NUM >= 140000
 #include "utils/backend_progress.h"
@@ -1456,6 +1457,84 @@ InitBuildState(HnswBuildState * buildstate, Relation heap, Relation index, Index
 
 }
 
+
+/*
+ * Initialize the build state
+ */
+static void
+InitIvfBuildState(IvfflatBuildState * buildstate, Relation heap, Relation index, IndexInfo *indexInfo)
+{
+    buildstate->heap = heap;
+    buildstate->index = index;
+    buildstate->indexInfo = indexInfo;
+    buildstate->typeInfo = IvfflatGetTypeInfo(index); // 함수 수정
+    buildstate->tupdesc = RelationGetDescr(index);
+
+    buildstate->lists = IvfflatGetLists(index); // 함수 수정
+    buildstate->dimensions = TupleDescAttr(index->rd_att, 0)->atttypmod;
+
+    /* Disallow varbit since require fixed dimensions */
+    if (TupleDescAttr(index->rd_att, 0)->atttypid == VARBITOID)
+        ereport(ERROR,
+                (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+                        errmsg("type not supported for ivfflat index")));
+
+    /* Require column to have dimensions to be indexed */
+    if (buildstate->dimensions < 0)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                        errmsg("column does not have dimensions")));
+
+    if (buildstate->dimensions > buildstate->typeInfo->maxDimensions)
+        ereport(ERROR,
+                (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+                        errmsg("column cannot have more than %d dimensions for ivfflat index", buildstate->typeInfo->maxDimensions)));
+
+    buildstate->reltuples = 0;
+    buildstate->indtuples = 0;
+
+    /* Get support functions */
+//    buildstate->procinfo = index_getprocinfo(index, 1, IVFFLAT_DISTANCE_PROC);
+//    buildstate->normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORM_PROC);
+    buildstate->kmeansnormprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_KMEANS_NORM_PROC);
+//    buildstate->collation = index->rd_indcollation[0];
+
+    buildstate->procinfo = index_getprocinfo(index, 1, IVFFLAT_DISTANCE_PROC);
+    buildstate->normprocinfo = HnswOptionalProcInfo(index, IVFFLAT_NORM_PROC);
+    buildstate->kmeansnormprocinfo = HnswOptionalProcInfo(index, IVFFLAT_KMEANS_NORM_PROC);
+    buildstate->collation = index->rd_indcollation[0];
+
+
+    /* Require more than one dimension for spherical k-means */
+    if (buildstate->kmeansnormprocinfo != NULL && buildstate->dimensions == 1)
+        ereport(ERROR,
+                (errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+                        errmsg("dimensions must be greater than one for this opclass")));
+
+    /* Create tuple description for sorting */
+    buildstate->sortdesc = CreateTemplateTupleDesc(3);
+    TupleDescInitEntry(buildstate->sortdesc, (AttrNumber) 1, "list", INT4OID, -1, 0);
+    TupleDescInitEntry(buildstate->sortdesc, (AttrNumber) 2, "tid", TIDOID, -1, 0);
+    TupleDescInitEntry(buildstate->sortdesc, (AttrNumber) 3, "vector", buildstate->tupdesc->attrs[0].atttypid, -1, 0);
+
+    buildstate->slot = MakeSingleTupleTableSlot(buildstate->sortdesc, &TTSOpsVirtual);
+
+    buildstate->centers = VectorArrayInit(buildstate->lists, buildstate->dimensions, buildstate->typeInfo->itemSize(buildstate->dimensions));
+    buildstate->listInfo = palloc(sizeof(ListInfo) * buildstate->lists);
+
+    buildstate->tmpCtx = AllocSetContextCreate(CurrentMemoryContext,
+                                               "Ivfflat build temporary context",
+                                               ALLOCSET_DEFAULT_SIZES);
+
+#ifdef IVFFLAT_KMEANS_DEBUG
+    buildstate->inertia = 0;
+	buildstate->listSums = palloc0(sizeof(double) * buildstate->lists);
+	buildstate->listCounts = palloc0(sizeof(int) * buildstate->lists);
+#endif
+
+    buildstate->ivfleader = NULL;
+}
+
 /*
  * Free resources
  */
@@ -1865,6 +1944,15 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
     /* Flush pages */
     if (!buildstate->graph->flushed)
     {
+
+        // 여기서 .. ivfkmeans 코드 넣어줄 수 있게 코드 짜야됨 TODO
+        // input으로는 현재 buildstate? .,,
+
+        IvfflatBuildState ivfbuildstate;
+
+        // 기존 heap이랑 hnswindex로 buildstate init하고? -> ivf로 바꿔줘야됨. 함수 이름을 바꿔야되나
+        InitIvfBuildState(&ivfbuildstate, buildstate->heap, buildstate->index, buildstate->indexInfo); // 이거부터도 문제인거
+//        ComputeCenters(&ivfbuildstate); // 걍 이걸 돌리면 돌아가는게 맞나? .,
 
         /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
         HnswPartitionState *partitionstate;

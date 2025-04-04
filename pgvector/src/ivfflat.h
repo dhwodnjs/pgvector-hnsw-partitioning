@@ -319,6 +319,8 @@ void		IvfflatInit(void);
 const		IvfflatTypeInfo *IvfflatGetTypeInfo(Relation index);
 PGDLLEXPORT void IvfflatParallelBuildMain(dsm_segment *seg, shm_toc *toc);
 
+void        ComputeCenters(IvfflatBuildState * buildstate);
+
 /* Index access methods */
 IndexBuildResult *ivfflatbuild(Relation heap, Relation index, IndexInfo *indexInfo);
 void		ivfflatbuildempty(Relation index);
