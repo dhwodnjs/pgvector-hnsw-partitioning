@@ -324,9 +324,7 @@ CREATE OPERATOR CLASS vector_cosine_ops
 	FOR TYPE vector USING hnsw AS
 	OPERATOR 1 <=> (vector, vector) FOR ORDER BY float_ops,
 	FUNCTION 1 vector_negative_inner_product(vector, vector),
-	FUNCTION 2 vector_norm(vector),
-	FUNCTION 3 vector_spherical_distance(vector, vector),
-	FUNCTION 4 vector_norm(vector);
+	FUNCTION 2 vector_norm(vector);
 
 CREATE OPERATOR CLASS vector_l1_ops
 	FOR TYPE vector USING hnsw AS

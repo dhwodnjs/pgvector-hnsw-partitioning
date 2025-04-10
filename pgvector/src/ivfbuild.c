@@ -225,7 +225,7 @@ BuildCallback(Relation index, ItemPointer tid, Datum *values,
 /*
  * Get index tuple from sort state
  */
-static inline void
+void
 GetNextTuple(Tuplesortstate *sortstate, TupleDesc tupdesc, TupleTableSlot *slot, IndexTuple *itup, int *list)
 {
 	if (tuplesort_gettupleslot(sortstate, true, false, slot, NULL))
@@ -925,30 +925,30 @@ IvfflatBeginParallel(IvfflatBuildState * buildstate, bool isconcurrent, int requ
 /*
  * Scan table for tuples to index
  */
-static void
+void
 AssignTuples(IvfflatBuildState * buildstate)
 {
 	int			parallel_workers = 0;
 	SortCoordinate coordinate = NULL;
 
-	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PROGRESS_IVFFLAT_PHASE_ASSIGN);
-
-	/* Calculate parallel workers */
-	if (buildstate->heap != NULL)
-		parallel_workers = plan_create_index_workers(RelationGetRelid(buildstate->heap), RelationGetRelid(buildstate->index));
-
-	/* Attempt to launch parallel worker scan when required */
-	if (parallel_workers > 0)
-		IvfflatBeginParallel(buildstate, buildstate->indexInfo->ii_Concurrent, parallel_workers);
-
-	/* Set up coordination state if at least one worker launched */
-	if (buildstate->ivfleader)
-	{
-		coordinate = (SortCoordinate) palloc0(sizeof(SortCoordinateData));
-		coordinate->isWorker = false;
-		coordinate->nParticipants = buildstate->ivfleader->nparticipanttuplesorts;
-		coordinate->sharedsort = buildstate->ivfleader->sharedsort;
-	}
+//	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PROGRESS_IVFFLAT_PHASE_ASSIGN);
+//
+//	/* Calculate parallel workers */
+//	if (buildstate->heap != NULL)
+//		parallel_workers = plan_create_index_workers(RelationGetRelid(buildstate->heap), RelationGetRelid(buildstate->index));
+//
+//	/* Attempt to launch parallel worker scan when required */
+//	if (parallel_workers > 0)
+//		IvfflatBeginParallel(buildstate, buildstate->indexInfo->ii_Concurrent, parallel_workers);
+//
+//	/* Set up coordination state if at least one worker launched */
+//	if (buildstate->ivfleader)
+//	{
+//		coordinate = (SortCoordinate) palloc0(sizeof(SortCoordinateData));
+//		coordinate->isWorker = false;
+//		coordinate->nParticipants = buildstate->ivfleader->nparticipanttuplesorts;
+//		coordinate->sharedsort = buildstate->ivfleader->sharedsort;
+//	}
 
 	/* Begin serial/leader tuplesort */
 	buildstate->sortstate = InitBuildSortState(buildstate->sortdesc, maintenance_work_mem, coordinate);

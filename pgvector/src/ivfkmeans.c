@@ -28,7 +28,9 @@ InitCenters(Relation index, VectorArray samples, VectorArray centers, float *low
 	int			numCenters = centers->maxlen;
 	int			numSamples = samples->length;
 
-	procinfo = index_getprocinfo(index, 1, IVFFLAT_KMEANS_DISTANCE_PROC);
+//	procinfo = index_getprocinfo(index, 1, IVFFLAT_KMEANS_DISTANCE_PROC);
+    procinfo = index_getprocinfo(index, 1, IVFFLAT_DISTANCE_PROC);
+
 	collation = index->rd_indcollation[0];
 
 	/* Choose an initial center uniformly at random */
@@ -123,8 +125,10 @@ static void
 RandomCenters(Relation index, VectorArray centers, const IvfflatTypeInfo * typeInfo)
 {
 	int			dimensions = centers->dim;
-	FmgrInfo   *normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_KMEANS_NORM_PROC);
-	Oid			collation = index->rd_indcollation[0];
+//	FmgrInfo   *normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_KMEANS_NORM_PROC);
+    FmgrInfo   *normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORM_PROC);
+
+    Oid			collation = index->rd_indcollation[0];
 	float	   *x = (float *) palloc(sizeof(float) * dimensions);
 
 	/* Fill with random data */
@@ -303,8 +307,11 @@ ElkanKmeans(Relation index, VectorArray samples, VectorArray centers, const Ivff
 		elog(ERROR, "Indexing overflow detected. Please report a bug.");
 
 	/* Set support functions */
-	procinfo = index_getprocinfo(index, 1, IVFFLAT_KMEANS_DISTANCE_PROC);
-	normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_KMEANS_NORM_PROC);
+//	procinfo = index_getprocinfo(index, 1, IVFFLAT_KMEANS_DISTANCE_PROC);
+//	normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_KMEANS_NORM_PROC);
+
+    procinfo = index_getprocinfo(index, 1, IVFFLAT_DISTANCE_PROC);
+    normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORM_PROC);
 	collation = index->rd_indcollation[0];
 
 	/* Allocate space */

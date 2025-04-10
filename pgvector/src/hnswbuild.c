@@ -54,6 +54,7 @@
 #include "utils/datum.h"
 #include "utils/memutils.h"
 #include "ivfflat.h"
+#include <float.h>
 
 #if PG_VERSION_NUM >= 140000
 #include "utils/backend_progress.h"
@@ -479,6 +480,122 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
 }
 
 
+static void
+CreateGraphPagesWithCluster(HnswBuildState * buildstate,  HnswClusterState *clusterstate)
+{
+    Relation	index = buildstate->index;
+    ForkNumber	forkNum = buildstate->forkNum;
+    Size		maxSize;
+    HnswElementTuple etup;
+    HnswNeighborTuple ntup;
+    BlockNumber insertPage;
+    HnswElement entryPoint;
+    Buffer		buf;
+    Page		page;
+//    HnswElementPtr iter = buildstate->graph->head;
+    char	   *base = buildstate->hnswarea;
+
+    /* Calculate sizes */
+    maxSize = HNSW_MAX_SIZE;
+
+    /* Allocate once */
+    etup = palloc0(HNSW_TUPLE_ALLOC_SIZE);
+    ntup = palloc0(HNSW_TUPLE_ALLOC_SIZE);
+
+    /* Prepare first page */
+    buf = HnswNewBuffer(index, forkNum);
+    page = BufferGetPage(buf);
+    HnswInitPage(buf, page);
+
+
+    // 각 cluster별로 기존 ldg 수행
+    for (int c = 0; c < clusterstate->numClusters; c++) {
+        HnswCluster *cluster = &clusterstate->clusters[c];
+        HnswPartitionState *partitionstate = cluster->partitionstate;
+        int clusterId = cluster->clusterId;
+
+
+        /* Iterate through partitions */
+        for (unsigned i = 0; i < partitionstate->numPartitions; i++) {
+            HnswPartition *partition = &partitionstate->partitions[i];
+
+            for (unsigned j = 0; j < partition->size; j++) {
+                HnswElement element = HnswPtrAccess(base, partition->nodes[j]);
+                Size etupSize;
+                Size ntupSize;
+                Size combinedSize;
+                Pointer valuePtr = HnswPtrAccess(base, element->value);
+
+
+                /* Zero memory for each element */
+                MemSet(etup, 0, HNSW_TUPLE_ALLOC_SIZE);
+
+                /* Calculate sizes */
+                etupSize = HNSW_ELEMENT_TUPLE_SIZE(VARSIZE_ANY(valuePtr));
+                ntupSize = HNSW_NEIGHBOR_TUPLE_SIZE(element->level, buildstate->m);
+                combinedSize = etupSize + ntupSize + sizeof(ItemIdData);
+
+                /* Initial size check */
+                if (etupSize > HNSW_TUPLE_ALLOC_SIZE)
+                    ereport(ERROR,
+                            (errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+                                    errmsg("index tuple too large")));
+
+                HnswSetElementTuple(base, etup, element);
+
+                /* Keep element and neighbors on the same page if possible */
+                if (PageGetFreeSpace(page) < etupSize ||
+                    (combinedSize <= maxSize && PageGetFreeSpace(page) < combinedSize)) {
+                    HnswBuildAppendPage(index, &buf, &page, forkNum);
+                }
+
+                /* Calculate offsets */
+                element->blkno = BufferGetBlockNumber(buf);
+                element->offno = OffsetNumberNext(PageGetMaxOffsetNumber(page));
+                if (combinedSize <= maxSize) {
+                    element->neighborPage = element->blkno;
+                    element->neighborOffno = OffsetNumberNext(element->offno);
+                } else {
+                    element->neighborPage = element->blkno + 1;
+                    element->neighborOffno = FirstOffsetNumber;
+                }
+
+                ItemPointerSet(&etup->neighbortid, element->neighborPage, element->neighborOffno);
+
+                /* Add element */
+                if (PageAddItem(page, (Item) etup, etupSize, InvalidOffsetNumber, false, false) != element->offno)
+                    elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+
+                /* Add new page if needed */
+                if (PageGetFreeSpace(page) < ntupSize)
+                    HnswBuildAppendPage(index, &buf, &page, forkNum);
+
+                /* Add placeholder for neighbors */
+                if (PageAddItem(page, (Item) ntup, ntupSize, InvalidOffsetNumber, false, false) !=
+                    element->neighborOffno)
+                    elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+            }
+        }
+    }
+
+    insertPage = BufferGetBlockNumber(buf);
+
+    /* Commit */
+    MarkBufferDirty(buf);
+    UnlockReleaseBuffer(buf);
+
+    entryPoint = HnswPtrAccess(base, buildstate->graph->entryPoint);
+
+//    HnswUpdateMetaPagePartitionPage(index, HNSW_UPDATE_ENTRY_ALWAYS, forkNum, insertPage, true, -1);
+    HnswUpdateMetaPage(index, HNSW_UPDATE_ENTRY_ALWAYS, entryPoint, insertPage, forkNum, true);
+
+    elog(WARNING, "CreateGraphPagesWithCluster done");
+
+    pfree(etup);
+    pfree(ntup);
+}
+
+
 /*
  * Write neighbor tuples
  */
@@ -591,6 +708,72 @@ WriteNeighborTuplesWithPartitions(HnswBuildState * buildstate, HnswPartitionStat
 }
 
 
+/*
+ * Write neighbor tuples
+ */
+static void
+WriteNeighborTuplesWithCluster(HnswBuildState * buildstate, HnswClusterState *clusterstate)
+{
+    Relation	index = buildstate->index;
+    ForkNumber	forkNum = buildstate->forkNum;
+    int			m = buildstate->m;
+//    HnswElementPtr iter = buildstate->graph->head;
+    char	   *base = buildstate->hnswarea;
+    HnswNeighborTuple ntup;
+
+    /* Allocate once */
+    ntup = palloc0(HNSW_TUPLE_ALLOC_SIZE);
+
+
+    // 각 cluster별로 기존 ldg 수행
+    for (int c = 0; c < clusterstate->numClusters; c++) {
+        HnswCluster *cluster = &clusterstate->clusters[c];
+        HnswPartitionState *partitionstate = cluster->partitionstate;
+        int clusterId = cluster->clusterId;
+
+        /* Iterate through partitions */
+        for (unsigned i = 0; i < partitionstate->numPartitions; i++) {
+            HnswPartition *partition = &partitionstate->partitions[i];
+
+            for (unsigned j = 0; j < partition->size; j++) {
+                HnswElement element = HnswPtrAccess(base, partition->nodes[j]);
+                Buffer buf;
+                Page page;
+                Size ntupSize = HNSW_NEIGHBOR_TUPLE_SIZE(element->level, m);
+
+                /* Update iterator */
+                //            iter = element->next;
+
+                /* Zero memory for each element */
+                MemSet(ntup, 0, HNSW_TUPLE_ALLOC_SIZE);
+
+                /* Can take a while, so ensure we can interrupt */
+                /* Needs to be called when no buffer locks are held */
+                CHECK_FOR_INTERRUPTS();
+
+                buf = ReadBufferExtended(index, forkNum, element->neighborPage, RBM_NORMAL, NULL);
+                LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+                page = BufferGetPage(buf);
+
+                HnswSetNeighborTuple(base, ntup, element, m);
+
+                if (!PageIndexTupleOverwrite(page, element->neighborOffno, (Item) ntup, ntupSize))
+                    elog(ERROR, "failed to add index item to \"%s\"", RelationGetRelationName(index));
+
+
+                /* Commit */
+                MarkBufferDirty(buf);
+                UnlockReleaseBuffer(buf);
+            }
+        }
+    }
+
+    pfree(ntup);
+
+    elog(WARNING, "WriteNeighborTuplesWithCluster done");
+}
+
+
 
 /*
  * Flush pages
@@ -610,6 +793,26 @@ FlushPages(HnswBuildState * buildstate)
 	buildstate->graph->flushed = true;
 	MemoryContextReset(buildstate->graphCtx);
 }
+
+
+/*
+ * Flush pages
+ */
+static void
+FlushPagesWithCluster(HnswBuildState * buildstate, HnswClusterState *clusterstate)
+{
+#ifdef HNSW_MEMORY
+    elog(INFO, "memory: %zu MB", buildstate->graph->memoryUsed / (1024 * 1024));
+#endif
+
+    CreateMetaPage(buildstate);
+    CreateGraphPagesWithCluster(buildstate, clusterstate);
+    WriteNeighborTuplesWithCluster(buildstate, clusterstate);
+
+    buildstate->graph->flushed = true;
+    MemoryContextReset(buildstate->graphCtx);
+}
+
 
 static void
 FlushPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *partitionstate, HnswPartitionState *countPartitionstate)
@@ -678,6 +881,33 @@ InitPartitionState(HnswBuildState *buildstate, int maxNodesPerPartition, HnswAll
 }
 
 
+static HnswPartitionState *
+InitPartitionStateWithCluster(HnswBuildState *buildstate, int maxNodesPerPartition, HnswAllocator *allocator, HnswCluster *cluster)
+{
+//    int numNodes = (int)buildstate->graph->indtuples;
+    int numNodes = cluster->numNodes;
+    int numPartitions = (numNodes + maxNodesPerPartition - 1) / maxNodesPerPartition;
+
+    Size totalSize = sizeof(HnswPartitionState) + numPartitions * sizeof(HnswPartition);
+
+    HnswPartitionState *partitionstate = HnswAlloc(allocator, totalSize);
+    partitionstate->numPartitions = numPartitions;
+    partitionstate->partitions = (HnswPartition *)((char *)partitionstate + sizeof(HnswPartitionState));
+
+
+    for (int i = 0; i < numPartitions; i++)
+    {
+        HnswPartition *partition = &partitionstate->partitions[i];
+        partition->capacity = maxNodesPerPartition;
+        partition->size = 0;
+        partition->pid = i;
+        partition->nodes = malloc(sizeof(HnswElementPtr) * maxNodesPerPartition);
+    }
+
+    return partitionstate;
+}
+
+
 static int
 GetUnfilledPartition(HnswPartitionState *partitionstate, pairingheap *heap)
 {
@@ -707,7 +937,12 @@ SelectPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPa
         HnswElementPtr neighborPtr = neighbors->items[j].element;
         HnswElement neighborElement = HnswPtrAccess(base, neighborPtr);
         int pid = neighborElement->pid;
-        partitionScores[pid]++;
+
+        if (element->clusterid == neighborElement->clusterid){
+            partitionScores[pid]++;
+        }
+
+//        partitionScores[pid]++;
 
         int score = partitionScores[pid];
 
@@ -719,6 +954,8 @@ SelectPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPa
         }
 
     }
+
+    elog(WARNING, "max neighbor: %d", maxScore);
 
 
     if (bestPartition < newPartitionstate->numPartitions){
@@ -732,6 +969,57 @@ SelectPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPa
     pfree(partitionScores);
     return bestPartition;
 }
+
+
+static int
+SelectPartitionWithCluster(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPartitionstate, HnswElementPtr elementPtr, char *base, pairingheap *heap)
+{
+    int bestPartition = oldPartitionstate->numPartitions;
+    int maxScore = 0;
+    int score;
+
+
+    int *partitionScores = palloc0(sizeof(int) * oldPartitionstate->numPartitions);
+
+    HnswElement element = HnswPtrAccess(base, elementPtr);
+    HnswNeighborArray *neighbors = HnswGetNeighbors(base, element, 0);
+    for (int j = 0; j < neighbors->length; j++)
+    {
+        HnswElementPtr neighborPtr = neighbors->items[j].element;
+        HnswElement neighborElement = HnswPtrAccess(base, neighborPtr);
+        int pid = neighborElement->pid;
+
+        if (element->clusterid == neighborElement->clusterid){
+            partitionScores[pid]++;
+        }
+//        partitionScores[pid]++;
+
+        score = partitionScores[pid];
+
+        if (score > maxScore &&
+            newPartitionstate->partitions[pid].size < newPartitionstate->partitions[pid].capacity)
+        {
+            bestPartition = pid;
+            maxScore = score;
+        }
+
+    }
+
+    elog(WARNING, "max neighbor: %d", maxScore);
+
+
+    if (bestPartition < newPartitionstate->numPartitions){
+        pairingheap_remove(heap, &newPartitionstate->partitions[bestPartition].heapNode);
+    }
+    if (bestPartition == newPartitionstate->numPartitions){
+        bestPartition = GetUnfilledPartition(newPartitionstate, heap);
+    }
+
+
+    pfree(partitionScores);
+    return bestPartition;
+}
+
 
 static void
 AddNodeToPartition(HnswPartitionState *partitionstate, HnswElementPtr nodePtr, int partitionId, char *base, pairingheap *heap)
@@ -797,6 +1085,56 @@ HnswPartitionGraphLDG(HnswBuildState *buildstate, HnswPartitionState *oldPartiti
     }
 }
 
+/* 단일 LDG 수행 */
+static void
+HnswPartitionGraphLDGWithCluster(HnswBuildState *buildstate, HnswPartitionState *oldPartitionstate, HnswPartitionState *newPartitionstate, HnswCluster *cluster)
+{
+    HnswGraph *graph = buildstate->graph;
+    char *base = buildstate->hnswarea;
+
+    pairingheap *heap = pairingheap_allocate(ComparePartitionSize, NULL);
+    for (int i = 0; i < newPartitionstate->numPartitions; i++)
+    {
+        pairingheap_add(heap, &newPartitionstate->partitions[i].heapNode);
+    }
+
+    for (int j=0; j < cluster->numNodes; j++){
+        HnswElementPtr elementPtr = cluster->nodes[j];
+        SyncNodeToBestPartition(oldPartitionstate, newPartitionstate, elementPtr, base, heap);
+    }
+}
+
+
+static HnswClusterState*
+InitClusterState(HnswBuildState *buildstate, HnswAllocator *allocator)
+{
+
+    // 오 .. 각 cluster를 꼭 나눠서 하지 않고 그냥
+    // 전체 node 순회하면서 partitionstate만 다른걸로 배정해줘도 되지않으려나?
+    // clusterid - partitionstate를 따로 배정해주는거 !
+
+    int numCenters = buildstate->ivfbuildstate->centers->maxlen;  // 클러스터 개수 추출
+    Size totalSize = sizeof(HnswClusterState) + numCenters * sizeof(HnswCluster);
+
+    HnswClusterState *clusterState = HnswAlloc(allocator, totalSize);
+    clusterState->numClusters = numCenters;
+    clusterState->clusters = (HnswCluster *)((char *)clusterState + sizeof(HnswClusterState));
+
+    for (int i = 0; i < numCenters; i++)
+    {
+        HnswCluster *cluster = &clusterState->clusters[i];
+        cluster->clusterId = i;
+        cluster->numNodes = 0;
+        cluster->size = 0;
+        cluster->partitionstate = NULL;
+        cluster->nodes = NULL;
+//                InitPartitionState(buildstate, cluster, maxNodesPerPartition, allocator);
+    }
+
+    return clusterState;
+}
+
+
 static HnswPartitionState *
 HnswPartitionGraph(HnswBuildState *buildstate)
 {
@@ -832,6 +1170,11 @@ HnswPartitionGraph(HnswBuildState *buildstate)
         }
 
 
+        // 여기서 partitionstate를 주어진 cluster에 맞게 할당
+        // 각 cluster에 대해서 partitionstate 하나씩 할당
+        // 내가 필요한 정보는 cluster별 노드 수
+        // cluster별 노드
+
         HnswPartition *currentPartition = &partitionstate->partitions[partitionIdx];
         currentPartition->nodes[currentPartition->size++] = iter;
         element->pid = partitionIdx;
@@ -843,6 +1186,10 @@ HnswPartitionGraph(HnswBuildState *buildstate)
         {
             HnswElementPtr neighborPtr = neighbors->items[i].element;
             HnswElement neighborElement = HnswPtrAccess(base, neighborPtr);
+
+//            if (element->clusterid != neighborElement->clusterid){
+//                continue;
+//            }
 
             if (neighborElement->pid != -1)
                 continue;
@@ -889,6 +1236,133 @@ HnswPartitionGraph(HnswBuildState *buildstate)
     return partitionstate;
 }
 
+
+static HnswClusterState *
+HnswPartitionGraphWithCluster(HnswBuildState *buildstate, HnswClusterState *clusterstate)
+{
+
+    HnswAllocator *allocator = &buildstate->allocator;
+    elog(WARNING, "maxNodesPerPartition: %d", MAX_NODES_PER_PARTITION);
+
+    // 각 cluster에 대해서, numnodes를 전체가 아니라 cluster에 대해서 initpartition
+    // partitionstate에 각 partition에 있는 노드 pointer를 다 저장하는 방식으로?
+
+    elog(WARNING, "Starting partition graph initialization for clusters");
+
+    // 각 cluster별 노드 수에 맞게 partitionstate를 초기화
+    for (int i = 0; i < clusterstate->numClusters; i++)
+    {
+        HnswCluster *cluster = &clusterstate->clusters[i];
+
+        cluster->partitionstate = InitPartitionStateWithCluster(buildstate, MAX_NODES_PER_PARTITION, allocator, cluster);
+
+        if (cluster->partitionstate == NULL)
+        {
+            elog(ERROR, "Failed to initialize partition state for cluster %d", cluster->clusterId);
+            continue;
+        }
+
+        elog(WARNING, "Cluster %d partition state initialized", cluster->clusterId);
+    }
+
+
+    // 여기서부터 각 cluster에 대해 수행
+
+
+    HnswGraph *graph = buildstate->graph;
+    char *base = buildstate->hnswarea;
+//    int partitionIdx = 0; /* 현재 파티션 인덱스 */
+    int nodesPerPartition = MAX_NODES_PER_PARTITION;
+//    HnswElementPtr iter = graph->head;
+
+
+    // 각 cluster별로 기존 ldg 수행
+    for (int i = 0; i < clusterstate->numClusters; i++)
+    {
+        HnswCluster *cluster = &clusterstate->clusters[i];
+        HnswPartitionState *partitionstate = cluster->partitionstate;
+        int clusterId = cluster->clusterId;
+
+        int partitionIdx = 0; /* 현재 파티션 인덱스 */
+        int cnt = 0;
+        int enterCnt = 0;
+
+        elog(WARNING, "Starting initial partitioning...");
+
+        // cluster 내의 노드에 대해서
+        for (int j=0; j < cluster->numNodes; j++){
+
+            cnt++;
+            HnswElementPtr elementPtr = cluster->nodes[j];
+            HnswElement element = HnswPtrAccess(base, elementPtr);
+
+            int assignedPartition = element->pid;
+            if (assignedPartition != -1)
+            {
+                continue;
+            }
+
+
+            HnswPartition *currentPartition = &partitionstate->partitions[partitionIdx];
+            currentPartition->nodes[currentPartition->size++] = elementPtr;
+            element->pid = partitionIdx;
+            enterCnt++;
+
+
+            HnswNeighborArray *neighbors = HnswGetNeighbors(base, element, 0);
+            for (int k = 0; k < neighbors->length; k++)
+            {
+                HnswElementPtr neighborPtr = neighbors->items[k].element;
+                HnswElement neighborElement = HnswPtrAccess(base, neighborPtr);
+
+                if (neighborElement->clusterid != clusterId)
+                    continue;
+
+                if (neighborElement->pid != -1)
+                    continue;
+
+                if (currentPartition->size >= nodesPerPartition)
+                    break;
+
+                currentPartition->nodes[currentPartition->size++] = neighborPtr;
+                neighborElement->pid = partitionIdx;
+                enterCnt++;
+            }
+
+
+            if (currentPartition->size >= nodesPerPartition && partitionIdx < partitionstate->numPartitions - 1)
+            {
+                partitionIdx++;
+            }
+
+        }
+        elog(WARNING, "Initial partitioning completed for cluster %d. Total nodes: %d, Assigned nodes: %d", clusterId, cnt, enterCnt);
+
+
+        HnswPartitionState *newPartitionstate;
+
+        for (unsigned iteration = 0; iteration < LDG_ITERATION; iteration++) {
+            TimestampTz start_time = GetCurrentTimestamp();
+
+            newPartitionstate = InitPartitionStateWithCluster(buildstate, MAX_NODES_PER_PARTITION, allocator, cluster);
+            HnswPartitionGraphLDGWithCluster(buildstate, partitionstate, newPartitionstate, cluster);
+
+            TimestampTz end_time = GetCurrentTimestamp();
+            double elapsed_ms = (end_time - start_time) / 1000.0;
+
+            elog(WARNING, "LDG iteration %u completed in %.3f ms", iteration + 1, elapsed_ms);
+
+            partitionstate = newPartitionstate;
+        }
+
+        cluster->partitionstate = partitionstate;
+    }
+
+
+    graph->partitioned = true;
+
+    return clusterstate;
+}
 
 static int
 SelectPartitionForInsert(HnswPartitionState *partitionstate, HnswElementPtr elementPtr, char *base)
@@ -1236,22 +1710,22 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid, Hn
 					 errdetail("Building will take significantly more time."),
 					 errhint("Increase maintenance_work_mem to speed up builds.")));
 
+//
+//            /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
+//            HnswPartitionState *partitionstate;
+//            partitionstate = HnswPartitionGraph(buildstate);
+//
+//            HnswPartitionState *countPartitionstate;
+//            countPartitionstate = CountOverlapRatioForInsert(buildstate, partitionstate);
+//
+//            buildstate->partitionstate = partitionstate;
+//            buildstate->countPartitionstate = countPartitionstate;
+//
+//            /* Partition 기반으로 FlushPages 호출 */
+////        FlushPagesWithPartitions(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
+//            FlushPagesWithPartitionsPage(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
 
-            /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
-            HnswPartitionState *partitionstate;
-            partitionstate = HnswPartitionGraph(buildstate);
-
-            HnswPartitionState *countPartitionstate;
-            countPartitionstate = CountOverlapRatioForInsert(buildstate, partitionstate);
-
-            buildstate->partitionstate = partitionstate;
-            buildstate->countPartitionstate = countPartitionstate;
-
-            /* Partition 기반으로 FlushPages 호출 */
-//        FlushPagesWithPartitions(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
-            FlushPagesWithPartitionsPage(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
-
-//            FlushPages(buildstate);
+            FlushPages(buildstate);
 		}
 
 		LWLockRelease(flushLock);
@@ -1278,6 +1752,34 @@ InsertTuple(Relation index, Datum *values, bool *isnull, ItemPointer heaptid, Hn
 	/* Copy the datum */
 	memcpy(valuePtr, DatumGetPointer(value), valueSize);
 	HnswPtrStore(base, element->value, valuePtr);
+
+
+
+    /* Normalize if needed */
+    if (buildstate->ivfbuildstate->normprocinfo != NULL)
+    {
+//        if (!IvfflatCheckNorm(buildstate->ivfbuildstate->normprocinfo, buildstate->ivfbuildstate->collation, value))
+        value = IvfflatNormValue(buildstate->ivfbuildstate->typeInfo, buildstate->ivfbuildstate->collation, value);
+    }
+
+
+    /* Find the closest cluster */
+    double minDistance = DBL_MAX;
+    int closestCenter = 0;
+    double distance;
+    VectorArray centers = buildstate->ivfbuildstate->centers;
+
+    for (int i = 0; i < centers->length; i++)
+    {
+        distance = DatumGetFloat8(FunctionCall2Coll(buildstate->ivfbuildstate->procinfo, buildstate->ivfbuildstate->collation, value,
+                                                    PointerGetDatum(VectorArrayGet(centers, i))));
+        if (distance < minDistance)
+        {
+            minDistance = distance;
+            closestCenter = i;
+        }
+    }
+    element->clusterid = closestCenter;
 
 	/* Create a lock for the element */
 	LWLockInitialize(&element->lock, hnsw_lock_tranche_id);
@@ -1496,12 +1998,12 @@ InitIvfBuildState(IvfflatBuildState * buildstate, Relation heap, Relation index,
     /* Get support functions */
 //    buildstate->procinfo = index_getprocinfo(index, 1, IVFFLAT_DISTANCE_PROC);
 //    buildstate->normprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_NORM_PROC);
-    buildstate->kmeansnormprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_KMEANS_NORM_PROC);
+//    buildstate->kmeansnormprocinfo = IvfflatOptionalProcInfo(index, IVFFLAT_KMEANS_NORM_PROC);
 //    buildstate->collation = index->rd_indcollation[0];
 
     buildstate->procinfo = index_getprocinfo(index, 1, IVFFLAT_DISTANCE_PROC);
     buildstate->normprocinfo = HnswOptionalProcInfo(index, IVFFLAT_NORM_PROC);
-    buildstate->kmeansnormprocinfo = HnswOptionalProcInfo(index, IVFFLAT_KMEANS_NORM_PROC);
+    buildstate->kmeansnormprocinfo = HnswOptionalProcInfo(index, IVFFLAT_NORM_PROC);
     buildstate->collation = index->rd_indcollation[0];
 
 
@@ -1912,6 +2414,7 @@ BuildGraph(HnswBuildState * buildstate, ForkNumber forkNum)
 		HnswEndParallel(buildstate->hnswleader);
 }
 
+
 static void
 BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
 {
@@ -1921,9 +2424,21 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
 
     pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PROGRESS_HNSW_PHASE_LOAD);
 
+    IvfflatBuildState ivfbuildstate;
+
+    // 기존 heap이랑 hnswindex로 buildstate init하고? -> ivf로 바꿔줘야됨. 함수 이름을 바꿔야되나
+    InitIvfBuildState(&ivfbuildstate, buildstate->heap, buildstate->index, buildstate->indexInfo); // 이거부터도 문제인거
+    ComputeCenters(&ivfbuildstate); // 걍 이걸 돌리면 돌아가는게 맞나? ., 잘 돌아감 !
+
+    buildstate->ivfbuildstate = &ivfbuildstate;
+
+    elog(WARNING, "ivf done");
+
     /* Calculate parallel workers */
     if (buildstate->heap != NULL)
         parallel_workers = ComputeParallelWorkers(buildstate->heap, buildstate->index);
+
+    parallel_workers = 0; // 여기서 에러남. 일단 parallel 없이 진행
 
     /* Attempt to launch parallel worker scan when required */
     if (parallel_workers > 0)
@@ -1945,29 +2460,80 @@ BuildGraphWithPartition(HnswBuildState * buildstate, ForkNumber forkNum)
     if (!buildstate->graph->flushed)
     {
 
-        // 여기서 .. ivfkmeans 코드 넣어줄 수 있게 코드 짜야됨 TODO
-        // input으로는 현재 buildstate? .,,
 
-        IvfflatBuildState ivfbuildstate;
+        // 아니다 .,, 일단 같은 cluster에 존재하는 애들로 한정해서 partition? .. 하는게 의미가 있나
+        HnswElementPtr iter = buildstate->graph->head;
+        char	   *base = buildstate->hnswarea;
+//
+        HnswClusterState *clusterstate = InitClusterState(buildstate, &buildstate->allocator);
 
-        // 기존 heap이랑 hnswindex로 buildstate init하고? -> ivf로 바꿔줘야됨. 함수 이름을 바꿔야되나
-        InitIvfBuildState(&ivfbuildstate, buildstate->heap, buildstate->index, buildstate->indexInfo); // 이거부터도 문제인거
-//        ComputeCenters(&ivfbuildstate); // 걍 이걸 돌리면 돌아가는게 맞나? .,
+        // 노드 한번 쭉 돌면서, cluster-node 배정
+        while (!HnswPtrIsNull(base, iter)) {
+            HnswElement element = HnswPtrAccess(base, iter);
+            Pointer valuePtr = HnswPtrAccess(base, element->value);
 
+            int clusterId = element->clusterid;
+
+            // 클러스터에 노드 추가
+            HnswCluster *cluster = &clusterstate->clusters[clusterId];
+            cluster->numNodes++;
+
+            /* Update iterator */
+            iter = element->next;
+        }
+
+        // 각 cluster에 대해서
+        for (int i = 0; i < clusterstate->numClusters; i++)
+        {
+            HnswCluster *cluster = &clusterstate->clusters[i];
+            cluster->nodes = malloc(sizeof(HnswElementPtr) * cluster->numNodes);
+        }
+
+
+        // 다시 처음부터
+        iter = buildstate->graph->head;
+
+        // 노드 한번 쭉 돌면서, cluster-node 배정
+        while (!HnswPtrIsNull(base, iter)) {
+            HnswElement element = HnswPtrAccess(base, iter);
+            Pointer valuePtr = HnswPtrAccess(base, element->value);
+
+            int clusterId = element->clusterid;
+
+            // 클러스터에 노드 추가
+            HnswCluster *cluster = &clusterstate->clusters[clusterId];
+            cluster->nodes[cluster->size++] = iter;
+
+            /* Update iterator */
+            iter = element->next;
+        }
+
+//        /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
+//        HnswPartitionState *partitionstate;
+//        partitionstate = HnswPartitionGraphWithCluster(buildstate, clusterstate);
+//
+
+        // cluster 순으로 저장 ..
+        // 어디 잘못됐는지 차차 .. 내일 와서 보자 !!~~ ㅎㅎ ㅋㅋㅋ
         /* LDG 기반 그래프 파티셔닝 */ // partition state를 build state에 넣어주면 되겠지 ..?
-        HnswPartitionState *partitionstate;
-        partitionstate = HnswPartitionGraph(buildstate);
+        clusterstate = HnswPartitionGraphWithCluster(buildstate, clusterstate);
 
-        HnswPartitionState *countPartitionstate;
-        countPartitionstate = CountOverlapRatioForInsert(buildstate, partitionstate);
 
-        buildstate->partitionstate = partitionstate;
-        buildstate->countPartitionstate = countPartitionstate;
+//        HnswPartitionState *countPartitionstate;
+//        countPartitionstate = CountOverlapRatioForInsert(buildstate, partitionstate);
+
+//        buildstate->partitionstate = partitionstate;
+//        buildstate->countPartitionstate = countPartitionstate;
+
+        buildstate->clusterstate = clusterstate;
+
+        elog(WARNING, "ldg done!");
 
 
         /* Partition 기반으로 FlushPages 호출 */
-        FlushPagesWithPartitionsPage(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
+//        FlushPagesWithPartitionsPage(buildstate, buildstate->partitionstate, buildstate->countPartitionstate);
 
+        FlushPagesWithCluster(buildstate, clusterstate);
     }
 
     /* End parallel build */

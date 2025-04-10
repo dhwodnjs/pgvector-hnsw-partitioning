@@ -11,6 +11,7 @@
 #include "utils/relptr.h"
 #include "utils/sampling.h"
 #include "vector.h"
+#include "ivfflat.h"
 
 #define HNSW_MAX_DIM 2000
 #define HNSW_MAX_NNZ 1000
@@ -160,6 +161,7 @@ HnswPtrDeclare(HnswPartitionState, HnswPartitionStateRelptr, HnswPartitionStateP
 struct HnswElementData
 {
     int pid;
+    int clusterid;
 
 	HnswElementPtr next;
 	ItemPointerData heaptids[HNSW_HEAPTIDS];
@@ -192,6 +194,23 @@ struct HnswPartitionState
     int numPartitions;    /* 파티션 개수 */
     HnswPartition *partitions;
 } ;
+
+
+typedef struct HnswCluster
+{
+    int size;
+    int clusterId;               // 클러스터 ID
+    int numNodes;                // 클러스터 내 노드 수
+    HnswElementPtr *nodes;       // cluster 내 노드
+    HnswPartitionState *partitionstate;  // 각 클러스터의 파티션 상태 배열
+} HnswCluster;
+
+typedef struct HnswClusterState
+{
+    int numClusters;             // 클러스터 개수
+    HnswCluster *clusters;       // 클러스터 배열
+} HnswClusterState;
+
 
 // insert
 /* Structure to track page information */
@@ -393,6 +412,8 @@ typedef struct HnswBuildState
 
     HnswPartitionState *partitionstate;
     HnswPartitionState *countPartitionstate;
+    IvfflatBuildState *ivfbuildstate;
+    HnswClusterState *clusterstate;
 
 
 }			HnswBuildState;

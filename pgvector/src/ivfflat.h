@@ -39,7 +39,7 @@
 #define IVFFLAT_HEAD_BLKNO		1	/* first list page */
 
 /* IVFFlat parameters */
-#define IVFFLAT_DEFAULT_LISTS	100
+#define IVFFLAT_DEFAULT_LISTS	10
 #define IVFFLAT_MIN_LISTS		1
 #define IVFFLAT_MAX_LISTS		32768
 #define IVFFLAT_DEFAULT_PROBES	1
@@ -320,6 +320,8 @@ const		IvfflatTypeInfo *IvfflatGetTypeInfo(Relation index);
 PGDLLEXPORT void IvfflatParallelBuildMain(dsm_segment *seg, shm_toc *toc);
 
 void        ComputeCenters(IvfflatBuildState * buildstate);
+void        AssignTuples(IvfflatBuildState * buildstate);
+void        GetNextTuple(Tuplesortstate *sortstate, TupleDesc tupdesc, TupleTableSlot *slot, IndexTuple *itup, int *list);
 
 /* Index access methods */
 IndexBuildResult *ivfflatbuild(Relation heap, Relation index, IndexInfo *indexInfo);
