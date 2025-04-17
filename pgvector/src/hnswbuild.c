@@ -435,7 +435,7 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
             HnswSetElementTuple(base, etup, element);
 
             /* Keep element and neighbors on the same page if possible */
-            if ( element_per_page_counter > 3 || PageGetFreeSpace(page) < etupSize || (combinedSize <= maxSize && PageGetFreeSpace(page) < combinedSize)){
+            if (PageGetFreeSpace(page) < etupSize || (combinedSize <= maxSize && PageGetFreeSpace(page) < combinedSize)){
                 element_per_page_counter = 1;
                 HnswBuildAppendPage(index, &buf, &page, forkNum);
             }
