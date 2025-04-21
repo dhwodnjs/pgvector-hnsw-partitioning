@@ -277,6 +277,7 @@ HnswInitElement(char *base, ItemPointer heaptid, int m, double ml, int maxLevel,
 	HnswPtrStore(base, element->value, (Pointer) NULL);
 
     element->pid = -1;
+    element->nextPid = -1;
 
 	return element;
 }

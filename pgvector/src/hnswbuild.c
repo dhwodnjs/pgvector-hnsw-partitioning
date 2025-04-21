@@ -409,6 +409,8 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
     for (unsigned i = 0; i < partitionstate->numPartitions; i++) {
         HnswPartition *partition = &partitionstate->partitions[i];
 
+        elog(WARNING, "partition Id: %d, partition Size: %d", partition->pid, partition->size);
+
         for (unsigned j = 0; j < partition->size; j++) {
             element_per_page_counter++;
             HnswElement element = HnswPtrAccess(base, partition->nodes[j]);
@@ -806,7 +808,7 @@ SelectPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPa
         }
     }
 
-    elog(WARNING, "maxScore: %d", maxScore);
+    elog(WARNING, "maxScore: %d, bestPartition: %d", maxScore, bestPartition);
 
 
 
@@ -864,6 +866,46 @@ SelectPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPa
     return bestPartition;
 }
 
+
+static int
+SelectNeighborPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPartitionstate, HnswElementPtr elementPtr, char *base, pairingheap *heap)
+{
+    int bestPartition = oldPartitionstate->numPartitions;
+    int maxScore = 0;
+
+
+    int *partitionScores = palloc0(sizeof(int) * oldPartitionstate->numPartitions);
+
+    HnswElement element = HnswPtrAccess(base, elementPtr);
+    HnswNeighborArray *neighbors = HnswGetNeighbors(base, element, 0);
+
+    // neighbor page 하나씩 확인하면서, neighbor가 가장 많은 페이지에 노드 할당
+    for (int j = 0; j < neighbors->length; j++)
+    {
+        HnswElementPtr neighborPtr = neighbors->items[j].element;
+        HnswElement neighborElement = HnswPtrAccess(base, neighborPtr);
+        int pid = neighborElement->pid;
+        partitionScores[pid]++;
+
+        int score = partitionScores[pid];
+
+        if (score > maxScore)
+        {
+            bestPartition = pid;
+            maxScore = score;
+        }
+    }
+
+//    elog(WARNING, "maxScore: %d", maxScore);
+
+    elog(WARNING, "maxScore: %d, bestPartition: %d", maxScore, bestPartition);
+
+
+    pfree(partitionScores);
+    return bestPartition;
+}
+
+
 static void
 AddNodeToPartition(HnswPartitionState *partitionstate, HnswElementPtr nodePtr, int partitionId, char *base, pairingheap *heap)
 {
@@ -879,7 +921,8 @@ AddNodeToPartition(HnswPartitionState *partitionstate, HnswElementPtr nodePtr, i
     partition->nodes[partition->size] = nodePtr;
     partition->size++;
 
-    element->pid = partitionId;
+//    element->pid = partitionId;
+    element->nextPid = partitionId;
 
     if (partition->size < partition->capacity)
     {
@@ -887,11 +930,46 @@ AddNodeToPartition(HnswPartitionState *partitionstate, HnswElementPtr nodePtr, i
     }
 }
 
+
+
+static void
+AddNodeToNeighborPartition(HnswPartitionState *partitionstate, HnswElementPtr nodePtr, int partitionId, char *base, pairingheap *heap)
+{
+    HnswPartition *partition = &partitionstate->partitions[partitionId];
+    HnswElement element = HnswPtrAccess(base, nodePtr);
+
+    if (partition->size >= partition->capacity)
+    {
+        int newCapacity = partition->capacity * 2;
+        partition->nodes = realloc(partition->nodes, sizeof(HnswElementPtr) * newCapacity);
+        partition->capacity = newCapacity;
+    }
+
+    partition->nodes[partition->size] = nodePtr;
+    partition->size++;
+
+//    element->pid = partitionId;
+    element->nextPid = partitionId;
+
+
+//    if (partition->size < partition->capacity)
+//    {
+//        pairingheap_add(heap, &partition->heapNode);
+//    }
+}
+
 static void
 SyncNodeToBestPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPartitionstate, HnswElementPtr elementPtr, char *base, pairingheap *heap)
 {
     int bestPartition = SelectPartition(oldPartitionstate, newPartitionstate, elementPtr, base, heap);
     AddNodeToPartition(newPartitionstate, elementPtr, bestPartition, base, heap);
+}
+
+static void
+SyncNodeToNeighborPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPartitionstate, HnswElementPtr elementPtr, char *base, pairingheap *heap)
+{
+    int bestPartition = SelectNeighborPartition(oldPartitionstate, newPartitionstate, elementPtr, base, heap);
+    AddNodeToNeighborPartition(newPartitionstate, elementPtr, bestPartition, base, heap);
 }
 
 
@@ -927,6 +1005,29 @@ HnswPartitionGraphLDG(HnswBuildState *buildstate, HnswPartitionState *oldPartiti
         iter = HnswPtrAccess(base, iter)->next;
     }
 }
+
+/* 단일 LDG 수행 */
+static void
+HnswPartitionGraphLDGWithNoLimit(HnswBuildState *buildstate, HnswPartitionState *oldPartitionstate, HnswPartitionState *newPartitionstate)
+{
+    HnswGraph *graph = buildstate->graph;
+    char *base = buildstate->hnswarea;
+
+    pairingheap *heap = pairingheap_allocate(ComparePartitionSize, NULL);
+    for (int i = 0; i < newPartitionstate->numPartitions; i++)
+    {
+        pairingheap_add(heap, &newPartitionstate->partitions[i].heapNode);
+    }
+
+    HnswElementPtr iter = graph->head;
+    while (!HnswPtrIsNull(base, iter))
+    {
+        SyncNodeToNeighborPartition(oldPartitionstate, newPartitionstate, iter, base, heap);
+        iter = HnswPtrAccess(base, iter)->next;
+    }
+}
+
+
 
 //  이걸 clustering 한 다음에 각 cluster에 대해 수행하고 합칠 수 있나? TODO
 static HnswPartitionState *
@@ -1006,7 +1107,27 @@ HnswPartitionGraph(HnswBuildState *buildstate)
         TimestampTz start_time = GetCurrentTimestamp();
 
         newPartitionstate = InitPartitionState(buildstate, MAX_NODES_PER_PARTITION, allocator);
-        HnswPartitionGraphLDG(buildstate, partitionstate, newPartitionstate);
+
+        if (iteration < LDG_ITERATION ){
+            HnswPartitionGraphLDG(buildstate, partitionstate, newPartitionstate);
+        } else {
+            HnswPartitionGraphLDGWithNoLimit(buildstate, partitionstate, newPartitionstate);
+        }
+
+        // 다시 nextPid를 pid에 저장하고, nextPid = -1로 저장 (pid update)
+//        HnswGraph *graph = buildstate->graph;
+//        char *base = buildstate->hnswarea;
+
+        iter = graph->head;
+        while (!HnswPtrIsNull(base, iter))
+        {
+            HnswElement element = HnswPtrAccess(base, iter);
+            element->pid = element->nextPid;
+            element->nextPid = -1;
+
+            iter = element->next;
+        }
+
 
         TimestampTz end_time = GetCurrentTimestamp();
         double elapsed_ms = (end_time - start_time) / 1000.0;

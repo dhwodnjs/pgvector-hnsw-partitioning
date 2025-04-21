@@ -160,6 +160,7 @@ HnswPtrDeclare(HnswPartitionState, HnswPartitionStateRelptr, HnswPartitionStateP
 struct HnswElementData
 {
     int pid;
+    int nextPid;
 
 	HnswElementPtr next;
 	ItemPointerData heaptids[HNSW_HEAPTIDS];
