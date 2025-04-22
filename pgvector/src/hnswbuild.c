@@ -410,9 +410,9 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
         HnswPartition *partition = &partitionstate->partitions[i];
 
         elog(WARNING, "partition Id: %d, partition Size: %d", partition->pid, partition->size);
+//        elog(WARNING, "Elements per page %d: %d",BufferGetBlockNumber(buf), element_per_page_counter);
 
         for (unsigned j = 0; j < partition->size; j++) {
-            element_per_page_counter++;
             HnswElement element = HnswPtrAccess(base, partition->nodes[j]);
             Size etupSize;
             Size ntupSize;
@@ -438,9 +438,11 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
 
             /* Keep element and neighbors on the same page if possible */
             if (PageGetFreeSpace(page) < etupSize || (combinedSize <= maxSize && PageGetFreeSpace(page) < combinedSize)){
-                element_per_page_counter = 1;
+                elog(WARNING, "Elements per page %d: %d",BufferGetBlockNumber(buf), element_per_page_counter);
+                element_per_page_counter = 0;
                 HnswBuildAppendPage(index, &buf, &page, forkNum);
             }
+            element_per_page_counter++;
 
             /* Calculate offsets */
             element->blkno = BufferGetBlockNumber(buf);
@@ -808,7 +810,7 @@ SelectPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPa
         }
     }
 
-    elog(WARNING, "maxScore: %d, bestPartition: %d", maxScore, bestPartition);
+//    elog(WARNING, "maxScore: %d, bestPartition: %d", maxScore, bestPartition);
 
 
 
@@ -898,7 +900,7 @@ SelectNeighborPartition(HnswPartitionState *oldPartitionstate, HnswPartitionStat
 
 //    elog(WARNING, "maxScore: %d", maxScore);
 
-    elog(WARNING, "maxScore: %d, bestPartition: %d", maxScore, bestPartition);
+//    elog(WARNING, "maxScore: %d, bestPartition: %d", maxScore, bestPartition);
 
 
     pfree(partitionScores);
