@@ -161,12 +161,10 @@ pg_log_filter_error(FilterStateData *fstate, const char *fmt,...)
 	vsnprintf(buf, sizeof(buf), fmt, argp);
 	va_end(argp);
 
-	if (fstate->fp == stdin)
-		pg_log_error("invalid format in filter read from standard input on line %d: %s",
-					 fstate->lineno, buf);
-	else
-		pg_log_error("invalid format in filter read from file \"%s\" on line %d: %s",
-					 fstate->filename, fstate->lineno, buf);
+	pg_log_error("invalid format in filter read from \"%s\" on line %d: %s",
+				 (fstate->fp == stdin ? "stdin" : fstate->filename),
+				 fstate->lineno,
+				 buf);
 }
 
 /*
@@ -206,7 +204,7 @@ filter_get_keyword(const char **line, int *size)
 }
 
 /*
- * read_quoted_string - read quoted possibly multi line string
+ * read_quoted_pattern - read quoted possibly multi line string
  *
  * Reads a quoted string which can span over multiple lines and returns a
  * pointer to next char after ending double quotes; it will exit on errors.

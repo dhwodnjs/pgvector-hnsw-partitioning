@@ -27,21 +27,25 @@
 
 #include "postgres.h"
 
+#include "access/xlog.h"
 #include "access/xlogprefetcher.h"
 #include "access/xlogreader.h"
+#include "access/xlogutils.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_control.h"
 #include "catalog/storage_xlog.h"
 #include "commands/dbcommands_xlog.h"
+#include "utils/fmgrprotos.h"
+#include "utils/timestamp.h"
 #include "funcapi.h"
+#include "pgstat.h"
 #include "miscadmin.h"
 #include "port/atomics.h"
 #include "storage/bufmgr.h"
 #include "storage/shmem.h"
 #include "storage/smgr.h"
-#include "utils/fmgrprotos.h"
 #include "utils/guc_hooks.h"
 #include "utils/hsearch.h"
-#include "utils/timestamp.h"
 
 /*
  * Every time we process this much WAL, we'll update the values in
@@ -1085,7 +1089,7 @@ check_recovery_prefetch(int *new_value, void **extra, GucSource source)
 #ifndef USE_PREFETCH
 	if (*new_value == RECOVERY_PREFETCH_ON)
 	{
-		GUC_check_errdetail("\"recovery_prefetch\" is not supported on platforms that lack posix_fadvise().");
+		GUC_check_errdetail("recovery_prefetch is not supported on platforms that lack posix_fadvise().");
 		return false;
 	}
 #endif

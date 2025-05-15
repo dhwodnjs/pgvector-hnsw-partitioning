@@ -933,8 +933,7 @@ usage(void)
 		   "  --show-script=NAME       show builtin script code, then exit\n"
 		   "  --verbose-errors         print messages of all errors\n"
 		   "\nCommon options:\n"
-		   "  --debug                  print debugging output\n"
-		   "  -d, --dbname=DBNAME      database name to connect to\n"
+		   "  -d, --debug              print debugging output\n"
 		   "  -h, --host=HOSTNAME      database server host or socket directory\n"
 		   "  -p, --port=PORT          database server port number\n"
 		   "  -U, --username=USERNAME  connect as specified database user\n"
@@ -3879,14 +3878,8 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 						switch (conditional_stack_peek(st->cstack))
 						{
 							case IFSTATE_FALSE:
-								if (command->meta == META_IF)
-								{
-									/* nested if in skipped branch - ignore */
-									conditional_stack_push(st->cstack,
-														   IFSTATE_IGNORED);
-									st->command++;
-								}
-								else if (command->meta == META_ELIF)
+								if (command->meta == META_IF ||
+									command->meta == META_ELIF)
 								{
 									/* we must evaluate the condition */
 									st->state = CSTATE_START_COMMAND;
@@ -3905,7 +3898,11 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 									conditional_stack_pop(st->cstack);
 									if (conditional_active(st->cstack))
 										st->state = CSTATE_START_COMMAND;
-									/* else state remains CSTATE_SKIP_COMMAND */
+
+									/*
+									 * else state remains in
+									 * CSTATE_SKIP_COMMAND
+									 */
 									st->command++;
 								}
 								break;
@@ -4945,7 +4942,6 @@ initPopulateTable(PGconn *con, const char *table, int64 base,
 	int			n;
 	int64		k;
 	int			chars = 0;
-	int			prev_chars = 0;
 	PGresult   *res;
 	PQExpBufferData sql;
 	char		copy_statement[256];
@@ -5006,10 +5002,10 @@ initPopulateTable(PGconn *con, const char *table, int64 base,
 			double		elapsed_sec = PG_TIME_GET_DOUBLE(pg_time_now() - start);
 			double		remaining_sec = ((double) total - j) * elapsed_sec / j;
 
-			chars = fprintf(stderr, INT64_FORMAT " of " INT64_FORMAT " tuples (%d%%) of %s done (elapsed %.2f s, remaining %.2f s)",
+			chars = fprintf(stderr, INT64_FORMAT " of " INT64_FORMAT " tuples (%d%%) of %s done (elapsed %.2f s, remaining %.2f s)%c",
 							j, total,
 							(int) ((j * 100) / total),
-							table, elapsed_sec, remaining_sec);
+							table, elapsed_sec, remaining_sec, eol);
 		}
 		/* let's not call the timing for each row, but only each 100 rows */
 		else if (use_quiet && (j % 100 == 0))
@@ -5020,29 +5016,19 @@ initPopulateTable(PGconn *con, const char *table, int64 base,
 			/* have we reached the next interval (or end)? */
 			if ((j == total) || (elapsed_sec >= log_interval * LOG_STEP_SECONDS))
 			{
-				chars = fprintf(stderr, INT64_FORMAT " of " INT64_FORMAT " tuples (%d%%) of %s done (elapsed %.2f s, remaining %.2f s)",
+				chars = fprintf(stderr, INT64_FORMAT " of " INT64_FORMAT " tuples (%d%%) of %s done (elapsed %.2f s, remaining %.2f s)%c",
 								j, total,
 								(int) ((j * 100) / total),
-								table, elapsed_sec, remaining_sec);
+								table, elapsed_sec, remaining_sec, eol);
 
 				/* skip to the next interval */
 				log_interval = (int) ceil(elapsed_sec / LOG_STEP_SECONDS);
 			}
 		}
-
-		/*
-		 * If the previous progress message is longer than the current one,
-		 * add spaces to the current line to fully overwrite any remaining
-		 * characters from the previous message.
-		 */
-		if (prev_chars > chars)
-			fprintf(stderr, "%*c", prev_chars - chars, ' ');
-		fputc(eol, stderr);
-		prev_chars = chars;
 	}
 
 	if (chars != 0 && eol != '\n')
-		fprintf(stderr, "%*c\r", chars, ' ');	/* Clear the current line */
+		fprintf(stderr, "%*c\r", chars - 1, ' ');	/* Clear the current line */
 
 	if (PQputline(con, "\\.\n"))
 		pg_fatal("very last PQputline failed");
@@ -5389,7 +5375,7 @@ GetTableInfo(PGconn *con, bool scale_given)
 		 * This case is unlikely as pgbench already found "pgbench_branches"
 		 * above to compute the scale.
 		 */
-		pg_log_error("no pgbench_accounts table found in \"search_path\"");
+		pg_log_error("no pgbench_accounts table found in search_path");
 		pg_log_error_hint("Perhaps you need to do initialization (\"pgbench -i\") in database \"%s\".", PQdb(con));
 		exit(1);
 	}
@@ -6634,7 +6620,7 @@ main(int argc, char **argv)
 		{"builtin", required_argument, NULL, 'b'},
 		{"client", required_argument, NULL, 'c'},
 		{"connect", no_argument, NULL, 'C'},
-		{"dbname", required_argument, NULL, 'd'},
+		{"debug", no_argument, NULL, 'd'},
 		{"define", required_argument, NULL, 'D'},
 		{"file", required_argument, NULL, 'f'},
 		{"fillfactor", required_argument, NULL, 'F'},
@@ -6675,7 +6661,6 @@ main(int argc, char **argv)
 		{"max-tries", required_argument, NULL, 14},
 		{"verbose-errors", no_argument, NULL, 15},
 		{"exit-on-abort", no_argument, NULL, 16},
-		{"debug", no_argument, NULL, 17},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -6747,7 +6732,7 @@ main(int argc, char **argv)
 	if (!set_random_seed(getenv("PGBENCH_RANDOM_SEED")))
 		pg_fatal("error while setting random seed from PGBENCH_RANDOM_SEED environment variable");
 
-	while ((c = getopt_long(argc, argv, "b:c:Cd:D:f:F:h:iI:j:lL:M:nNp:P:qrR:s:St:T:U:v", long_options, &optindex)) != -1)
+	while ((c = getopt_long(argc, argv, "b:c:CdD:f:F:h:iI:j:lL:M:nNp:P:qrR:s:St:T:U:v", long_options, &optindex)) != -1)
 	{
 		char	   *script;
 
@@ -6788,7 +6773,7 @@ main(int argc, char **argv)
 				is_connect = true;
 				break;
 			case 'd':
-				dbName = pg_strdup(optarg);
+				pg_logging_increase_verbosity();
 				break;
 			case 'D':
 				{
@@ -7013,9 +6998,6 @@ main(int argc, char **argv)
 				benchmarking_option_set = true;
 				exit_on_abort = true;
 				break;
-			case 17:			/* debug */
-				pg_logging_increase_verbosity();
-				break;
 			default:
 				/* getopt_long already emitted a complaint */
 				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
@@ -7066,19 +7048,16 @@ main(int argc, char **argv)
 	 */
 	throttle_delay *= nthreads;
 
-	if (dbName == NULL)
+	if (argc > optind)
+		dbName = argv[optind++];
+	else
 	{
-		if (argc > optind)
-			dbName = argv[optind++];
+		if ((env = getenv("PGDATABASE")) != NULL && *env != '\0')
+			dbName = env;
+		else if ((env = getenv("PGUSER")) != NULL && *env != '\0')
+			dbName = env;
 		else
-		{
-			if ((env = getenv("PGDATABASE")) != NULL && *env != '\0')
-				dbName = env;
-			else if ((env = getenv("PGUSER")) != NULL && *env != '\0')
-				dbName = env;
-			else
-				dbName = get_user_name_or_exit(progname);
-		}
+			dbName = get_user_name_or_exit(progname);
 	}
 
 	if (optind < argc)

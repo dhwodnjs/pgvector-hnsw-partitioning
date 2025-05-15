@@ -20,10 +20,13 @@
 #include "access/multixact.h"
 #include "access/tableam.h"
 #include "access/xact.h"
+#include "access/xlog.h"
+#include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_opclass.h"
+#include "catalog/pg_operator.h"
 #include "commands/cluster.h"
 #include "commands/matview.h"
 #include "commands/tablecmds.h"
@@ -31,9 +34,11 @@
 #include "executor/executor.h"
 #include "executor/spi.h"
 #include "miscadmin.h"
+#include "parser/parse_relation.h"
 #include "pgstat.h"
 #include "rewrite/rewriteHandler.h"
 #include "storage/lmgr.h"
+#include "storage/smgr.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -112,44 +117,15 @@ SetMatViewPopulatedState(Relation relation, bool newstate)
 /*
  * ExecRefreshMatView -- execute a REFRESH MATERIALIZED VIEW command
  *
- * If WITH NO DATA was specified, this is effectively like a TRUNCATE;
- * otherwise it is like a TRUNCATE followed by an INSERT using the SELECT
- * statement associated with the materialized view.  The statement node's
- * skipData field shows whether the clause was used.
- */
-ObjectAddress
-ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
-				   ParamListInfo params, QueryCompletion *qc)
-{
-	Oid			matviewOid;
-	LOCKMODE	lockmode;
-
-	/* Determine strength of lock needed. */
-	lockmode = stmt->concurrent ? ExclusiveLock : AccessExclusiveLock;
-
-	/*
-	 * Get a lock until end of transaction.
-	 */
-	matviewOid = RangeVarGetRelidExtended(stmt->relation,
-										  lockmode, 0,
-										  RangeVarCallbackMaintainsTable,
-										  NULL);
-
-	return RefreshMatViewByOid(matviewOid, stmt->skipData, stmt->concurrent,
-							   queryString, params, qc);
-}
-
-/*
- * RefreshMatViewByOid -- refresh materialized view by OID
- *
  * This refreshes the materialized view by creating a new table and swapping
  * the relfilenumbers of the new table and the old materialized view, so the OID
  * of the original materialized view is preserved. Thus we do not lose GRANT
  * nor references to this materialized view.
  *
- * If skipData is true, this is effectively like a TRUNCATE; otherwise it is
- * like a TRUNCATE followed by an INSERT using the SELECT statement associated
- * with the materialized view.
+ * If WITH NO DATA was specified, this is effectively like a TRUNCATE;
+ * otherwise it is like a TRUNCATE followed by an INSERT using the SELECT
+ * statement associated with the materialized view.  The statement node's
+ * skipData field shows whether the clause was used.
  *
  * Indexes are rebuilt too, via REINDEX. Since we are effectively bulk-loading
  * the new heap, it's better to create the indexes afterwards than to fill them
@@ -159,10 +135,10 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
  * reflect the result set of the materialized view's query.
  */
 ObjectAddress
-RefreshMatViewByOid(Oid matviewOid, bool skipData, bool concurrent,
-					const char *queryString, ParamListInfo params,
-					QueryCompletion *qc)
+ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
+				   ParamListInfo params, QueryCompletion *qc)
 {
+	Oid			matviewOid;
 	Relation	matviewRel;
 	RewriteRule *rule;
 	List	   *actions;
@@ -172,12 +148,24 @@ RefreshMatViewByOid(Oid matviewOid, bool skipData, bool concurrent,
 	Oid			OIDNewHeap;
 	DestReceiver *dest;
 	uint64		processed = 0;
+	bool		concurrent;
+	LOCKMODE	lockmode;
 	char		relpersistence;
 	Oid			save_userid;
 	int			save_sec_context;
 	int			save_nestlevel;
 	ObjectAddress address;
 
+	/* Determine strength of lock needed. */
+	concurrent = stmt->concurrent;
+	lockmode = concurrent ? ExclusiveLock : AccessExclusiveLock;
+
+	/*
+	 * Get a lock until end of transaction.
+	 */
+	matviewOid = RangeVarGetRelidExtended(stmt->relation,
+										  lockmode, 0,
+										  RangeVarCallbackOwnsTable, NULL);
 	matviewRel = table_open(matviewOid, NoLock);
 	relowner = matviewRel->rd_rel->relowner;
 
@@ -190,7 +178,6 @@ RefreshMatViewByOid(Oid matviewOid, bool skipData, bool concurrent,
 	SetUserIdAndSecContext(relowner,
 						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 	save_nestlevel = NewGUCNestLevel();
-	RestrictSearchPath();
 
 	/* Make sure it is a materialized view. */
 	if (matviewRel->rd_rel->relkind != RELKIND_MATVIEW)
@@ -206,7 +193,7 @@ RefreshMatViewByOid(Oid matviewOid, bool skipData, bool concurrent,
 				 errmsg("CONCURRENTLY cannot be used when the materialized view is not populated")));
 
 	/* Check that conflicting options have not been specified. */
-	if (concurrent && skipData)
+	if (concurrent && stmt->skipData)
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("%s and %s options cannot be used together",
@@ -291,7 +278,7 @@ RefreshMatViewByOid(Oid matviewOid, bool skipData, bool concurrent,
 	 * Tentatively mark the matview as populated or not (this will roll back
 	 * if we fail later).
 	 */
-	SetMatViewPopulatedState(matviewRel, !skipData);
+	SetMatViewPopulatedState(matviewRel, !stmt->skipData);
 
 	/* Concurrent refresh builds new data in temp tablespace, and does diff. */
 	if (concurrent)
@@ -317,7 +304,7 @@ RefreshMatViewByOid(Oid matviewOid, bool skipData, bool concurrent,
 	dest = CreateTransientRelDestReceiver(OIDNewHeap);
 
 	/* Generate the data, if wanted. */
-	if (!skipData)
+	if (!stmt->skipData)
 		processed = refresh_matview_datafill(dest, dataQuery, queryString);
 
 	/* Make the matview match the newly generated data. */
@@ -349,7 +336,7 @@ RefreshMatViewByOid(Oid matviewOid, bool skipData, bool concurrent,
 		 * inserts and deletes it issues get counted by lower-level code.)
 		 */
 		pgstat_count_truncate(matviewRel);
-		if (!skipData)
+		if (!stmt->skipData)
 			pgstat_count_heap_insert(matviewRel, processed);
 	}
 

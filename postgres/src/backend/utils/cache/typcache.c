@@ -70,6 +70,7 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
@@ -147,7 +148,7 @@ typedef struct TypeCacheEnumData
  * We use a separate table for storing the definitions of non-anonymous
  * record types.  Once defined, a record type will be remembered for the
  * life of the backend.  Subsequent uses of the "same" record type (where
- * sameness means equalRowTypes) will refer to the existing table entry.
+ * sameness means equalTupleDescs) will refer to the existing table entry.
  *
  * Stored record types are remembered in a linear array of TupleDescs,
  * which can be indexed quickly with the assigned typmod.  There is also
@@ -231,7 +232,7 @@ shared_record_table_compare(const void *a, const void *b, size_t size,
 	else
 		t2 = k2->u.local_tupdesc;
 
-	return equalRowTypes(t1, t2) ? 0 : 1;
+	return equalTupleDescs(t1, t2) ? 0 : 1;
 }
 
 /*
@@ -249,7 +250,7 @@ shared_record_table_hash(const void *a, size_t size, void *arg)
 	else
 		t = k->u.local_tupdesc;
 
-	return hashRowType(t);
+	return hashTupleDesc(t);
 }
 
 /* Parameters for SharedRecordTypmodRegistry's TupleDesc table. */
@@ -1071,7 +1072,7 @@ load_domaintype_info(TypeCacheEntry *typentry)
 			Expr	   *check_expr;
 			DomainConstraintState *r;
 
-			/* Ignore non-CHECK constraints */
+			/* Ignore non-CHECK constraints (presently, shouldn't be any) */
 			if (c->contype != CONSTRAINT_CHECK)
 				continue;
 
@@ -1927,7 +1928,7 @@ record_type_typmod_hash(const void *data, size_t size)
 {
 	RecordCacheEntry *entry = (RecordCacheEntry *) data;
 
-	return hashRowType(entry->tupdesc);
+	return hashTupleDesc(entry->tupdesc);
 }
 
 /*
@@ -1939,7 +1940,7 @@ record_type_typmod_compare(const void *a, const void *b, size_t size)
 	RecordCacheEntry *left = (RecordCacheEntry *) a;
 	RecordCacheEntry *right = (RecordCacheEntry *) b;
 
-	return equalRowTypes(left->tupdesc, right->tupdesc) ? 0 : 1;
+	return equalTupleDescs(left->tupdesc, right->tupdesc) ? 0 : 1;
 }
 
 /*

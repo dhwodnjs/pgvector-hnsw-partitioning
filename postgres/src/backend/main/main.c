@@ -32,9 +32,9 @@
 
 #include "bootstrap/bootstrap.h"
 #include "common/username.h"
-#include "miscadmin.h"
 #include "port/atomics.h"
 #include "postmaster/postmaster.h"
+#include "storage/spin.h"
 #include "tcop/tcopprot.h"
 #include "utils/help_config.h"
 #include "utils/memutils.h"
@@ -97,7 +97,6 @@ main(int argc, char *argv[])
 	 * localization of messages may not work right away, and messages won't go
 	 * anywhere but stderr until GUC settings get loaded.
 	 */
-	MyProcPid = getpid();
 	MemoryContextInit();
 
 	/*
@@ -187,7 +186,7 @@ main(int argc, char *argv[])
 	else if (argc > 1 && strcmp(argv[1], "--boot") == 0)
 		BootstrapModeMain(argc, argv, false);
 #ifdef EXEC_BACKEND
-	else if (argc > 1 && strncmp(argv[1], "--forkchild", 11) == 0)
+	else if (argc > 1 && strncmp(argv[1], "--fork", 6) == 0)
 		SubPostmasterMain(argc, argv);
 #endif
 	else if (argc > 1 && strcmp(argv[1], "--describe-config") == 0)

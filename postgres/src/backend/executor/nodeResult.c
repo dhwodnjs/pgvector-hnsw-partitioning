@@ -48,6 +48,7 @@
 #include "executor/executor.h"
 #include "executor/nodeResult.h"
 #include "miscadmin.h"
+#include "utils/memutils.h"
 
 
 /* ----------------------------------------------------------------

@@ -376,6 +376,8 @@ check_agglevels_and_constraints(ParseState *pstate, Node *expr)
 
 			break;
 		case EXPR_KIND_FROM_SUBSELECT:
+			/* Should only be possible in a LATERAL subquery */
+			Assert(pstate->p_lateral_active);
 
 			/*
 			 * Aggregate/grouping scope rules make it worth being explicit
@@ -466,7 +468,6 @@ check_agglevels_and_constraints(ParseState *pstate, Node *expr)
 			errkind = true;
 			break;
 		case EXPR_KIND_RETURNING:
-		case EXPR_KIND_MERGE_RETURNING:
 			errkind = true;
 			break;
 		case EXPR_KIND_VALUES:
@@ -914,7 +915,6 @@ transformWindowFuncCall(ParseState *pstate, WindowFunc *wfunc,
 			errkind = true;
 			break;
 		case EXPR_KIND_RETURNING:
-		case EXPR_KIND_MERGE_RETURNING:
 			errkind = true;
 			break;
 		case EXPR_KIND_VALUES:

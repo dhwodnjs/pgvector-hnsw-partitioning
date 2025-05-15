@@ -22,6 +22,7 @@
 
 #include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
+#include "optimizer/inherit.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/orclauses.h"
 #include "optimizer/pathnode.h"
@@ -229,6 +230,11 @@ query_planner(PlannerInfo *root,
 	 * Likewise, this can't be done until now for lack of needed info.
 	 */
 	reduce_unique_semijoins(root);
+
+	/*
+	 * Remove self joins on a unique column.
+	 */
+	joinlist = remove_useless_self_joins(root, joinlist);
 
 	/*
 	 * Now distribute "placeholders" to base rels as needed.  This has to be

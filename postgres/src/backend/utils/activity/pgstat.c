@@ -93,6 +93,7 @@
 
 #include <unistd.h>
 
+#include "access/transam.h"
 #include "access/xact.h"
 #include "lib/dshash.h"
 #include "pgstat.h"
@@ -100,6 +101,8 @@
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
+#include "storage/pg_shmem.h"
+#include "storage/shmem.h"
 #include "utils/guc_hooks.h"
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
@@ -822,9 +825,6 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, Oid objoid)
 
 	pgstat_prep_snapshot();
 
-	/* clear padding */
-	memset(&key, 0, sizeof(struct PgStat_HashKey));
-
 	key.kind = kind;
 	key.dboid = dboid;
 	key.objoid = objoid;
@@ -1396,15 +1396,7 @@ pgstat_write_statsfile(void)
 
 		CHECK_FOR_INTERRUPTS();
 
-		/*
-		 * We should not see any "dropped" entries when writing the stats
-		 * file, as all backends and auxiliary processes should have cleaned
-		 * up their references before they terminated.
-		 *
-		 * However, since we are already shutting down, it is not worth
-		 * crashing the server over any potential cleanup issues, so we simply
-		 * skip such entries if encountered.
-		 */
+		/* we may have some "dropped" entries not yet removed, skip them */
 		Assert(!ps->dropped);
 		if (ps->dropped)
 			continue;

@@ -78,9 +78,6 @@
 /* Define to 1 if you have the <copyfile.h> header file. */
 #undef HAVE_COPYFILE_H
 
-/* Define to 1 if you have the `copy_file_range' function. */
-#undef HAVE_COPY_FILE_RANGE
-
 /* Define to 1 if you have the <crtdefs.h> header file. */
 #undef HAVE_CRTDEFS_H
 
@@ -384,8 +381,8 @@
 /* Define to 1 if you have the `SSL_CTX_set_cert_cb' function. */
 #undef HAVE_SSL_CTX_SET_CERT_CB
 
-/* Define to 1 if you have the `SSL_CTX_set_num_tickets' function. */
-#undef HAVE_SSL_CTX_SET_NUM_TICKETS
+/* Define to 1 if stdbool.h conforms to C99. */
+#undef HAVE_STDBOOL_H
 
 /* Define to 1 if you have the <stdint.h> header file. */
 #undef HAVE_STDINT_H
@@ -513,8 +510,8 @@
 /* Define to 1 if the assembler supports X86_64's POPCNTQ instruction. */
 #undef HAVE_X86_64_POPCNTQ
 
-/* Define to 1 if you have XSAVE intrinsics. */
-#undef HAVE_XSAVE_INTRINSICS
+/* Define to 1 if the system has the type `_Bool'. */
+#undef HAVE__BOOL
 
 /* Define to 1 if your compiler understands __builtin_bswap16. */
 #undef HAVE__BUILTIN_BSWAP16
@@ -555,14 +552,8 @@
 /* Define to 1 if you have __cpuid. */
 #undef HAVE__CPUID
 
-/* Define to 1 if you have __cpuidex. */
-#undef HAVE__CPUIDEX
-
 /* Define to 1 if you have __get_cpuid. */
 #undef HAVE__GET_CPUID
-
-/* Define to 1 if you have __get_cpuid_count. */
-#undef HAVE__GET_CPUID_COUNT
 
 /* Define to 1 if your compiler understands _Static_assert. */
 #undef HAVE__STATIC_ASSERT
@@ -685,9 +676,6 @@
 
 /* Define to 1 to build with assertion checks. (--enable-cassert) */
 #undef USE_ASSERT_CHECKING
-
-/* Define to 1 to use AVX-512 popcount instructions with a runtime check. */
-#undef USE_AVX512_POPCNT_WITH_RUNTIME_CHECK
 
 /* Define to 1 to build with Bonjour support. (--with-bonjour) */
 #undef USE_BONJOUR

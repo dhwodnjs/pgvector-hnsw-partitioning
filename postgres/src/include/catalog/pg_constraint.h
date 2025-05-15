@@ -107,6 +107,12 @@ CATALOG(pg_constraint,2606,ConstraintRelationId)
 	/* Has a local definition and cannot be inherited */
 	bool		connoinherit;
 
+	/*
+	 * For primary keys and unique constraints, signifies the last column uses
+	 * overlaps instead of equals.
+	 */
+	bool		conwithoutoverlaps;
+
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 
 	/*
@@ -146,7 +152,8 @@ CATALOG(pg_constraint,2606,ConstraintRelationId)
 
 	/*
 	 * If an exclusion constraint, the OIDs of the exclusion operators for
-	 * each column of the constraint
+	 * each column of the constraint.  Also set for unique constraints/primary
+	 * keys using WITHOUT OVERLAPS.
 	 */
 	Oid			conexclop[1] BKI_LOOKUP(pg_operator);
 
@@ -238,6 +245,7 @@ extern Oid	CreateConstraintEntry(const char *constraintName,
 								  bool conIsLocal,
 								  int conInhCount,
 								  bool conNoInherit,
+								  bool conWithoutOverlaps,
 								  bool is_internal);
 
 extern bool ConstraintNameIsUsed(ConstraintCategory conCat, Oid objId,
@@ -247,7 +255,13 @@ extern char *ChooseConstraintName(const char *name1, const char *name2,
 								  const char *label, Oid namespaceid,
 								  List *others);
 
-extern HeapTuple findDomainNotNullConstraint(Oid typid);
+extern HeapTuple findNotNullConstraintAttnum(Oid relid, AttrNumber attnum);
+extern HeapTuple findNotNullConstraint(Oid relid, const char *colname);
+extern AttrNumber extractNotNullColumn(HeapTuple constrTup);
+extern bool AdjustNotNullInheritance1(Oid relid, AttrNumber attnum, int count,
+									  bool is_no_inherit);
+extern void AdjustNotNullInheritance(Oid relid, Bitmapset *columns, int count);
+extern List *RelationGetNotNullConstraints(Oid relid, bool cooked);
 
 extern void RemoveConstraintById(Oid conId);
 extern void RenameConstraintById(Oid conId, const char *newname);

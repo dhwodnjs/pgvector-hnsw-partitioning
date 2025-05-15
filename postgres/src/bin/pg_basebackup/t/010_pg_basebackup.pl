@@ -77,7 +77,7 @@ $node->command_fails([ @pg_basebackup_defs, '-D', "$tempdir/backup", '-n' ],
 ok(-d "$tempdir/backup", 'backup directory was created and left behind');
 rmtree("$tempdir/backup");
 
-open my $conf, '>>', "$pgdata/postgresql.conf" or die $!;
+open my $conf, '>>', "$pgdata/postgresql.conf";
 print $conf "max_replication_slots = 10\n";
 print $conf "max_wal_senders = 10\n";
 print $conf "wal_level = replica\n";
@@ -175,7 +175,7 @@ foreach my $filename (
 	qw(backup_label tablespace_map postgresql.auto.conf.tmp
 	current_logfiles.tmp global/pg_internal.init.123))
 {
-	open my $file, '>>', "$pgdata/$filename" or die $!;
+	open my $file, '>>', "$pgdata/$filename";
 	print $file "DONOTCOPY";
 	close $file;
 }
@@ -185,7 +185,7 @@ foreach my $filename (
 # unintended side effects.
 if ($Config{osname} ne 'darwin')
 {
-	open my $file, '>>', "$pgdata/.DS_Store" or die $!;
+	open my $file, '>>', "$pgdata/.DS_Store";
 	print $file "DONOTCOPY";
 	close $file;
 }
@@ -359,13 +359,13 @@ chmod_recursive("$pgdata", 0750, 0640);
 # Create a temporary directory in the system location.
 my $sys_tempdir = PostgreSQL::Test::Utils::tempdir_short;
 
-# pg_replslot should be empty. We remove it and recreate it in $sys_tempdir
-# before symlinking, in order to avoid possibly trying to move things across
-# drives.
-rmdir("$pgdata/pg_replslot")
-  or BAIL_OUT "could not remove $pgdata/pg_replslot";
-mkdir("$sys_tempdir/pg_replslot"); # if this fails the symlink will fail
-dir_symlink("$sys_tempdir/pg_replslot", "$pgdata/pg_replslot")
+# On Windows use the short location to avoid path length issues.
+# Elsewhere use $tempdir to avoid file system boundary issues with moving.
+my $tmploc = $windows_os ? $sys_tempdir : $tempdir;
+
+rename("$pgdata/pg_replslot", "$tmploc/pg_replslot")
+  or BAIL_OUT "could not move $pgdata/pg_replslot";
+dir_symlink("$tmploc/pg_replslot", "$pgdata/pg_replslot")
   or BAIL_OUT "could not symlink to $pgdata/pg_replslot";
 
 $node->start;
@@ -407,14 +407,25 @@ SKIP:
 
 	my $node2 = PostgreSQL::Test::Cluster->new('replica');
 
-	# Recover the backup
+	# Recover main data directory
+	$node2->init_from_backup($node, 'tarbackup2', tar_program => $tar);
+
+	# Recover tablespace into a new directory (not where it was!)
+	my $repTsDir = "$tempdir/tblspc1replica";
+	my $realRepTsDir = "$real_sys_tempdir/tblspc1replica";
+	mkdir $repTsDir;
+	PostgreSQL::Test::Utils::system_or_bail($tar, 'xf', $tblspc_tars[0],
+		'-C', $repTsDir);
+
+	# Update tablespace map to point to new directory.
+	# XXX Ideally pg_basebackup would handle this.
 	$tblspc_tars[0] =~ m|/([0-9]*)\.tar$|;
 	my $tblspcoid = $1;
-	my $realRepTsDir = "$real_sys_tempdir/tblspc1replica";
-	$node2->init_from_backup(
-		$node, 'tarbackup2',
-		tar_program => $tar,
-		'tablespace_map' => { $tblspcoid => $realRepTsDir });
+	my $escapedRepTsDir = $realRepTsDir;
+	$escapedRepTsDir =~ s/\\/\\\\/g;
+	open my $mapfile, '>', $node2->data_dir . '/tablespace_map';
+	print $mapfile "$tblspcoid $escapedRepTsDir\n";
+	close $mapfile;
 
 	$node2->start;
 	my $result = $node2->safe_psql('postgres', 'SELECT * FROM test1');
@@ -483,7 +494,7 @@ SKIP:
 SKIP:
 {
 	skip "unix-style permissions not supported on Windows", 1
-	  if ($windows_os || $Config::Config{osname} eq 'cygwin');
+	  if ($windows_os);
 
 	ok(check_mode_recursive("$tempdir/backup1", 0750, 0640),
 		"check backup dir permissions");
@@ -772,17 +783,6 @@ my $checksum = $node->safe_psql('postgres', 'SHOW data_checksums;');
 is($checksum, 'on', 'checksums are enabled');
 rmtree("$tempdir/backupxs_sl_R");
 
-$node->command_ok(
-	[
-		@pg_basebackup_defs, '-D', "$tempdir/backup_dbname_R", '-X',
-		'stream', '-d', "dbname=db1", '-R',
-	],
-	'pg_basebackup with dbname and -R runs');
-like(slurp_file("$tempdir/backup_dbname_R/postgresql.auto.conf"),
-	qr/dbname=db1/m, 'recovery conf file sets dbname');
-
-rmtree("$tempdir/backup_dbname_R");
-
 # create tables to corrupt and get their relfilenodes
 my $file_corrupt1 = $node->safe_psql('postgres',
 	q{CREATE TABLE corrupt1 AS SELECT a FROM generate_series(1,10000) AS a; ALTER TABLE corrupt1 SET (autovacuum_enabled=false); SELECT pg_relation_filepath('corrupt1')}
@@ -964,24 +964,5 @@ $node->safe_psql('postgres', "DROP TABLESPACE tblspc2;");
 $backupdir = $node->backup_dir . '/backup3';
 my @dst_tblspc = glob "$backupdir/pg_tblspc/$tblspc_oid/PG_*";
 is(@dst_tblspc, 1, 'tblspc directory copied');
-
-# Can't take backup with referring manifest of different cluster
-#
-# Set up another new database instance with force initdb option. We don't want
-# to initializing database system by copying initdb template for this, because
-# we want it to be a separate cluster with a different system ID.
-my $node2 = PostgreSQL::Test::Cluster->new('node2');
-$node2->init(force_initdb => 1, has_archiving => 1, allows_streaming => 1);
-$node2->append_conf('postgresql.conf', 'summarize_wal = on');
-$node2->start;
-
-$node2->command_fails_like(
-	[
-		@pg_basebackup_defs, '-D',
-		"$tempdir" . '/diff_sysid', '--incremental',
-		"$backupdir" . '/backup_manifest'
-	],
-	qr/system identifier in backup manifest is .*, but database system identifier is/,
-	"pg_basebackup fails with different database system manifest");
 
 done_testing();

@@ -25,18 +25,21 @@
 #include <fcntl.h>
 #include <sys/file.h>
 
+#include "access/xlog.h"
 #include "access/xlogutils.h"
 #include "commands/tablespace.h"
 #include "common/file_utils.h"
 #include "miscadmin.h"
 #include "pg_trace.h"
 #include "pgstat.h"
+#include "postmaster/bgwriter.h"
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
 #include "storage/md.h"
 #include "storage/relfilelocator.h"
 #include "storage/smgr.h"
 #include "storage/sync.h"
+#include "utils/hsearch.h"
 #include "utils/memutils.h"
 
 /*
@@ -930,7 +933,7 @@ mdwritev(SMgrRelation reln, ForkNumber forknum, BlockNumber blocknum,
 {
 	/* This assert is too expensive to have on normally ... */
 #ifdef CHECK_WRITE_VS_EXTEND
-	Assert((uint64) blocknum + (uint64) nblocks <= (uint64) mdnblocks(reln, forknum));
+	Assert(blocknum < mdnblocks(reln, forknum));
 #endif
 
 	while (nblocks > 0)
@@ -1141,21 +1144,19 @@ mdnblocks(SMgrRelation reln, ForkNumber forknum)
 
 /*
  * mdtruncate() -- Truncate relation to specified number of blocks.
- *
- * Guaranteed not to allocate memory, so it can be used in a critical section.
- * Caller must have called smgrnblocks() to obtain curnblk while holding a
- * sufficient lock to prevent a change in relation size, and not used any smgr
- * functions for this relation or handled interrupts in between.  This makes
- * sure we have opened all active segments, so that truncate loop will get
- * them all!
  */
 void
-mdtruncate(SMgrRelation reln, ForkNumber forknum,
-		   BlockNumber curnblk, BlockNumber nblocks)
+mdtruncate(SMgrRelation reln, ForkNumber forknum, BlockNumber nblocks)
 {
+	BlockNumber curnblk;
 	BlockNumber priorblocks;
 	int			curopensegs;
 
+	/*
+	 * NOTE: mdnblocks makes sure we have opened all active segments, so that
+	 * truncation loop will get them all!
+	 */
+	curnblk = mdnblocks(reln, forknum);
 	if (nblocks > curnblk)
 	{
 		/* Bogus request ... but no complaint if InRecovery */
@@ -1494,7 +1495,7 @@ _fdvec_resize(SMgrRelation reln,
 		reln->md_seg_fds[forknum] =
 			MemoryContextAlloc(MdCxt, sizeof(MdfdVec) * nseg);
 	}
-	else if (nseg > reln->md_num_open_segs[forknum])
+	else
 	{
 		/*
 		 * It doesn't seem worthwhile complicating the code to amortize
@@ -1505,16 +1506,6 @@ _fdvec_resize(SMgrRelation reln,
 		reln->md_seg_fds[forknum] =
 			repalloc(reln->md_seg_fds[forknum],
 					 sizeof(MdfdVec) * nseg);
-	}
-	else
-	{
-		/*
-		 * We don't reallocate a smaller array, because we want mdtruncate()
-		 * to be able to promise that it won't allocate memory, so that it is
-		 * allowed in a critical section.  This means that a bit of space in
-		 * the array is now wasted, until the next time we add a segment and
-		 * reallocate.
-		 */
 	}
 
 	reln->md_num_open_segs[forknum] = nseg;

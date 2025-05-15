@@ -62,7 +62,6 @@ tests += {
       'concurrent_stream',
       'twophase_snapshot',
       'slot_creation_error',
-      'skip_snapshot_restore',
     ],
     'regress_args': [
       '--temp-config', files('logical.conf'),

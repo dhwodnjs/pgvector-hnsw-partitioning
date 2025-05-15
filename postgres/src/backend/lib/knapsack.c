@@ -28,7 +28,9 @@
 #include <limits.h>
 
 #include "lib/knapsack.h"
+#include "miscadmin.h"
 #include "nodes/bitmapset.h"
+#include "utils/builtins.h"
 #include "utils/memutils.h"
 
 /*

@@ -25,6 +25,7 @@
 #include "catalog/pg_partitioned_table.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/optimizer.h"
+#include "partitioning/partbounds.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/fmgroids.h"
 #include "utils/partcache.h"

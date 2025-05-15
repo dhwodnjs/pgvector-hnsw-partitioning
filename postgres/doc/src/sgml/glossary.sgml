@@ -164,7 +164,6 @@
      the <glossterm linkend="glossary-wal-archiver">WAL archiver</glossterm>,
      the <glossterm linkend="glossary-wal-receiver">WAL receiver</glossterm>
      (but not the <glossterm linkend="glossary-wal-sender">WAL senders</glossterm>),
-     the <glossterm linkend="glossary-wal-summarizer">WAL summarizer</glossterm>,
      and the <glossterm linkend="glossary-wal-writer">WAL writer</glossterm>.
     </para>
    </glossdef>
@@ -1443,9 +1442,9 @@
      to a <glossterm linkend="glossary-client">client</glossterm> upon the
      completion of an <acronym>SQL</acronym> command, usually a
      <command>SELECT</command> but it can be an
-     <command>INSERT</command>, <command>UPDATE</command>,
-     <command>DELETE</command>, or <command>MERGE</command> command if the
-     <literal>RETURNING</literal> clause is specified.
+     <command>INSERT</command>, <command>UPDATE</command>, or
+     <command>DELETE</command> command if the <literal>RETURNING</literal>
+     clause is specified.
     </para>
     <para>
      The fact that a result set is a relation means that a query can be used
@@ -2200,7 +2199,7 @@
    <glossterm>WAL summarizer (process)</glossterm>
    <glossdef>
     <para>
-     An <glossterm linkend="glossary-auxiliary-proc">auxiliary process</glossterm>
+     A special <glossterm linkend="glossary-backend">backend process</glossterm>
      that summarizes WAL data for
      <glossterm linkend="glossary-incremental-backup">incremental backups</glossterm>.
     </para>
@@ -2214,8 +2213,7 @@
    <glossterm>WAL writer (process)</glossterm>
    <glossdef>
     <para>
-     An <glossterm linkend="glossary-auxiliary-proc">auxiliary process</glossterm>
-     that writes <glossterm linkend="glossary-wal-record">WAL records</glossterm>
+     A process that writes <glossterm linkend="glossary-wal-record">WAL records</glossterm>
      from <glossterm linkend="glossary-shared-memory">shared memory</glossterm> to
      <glossterm linkend="glossary-wal-file">WAL files</glossterm>.
     </para>

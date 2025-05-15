@@ -26,11 +26,10 @@ sub test_skip_lsn
 		"SELECT subenabled = FALSE FROM pg_subscription WHERE subname = 'sub'"
 	);
 
-	# Get the finish LSN of the error transaction, mapping the expected
-	# ERROR with its CONTEXT when retrieving this information.
+	# Get the finish LSN of the error transaction.
 	my $contents = slurp_file($node_subscriber->logfile, $offset);
 	$contents =~
-	  qr/duplicate key value violates unique constraint "tbl_pkey".*\n.*DETAIL:.*\n.*CONTEXT:.* for replication target relation "public.tbl" in transaction \d+, finished at ([[:xdigit:]]+\/[[:xdigit:]]+)/m
+	  qr/processing remote data for replication origin \"pg_\d+\" during message type "INSERT" for replication target relation "public.tbl" in transaction \d+, finished at ([[:xdigit:]]+\/[[:xdigit:]]+)/
 	  or die "could not get error-LSN";
 	my $lsn = $1;
 
@@ -167,8 +166,7 @@ BEGIN;
 INSERT INTO tbl SELECT i, sha256(i::text::bytea) FROM generate_series(1, 10000) s(i);
 COMMIT;
 ]);
-test_skip_lsn($node_publisher, $node_subscriber,
-	"(4, sha256(4::text::bytea))",
+test_skip_lsn($node_publisher, $node_subscriber, "(4, sha256(4::text::bytea))",
 	"4", "test skipping stream-commit");
 
 $result = $node_subscriber->safe_psql('postgres',

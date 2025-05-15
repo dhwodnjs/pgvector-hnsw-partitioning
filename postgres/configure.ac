@@ -17,7 +17,7 @@ dnl Read the Autoconf manual for details.
 dnl
 m4_pattern_forbid(^PGAC_)dnl to catch undefined macros
 
-AC_INIT([PostgreSQL], [17.2], [pgsql-bugs@lists.postgresql.org], [], [https://www.postgresql.org/])
+AC_INIT([PostgreSQL], [17devel], [pgsql-bugs@lists.postgresql.org], [], [https://www.postgresql.org/])
 
 m4_if(m4_defn([m4_PACKAGE_VERSION]), [2.69], [], [m4_fatal([Autoconf version 2.69 is required.
 Untested combinations of 'autoconf' and PostgreSQL versions are not
@@ -636,13 +636,6 @@ if test "$with_llvm" = yes ; then
 
   PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, BITCODE_CFLAGS, [-Xclang -no-opaque-pointers])
   PGAC_PROG_VARCXX_VARFLAGS_OPT(CLANGXX, BITCODE_CXXFLAGS, [-Xclang -no-opaque-pointers])
-
-  # Ideally bitcode should perhaps match $CC's use, or not, of outline atomic
-  # functions, but for now we err on the side of suppressing them in bitcode,
-  # because we can't assume they're available at runtime.  This affects aarch64
-  # builds using the basic armv8-a ISA without LSE support.
-  PGAC_PROG_VARCXX_VARFLAGS_OPT(CLANG, BITCODE_CFLAGS, [-mno-outline-atomics])
-  PGAC_PROG_VARCXX_VARFLAGS_OPT(CLANG, BITCODE_CXXFLAGS, [-mno-outline-atomics])
 
   NOT_THE_CFLAGS=""
   PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, NOT_THE_CFLAGS, [-Wunused-command-line-argument])
@@ -1365,7 +1358,7 @@ if test "$with_ssl" = openssl ; then
   # function was removed.
   AC_CHECK_FUNCS([CRYPTO_lock])
   # Function introduced in OpenSSL 1.1.1.
-  AC_CHECK_FUNCS([X509_get_signature_info SSL_CTX_set_num_tickets])
+  AC_CHECK_FUNCS([X509_get_signature_info])
   AC_DEFINE([USE_OPENSSL], 1, [Define to 1 to build with OpenSSL support. (--with-ssl=openssl)])
 elif test "$with_ssl" != no ; then
   AC_MSG_ERROR([--with-ssl must specify openssl])
@@ -1462,6 +1455,8 @@ AC_SUBST(UUID_LIBS)
 ##
 ## Header files
 ##
+
+AC_HEADER_STDBOOL
 
 AC_CHECK_HEADERS(m4_normalize([
 	atomic.h
@@ -1724,11 +1719,14 @@ if test "$ac_cv_sizeof_off_t" -lt 8; then
   fi
 fi
 
-AC_CHECK_SIZEOF([bool], [], [#include <stdbool.h>])
+AC_CHECK_SIZEOF([bool], [],
+[#ifdef HAVE_STDBOOL_H
+#include <stdbool.h>
+#endif])
 
-dnl We use <stdbool.h> if bool has size 1 after including it.  Otherwise, c.h
-dnl will fall back to declaring bool as unsigned char.
-if test "$ac_cv_sizeof_bool" = 1; then
+dnl We use <stdbool.h> if we have it and it declares type bool as having
+dnl size 1.  Otherwise, c.h will fall back to declaring bool as unsigned char.
+if test "$ac_cv_header_stdbool_h" = yes -a "$ac_cv_sizeof_bool" = 1; then
   AC_DEFINE([PG_USE_STDBOOL], 1,
             [Define to 1 to use <stdbool.h> to define type bool.])
 fi
@@ -1751,7 +1749,6 @@ LIBS=`echo "$LIBS" | sed -e 's/-ledit//g' -e 's/-lreadline//g'`
 AC_CHECK_FUNCS(m4_normalize([
 	backtrace_symbols
 	copyfile
-	copy_file_range
 	getifaddrs
 	getpeerucred
 	inet_pton
@@ -2054,17 +2051,6 @@ if test x"$pgac_cv__get_cpuid" = x"yes"; then
   AC_DEFINE(HAVE__GET_CPUID, 1, [Define to 1 if you have __get_cpuid.])
 fi
 
-AC_CACHE_CHECK([for __get_cpuid_count], [pgac_cv__get_cpuid_count],
-[AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <cpuid.h>],
-  [[unsigned int exx[4] = {0, 0, 0, 0};
-  __get_cpuid_count(7, 0, &exx[0], &exx[1], &exx[2], &exx[3]);
-  ]])],
-  [pgac_cv__get_cpuid_count="yes"],
-  [pgac_cv__get_cpuid_count="no"])])
-if test x"$pgac_cv__get_cpuid_count" = x"yes"; then
-  AC_DEFINE(HAVE__GET_CPUID_COUNT, 1, [Define to 1 if you have __get_cpuid_count.])
-fi
-
 AC_CACHE_CHECK([for __cpuid], [pgac_cv__cpuid],
 [AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <intrin.h>],
   [[unsigned int exx[4] = {0, 0, 0, 0};
@@ -2075,46 +2061,6 @@ AC_CACHE_CHECK([for __cpuid], [pgac_cv__cpuid],
 if test x"$pgac_cv__cpuid" = x"yes"; then
   AC_DEFINE(HAVE__CPUID, 1, [Define to 1 if you have __cpuid.])
 fi
-
-AC_CACHE_CHECK([for __cpuidex], [pgac_cv__cpuidex],
-[AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <intrin.h>],
-  [[unsigned int exx[4] = {0, 0, 0, 0};
-  __get_cpuidex(exx[0], 7, 0);
-  ]])],
-  [pgac_cv__cpuidex="yes"],
-  [pgac_cv__cpuidex="no"])])
-if test x"$pgac_cv__cpuidex" = x"yes"; then
-  AC_DEFINE(HAVE__CPUIDEX, 1, [Define to 1 if you have __cpuidex.])
-fi
-
-# Check for XSAVE intrinsics
-#
-CFLAGS_XSAVE=""
-PGAC_XSAVE_INTRINSICS([])
-if test x"$pgac_xsave_intrinsics" != x"yes"; then
-  PGAC_XSAVE_INTRINSICS([-mxsave])
-fi
-if test x"$pgac_xsave_intrinsics" = x"yes"; then
-  AC_DEFINE(HAVE_XSAVE_INTRINSICS, 1, [Define to 1 if you have XSAVE intrinsics.])
-fi
-AC_SUBST(CFLAGS_XSAVE)
-
-# Check for AVX-512 popcount intrinsics
-#
-CFLAGS_POPCNT=""
-PG_POPCNT_OBJS=""
-if test x"$host_cpu" = x"x86_64"; then
-  PGAC_AVX512_POPCNT_INTRINSICS([])
-  if test x"$pgac_avx512_popcnt_intrinsics" != x"yes"; then
-    PGAC_AVX512_POPCNT_INTRINSICS([-mavx512vpopcntdq -mavx512bw])
-  fi
-  if test x"$pgac_avx512_popcnt_intrinsics" = x"yes"; then
-    PG_POPCNT_OBJS="pg_popcount_avx512.o pg_popcount_avx512_choose.o"
-    AC_DEFINE(USE_AVX512_POPCNT_WITH_RUNTIME_CHECK, 1, [Define to 1 to use AVX-512 popcount instructions with a runtime check.])
-  fi
-fi
-AC_SUBST(CFLAGS_POPCNT)
-AC_SUBST(PG_POPCNT_OBJS)
 
 # Check for Intel SSE 4.2 intrinsics to do CRC calculations.
 #
@@ -2137,15 +2083,11 @@ AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [
 # Check for ARMv8 CRC Extension intrinsics to do CRC calculations.
 #
 # First check if __crc32c* intrinsics can be used with the default compiler
-# flags. If not, check if adding "-march=armv8-a+crc+simd" flag helps.
-# On systems using soft-float ABI, "-march=armv8-a+crc" is required instead.
+# flags. If not, check if adding -march=armv8-a+crc flag helps.
 # CFLAGS_CRC is set if the extra flag is required.
 PGAC_ARMV8_CRC32C_INTRINSICS([])
 if test x"$pgac_armv8_crc32c_intrinsics" != x"yes"; then
-  PGAC_ARMV8_CRC32C_INTRINSICS([-march=armv8-a+crc+simd])
-  if test x"$pgac_armv8_crc32c_intrinsics" != x"yes"; then
-    PGAC_ARMV8_CRC32C_INTRINSICS([-march=armv8-a+crc])
-  fi
+  PGAC_ARMV8_CRC32C_INTRINSICS([-march=armv8-a+crc])
 fi
 
 # Check for LoongArch CRC intrinsics to do CRC calculations.
@@ -2539,6 +2481,6 @@ AC_OUTPUT
 
 # Ensure that any meson build directories would reconfigure and see that
 # there's a conflicting in-tree build and can error out.
-if test "$vpath_build" = "no"; then
+if test "$vpath_build"="no"; then
   touch meson.build
 fi

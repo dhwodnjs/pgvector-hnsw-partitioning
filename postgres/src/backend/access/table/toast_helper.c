@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include "access/detoast.h"
+#include "access/table.h"
 #include "access/toast_helper.h"
 #include "access/toast_internals.h"
 #include "catalog/pg_type_d.h"

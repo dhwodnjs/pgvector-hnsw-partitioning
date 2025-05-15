@@ -57,6 +57,7 @@ static void RecordConstLocation(JumbleState *jstate, int location);
 static void _jumbleNode(JumbleState *jstate, Node *node);
 static void _jumbleA_Const(JumbleState *jstate, Node *node);
 static void _jumbleList(JumbleState *jstate, Node *node);
+static void _jumbleRangeTblEntry(JumbleState *jstate, Node *node);
 
 /*
  * Given a possibly multi-statement source string, confine our attention to the
@@ -350,5 +351,54 @@ _jumbleA_Const(JumbleState *jstate, Node *node)
 					 (int) nodeTag(&expr->val));
 				break;
 		}
+	}
+}
+
+static void
+_jumbleRangeTblEntry(JumbleState *jstate, Node *node)
+{
+	RangeTblEntry *expr = (RangeTblEntry *) node;
+
+	JUMBLE_FIELD(rtekind);
+	switch (expr->rtekind)
+	{
+		case RTE_RELATION:
+			JUMBLE_FIELD(relid);
+			JUMBLE_NODE(tablesample);
+			JUMBLE_FIELD(inh);
+			break;
+		case RTE_SUBQUERY:
+			JUMBLE_NODE(subquery);
+			break;
+		case RTE_JOIN:
+			JUMBLE_FIELD(jointype);
+			break;
+		case RTE_FUNCTION:
+			JUMBLE_NODE(functions);
+			JUMBLE_FIELD(funcordinality);
+			break;
+		case RTE_TABLEFUNC:
+			JUMBLE_NODE(tablefunc);
+			break;
+		case RTE_VALUES:
+			JUMBLE_NODE(values_lists);
+			break;
+		case RTE_CTE:
+
+			/*
+			 * Depending on the CTE name here isn't ideal, but it's the only
+			 * info we have to identify the referenced WITH item.
+			 */
+			JUMBLE_STRING(ctename);
+			JUMBLE_FIELD(ctelevelsup);
+			break;
+		case RTE_NAMEDTUPLESTORE:
+			JUMBLE_STRING(enrname);
+			break;
+		case RTE_RESULT:
+			break;
+		default:
+			elog(ERROR, "unrecognized RTE kind: %d", (int) expr->rtekind);
+			break;
 	}
 }

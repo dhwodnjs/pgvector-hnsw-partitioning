@@ -445,7 +445,7 @@ TransactionGroupUpdateXidStatus(TransactionId xid, XidStatus status,
 	PGPROC	   *proc = MyProc;
 	uint32		nextidx;
 	uint32		wakeidx;
-	int64		prevpageno;
+	int			prevpageno;
 	LWLock	   *prevlock = NULL;
 
 	/* We should definitely have an XID whose status needs to be updated. */
@@ -577,7 +577,7 @@ TransactionGroupUpdateXidStatus(TransactionId xid, XidStatus status,
 	while (nextidx != INVALID_PROC_NUMBER)
 	{
 		PGPROC	   *nextproc = &ProcGlobal->allProcs[nextidx];
-		int64		thispageno = nextproc->clogGroupMemberPage;
+		int			thispageno = nextproc->clogGroupMemberPage;
 
 		/*
 		 * If the page to update belongs to a different bank than the previous

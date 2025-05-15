@@ -134,6 +134,7 @@
 #include "replication/logical.h"
 #include "replication/reorderbuffer.h"
 #include "replication/snapbuild.h"
+#include "storage/block.h"		/* debugging output */
 #include "storage/fd.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
@@ -188,14 +189,6 @@ struct SnapBuild
 
 	/* Indicates if we are building full snapshot or just catalog one. */
 	bool		building_full_snapshot;
-
-	/*
-	 * Indicates if we are using the snapshot builder for the creation of a
-	 * logical replication slot. If it's true, the start point for decoding
-	 * changes is not determined yet. So we skip snapshot restores to properly
-	 * find the start point. See SnapBuildFindSnapshot() for details.
-	 */
-	bool		in_slot_creation;
 
 	/*
 	 * Snapshot that's valid to see the catalog state seen at this moment.
@@ -325,7 +318,6 @@ AllocateSnapshotBuilder(ReorderBuffer *reorder,
 						TransactionId xmin_horizon,
 						XLogRecPtr start_lsn,
 						bool need_full_snapshot,
-						bool in_slot_creation,
 						XLogRecPtr two_phase_at)
 {
 	MemoryContext context;
@@ -356,7 +348,6 @@ AllocateSnapshotBuilder(ReorderBuffer *reorder,
 
 	builder->initial_xmin_horizon = xmin_horizon;
 	builder->start_decoding_at = start_lsn;
-	builder->in_slot_creation = in_slot_creation;
 	builder->building_full_snapshot = need_full_snapshot;
 	builder->two_phase_at = two_phase_at;
 
@@ -1337,12 +1328,10 @@ SnapBuildFindSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts *runn
 	 *	  state while waiting on c)'s sub-states.
 	 *
 	 * b) This (in a previous run) or another decoding slot serialized a
-	 *	  snapshot to disk that we can use. Can't use this method while finding
-	 *	  the start point for decoding changes as the restart LSN would be an
-	 *	  arbitrary LSN but we need to find the start point to extract changes
-	 *	  where we won't see the data for partial transactions. Also, we cannot
-	 *	  use this method when a slot needs a full snapshot for export or direct
-	 *	  use, as that snapshot will only contain catalog modifying transactions.
+	 *	  snapshot to disk that we can use.  Can't use this method for the
+	 *	  initial snapshot when slot is being created and needs full snapshot
+	 *	  for export or direct use, as that snapshot will only contain catalog
+	 *	  modifying transactions.
 	 *
 	 * c) First incrementally build a snapshot for catalog tuples
 	 *	  (BUILDING_SNAPSHOT), that requires all, already in-progress,
@@ -1407,13 +1396,8 @@ SnapBuildFindSnapshot(SnapBuild *builder, XLogRecPtr lsn, xl_running_xacts *runn
 
 		return false;
 	}
-
-	/*
-	 * b) valid on disk state and while neither building full snapshot nor
-	 * creating a slot.
-	 */
+	/* b) valid on disk state and not building full snapshot */
 	else if (!builder->building_full_snapshot &&
-			 !builder->in_slot_creation &&
 			 SnapBuildRestore(builder, lsn))
 	{
 		/* there won't be any state to cleanup */
@@ -1597,7 +1581,7 @@ typedef struct SnapBuildOnDisk
 	offsetof(SnapBuildOnDisk, version)
 
 #define SNAPBUILD_MAGIC 0x51A1E001
-#define SNAPBUILD_VERSION 6
+#define SNAPBUILD_VERSION 5
 
 /*
  * Store/Load a snapshot from disk, depending on the snapshot builder's state.
@@ -2150,27 +2134,4 @@ CheckPointSnapBuild(void)
 		}
 	}
 	FreeDir(snap_dir);
-}
-
-/*
- * Check if a logical snapshot at the specified point has been serialized.
- */
-bool
-SnapBuildSnapshotExists(XLogRecPtr lsn)
-{
-	char		path[MAXPGPATH];
-	int			ret;
-	struct stat stat_buf;
-
-	sprintf(path, "pg_logical/snapshots/%X-%X.snap",
-			LSN_FORMAT_ARGS(lsn));
-
-	ret = stat(path, &stat_buf);
-
-	if (ret != 0 && errno != ENOENT)
-		ereport(ERROR,
-				(errcode_for_file_access(),
-				 errmsg("could not stat file \"%s\": %m", path)));
-
-	return ret == 0;
 }

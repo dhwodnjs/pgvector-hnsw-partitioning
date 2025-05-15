@@ -14,9 +14,13 @@
  */
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/gist_private.h"
+#include "catalog/index.h"
+#include "miscadmin.h"
 #include "storage/buffile.h"
 #include "storage/bufmgr.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 
 static GISTNodeBufferPage *gistAllocateNewPageBuffer(GISTBuildBuffers *gfbb);

@@ -74,7 +74,7 @@ truncate_flags_desc(StringInfo buf, uint8 flags)
 static void
 plan_elem_desc(StringInfo buf, void *plan, void *data)
 {
-	xlhp_freeze_plan *new_plan = (xlhp_freeze_plan *) plan;
+	xl_heap_freeze_plan *new_plan = (xl_heap_freeze_plan *) plan;
 	OffsetNumber **offsets = data;
 
 	appendStringInfo(buf, "{ xmax: %u, infomask: %u, infomask2: %u, ntuples: %u",
@@ -89,94 +89,6 @@ plan_elem_desc(StringInfo buf, void *plan, void *data)
 	*offsets += new_plan->ntuples;
 
 	appendStringInfoString(buf, " }");
-}
-
-
-/*
- * Given a MAXALIGNed buffer returned by XLogRecGetBlockData() and pointed to
- * by cursor and any xl_heap_prune flags, deserialize the arrays of
- * OffsetNumbers contained in an XLOG_HEAP2_PRUNE_* record.
- *
- * This is in heapdesc.c so it can be shared between heap2_redo and heap2_desc
- * code, the latter of which is used in frontend (pg_waldump) code.
- */
-void
-heap_xlog_deserialize_prune_and_freeze(char *cursor, uint8 flags,
-									   int *nplans, xlhp_freeze_plan **plans,
-									   OffsetNumber **frz_offsets,
-									   int *nredirected, OffsetNumber **redirected,
-									   int *ndead, OffsetNumber **nowdead,
-									   int *nunused, OffsetNumber **nowunused)
-{
-	if (flags & XLHP_HAS_FREEZE_PLANS)
-	{
-		xlhp_freeze_plans *freeze_plans = (xlhp_freeze_plans *) cursor;
-
-		*nplans = freeze_plans->nplans;
-		Assert(*nplans > 0);
-		*plans = freeze_plans->plans;
-
-		cursor += offsetof(xlhp_freeze_plans, plans);
-		cursor += sizeof(xlhp_freeze_plan) * *nplans;
-	}
-	else
-	{
-		*nplans = 0;
-		*plans = NULL;
-	}
-
-	if (flags & XLHP_HAS_REDIRECTIONS)
-	{
-		xlhp_prune_items *subrecord = (xlhp_prune_items *) cursor;
-
-		*nredirected = subrecord->ntargets;
-		Assert(*nredirected > 0);
-		*redirected = &subrecord->data[0];
-
-		cursor += offsetof(xlhp_prune_items, data);
-		cursor += sizeof(OffsetNumber[2]) * *nredirected;
-	}
-	else
-	{
-		*nredirected = 0;
-		*redirected = NULL;
-	}
-
-	if (flags & XLHP_HAS_DEAD_ITEMS)
-	{
-		xlhp_prune_items *subrecord = (xlhp_prune_items *) cursor;
-
-		*ndead = subrecord->ntargets;
-		Assert(*ndead > 0);
-		*nowdead = subrecord->data;
-
-		cursor += offsetof(xlhp_prune_items, data);
-		cursor += sizeof(OffsetNumber) * *ndead;
-	}
-	else
-	{
-		*ndead = 0;
-		*nowdead = NULL;
-	}
-
-	if (flags & XLHP_HAS_NOW_UNUSED_ITEMS)
-	{
-		xlhp_prune_items *subrecord = (xlhp_prune_items *) cursor;
-
-		*nunused = subrecord->ntargets;
-		Assert(*nunused > 0);
-		*nowunused = subrecord->data;
-
-		cursor += offsetof(xlhp_prune_items, data);
-		cursor += sizeof(OffsetNumber) * *nunused;
-	}
-	else
-	{
-		*nunused = 0;
-		*nowunused = NULL;
-	}
-
-	*frz_offsets = (OffsetNumber *) cursor;
 }
 
 void
@@ -263,76 +175,86 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 	uint8		info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 
 	info &= XLOG_HEAP_OPMASK;
-	if (info == XLOG_HEAP2_PRUNE_ON_ACCESS ||
-		info == XLOG_HEAP2_PRUNE_VACUUM_SCAN ||
-		info == XLOG_HEAP2_PRUNE_VACUUM_CLEANUP)
+	if (info == XLOG_HEAP2_PRUNE)
 	{
 		xl_heap_prune *xlrec = (xl_heap_prune *) rec;
 
-		if (xlrec->flags & XLHP_HAS_CONFLICT_HORIZON)
-		{
-			TransactionId conflict_xid;
-
-			memcpy(&conflict_xid, rec + SizeOfHeapPrune, sizeof(TransactionId));
-
-			appendStringInfo(buf, "snapshotConflictHorizon: %u",
-							 conflict_xid);
-		}
-
-		appendStringInfo(buf, ", isCatalogRel: %c",
-						 xlrec->flags & XLHP_IS_CATALOG_REL ? 'T' : 'F');
+		appendStringInfo(buf, "snapshotConflictHorizon: %u, nredirected: %u, ndead: %u, isCatalogRel: %c",
+						 xlrec->snapshotConflictHorizon,
+						 xlrec->nredirected,
+						 xlrec->ndead,
+						 xlrec->isCatalogRel ? 'T' : 'F');
 
 		if (XLogRecHasBlockData(record, 0))
 		{
-			Size		datalen;
+			OffsetNumber *end;
 			OffsetNumber *redirected;
 			OffsetNumber *nowdead;
 			OffsetNumber *nowunused;
 			int			nredirected;
 			int			nunused;
-			int			ndead;
-			int			nplans;
-			xlhp_freeze_plan *plans;
-			OffsetNumber *frz_offsets;
+			Size		datalen;
 
-			char	   *cursor = XLogRecGetBlockData(record, 0, &datalen);
+			redirected = (OffsetNumber *) XLogRecGetBlockData(record, 0,
+															  &datalen);
 
-			heap_xlog_deserialize_prune_and_freeze(cursor, xlrec->flags,
-												   &nplans, &plans, &frz_offsets,
-												   &nredirected, &redirected,
-												   &ndead, &nowdead,
-												   &nunused, &nowunused);
+			nredirected = xlrec->nredirected;
+			end = (OffsetNumber *) ((char *) redirected + datalen);
+			nowdead = redirected + (nredirected * 2);
+			nowunused = nowdead + xlrec->ndead;
+			nunused = (end - nowunused);
+			Assert(nunused >= 0);
 
-			appendStringInfo(buf, ", nplans: %u, nredirected: %u, ndead: %u, nunused: %u",
-							 nplans, nredirected, ndead, nunused);
+			appendStringInfo(buf, ", nunused: %d", nunused);
 
-			if (nplans > 0)
-			{
-				appendStringInfoString(buf, ", plans:");
-				array_desc(buf, plans, sizeof(xlhp_freeze_plan), nplans,
-						   &plan_elem_desc, &frz_offsets);
-			}
+			appendStringInfoString(buf, ", redirected:");
+			array_desc(buf, redirected, sizeof(OffsetNumber) * 2,
+					   nredirected, &redirect_elem_desc, NULL);
+			appendStringInfoString(buf, ", dead:");
+			array_desc(buf, nowdead, sizeof(OffsetNumber), xlrec->ndead,
+					   &offset_elem_desc, NULL);
+			appendStringInfoString(buf, ", unused:");
+			array_desc(buf, nowunused, sizeof(OffsetNumber), nunused,
+					   &offset_elem_desc, NULL);
+		}
+	}
+	else if (info == XLOG_HEAP2_VACUUM)
+	{
+		xl_heap_vacuum *xlrec = (xl_heap_vacuum *) rec;
 
-			if (nredirected > 0)
-			{
-				appendStringInfoString(buf, ", redirected:");
-				array_desc(buf, redirected, sizeof(OffsetNumber) * 2,
-						   nredirected, &redirect_elem_desc, NULL);
-			}
+		appendStringInfo(buf, "nunused: %u", xlrec->nunused);
 
-			if (ndead > 0)
-			{
-				appendStringInfoString(buf, ", dead:");
-				array_desc(buf, nowdead, sizeof(OffsetNumber), ndead,
-						   &offset_elem_desc, NULL);
-			}
+		if (XLogRecHasBlockData(record, 0))
+		{
+			OffsetNumber *nowunused;
 
-			if (nunused > 0)
-			{
-				appendStringInfoString(buf, ", unused:");
-				array_desc(buf, nowunused, sizeof(OffsetNumber), nunused,
-						   &offset_elem_desc, NULL);
-			}
+			nowunused = (OffsetNumber *) XLogRecGetBlockData(record, 0, NULL);
+
+			appendStringInfoString(buf, ", unused:");
+			array_desc(buf, nowunused, sizeof(OffsetNumber), xlrec->nunused,
+					   &offset_elem_desc, NULL);
+		}
+	}
+	else if (info == XLOG_HEAP2_FREEZE_PAGE)
+	{
+		xl_heap_freeze_page *xlrec = (xl_heap_freeze_page *) rec;
+
+		appendStringInfo(buf, "snapshotConflictHorizon: %u, nplans: %u, isCatalogRel: %c",
+						 xlrec->snapshotConflictHorizon, xlrec->nplans,
+						 xlrec->isCatalogRel ? 'T' : 'F');
+
+		if (XLogRecHasBlockData(record, 0))
+		{
+			xl_heap_freeze_plan *plans;
+			OffsetNumber *offsets;
+
+			plans = (xl_heap_freeze_plan *) XLogRecGetBlockData(record, 0, NULL);
+			offsets = (OffsetNumber *) ((char *) plans +
+										(xlrec->nplans *
+										 sizeof(xl_heap_freeze_plan)));
+			appendStringInfoString(buf, ", plans:");
+			array_desc(buf, plans, sizeof(xl_heap_freeze_plan), xlrec->nplans,
+					   &plan_elem_desc, &offsets);
 		}
 	}
 	else if (info == XLOG_HEAP2_VISIBLE)
@@ -433,14 +355,14 @@ heap2_identify(uint8 info)
 
 	switch (info & ~XLR_INFO_MASK)
 	{
-		case XLOG_HEAP2_PRUNE_ON_ACCESS:
-			id = "PRUNE_ON_ACCESS";
+		case XLOG_HEAP2_PRUNE:
+			id = "PRUNE";
 			break;
-		case XLOG_HEAP2_PRUNE_VACUUM_SCAN:
-			id = "PRUNE_VACUUM_SCAN";
+		case XLOG_HEAP2_VACUUM:
+			id = "VACUUM";
 			break;
-		case XLOG_HEAP2_PRUNE_VACUUM_CLEANUP:
-			id = "PRUNE_VACUUM_CLEANUP";
+		case XLOG_HEAP2_FREEZE_PAGE:
+			id = "FREEZE_PAGE";
 			break;
 		case XLOG_HEAP2_VISIBLE:
 			id = "VISIBLE";

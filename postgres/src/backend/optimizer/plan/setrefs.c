@@ -27,6 +27,7 @@
 #include "optimizer/tlist.h"
 #include "parser/parse_relation.h"
 #include "tcop/utility.h"
+#include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
 
@@ -1143,9 +1144,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 				 */
 				if (splan->mergeActionLists != NIL)
 				{
-					List	   *newMJC = NIL;
 					ListCell   *lca,
-							   *lcj,
 							   *lcr;
 
 					/*
@@ -1166,12 +1165,10 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 
 					itlist = build_tlist_index(subplan->targetlist);
 
-					forthree(lca, splan->mergeActionLists,
-							 lcj, splan->mergeJoinConditions,
-							 lcr, splan->resultRelations)
+					forboth(lca, splan->mergeActionLists,
+							lcr, splan->resultRelations)
 					{
 						List	   *mergeActionList = lfirst(lca);
-						Node	   *mergeJoinCondition = lfirst(lcj);
 						Index		resultrel = lfirst_int(lcr);
 
 						foreach(l, mergeActionList)
@@ -1196,19 +1193,7 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 																  NRM_EQUAL,
 																  NUM_EXEC_QUAL(plan));
 						}
-
-						/* Fix join condition too. */
-						mergeJoinCondition = (Node *)
-							fix_join_expr(root,
-										  (List *) mergeJoinCondition,
-										  NULL, itlist,
-										  resultrel,
-										  rtoffset,
-										  NRM_EQUAL,
-										  NUM_EXEC_QUAL(plan));
-						newMJC = lappend(newMJC, mergeJoinCondition);
 					}
-					splan->mergeJoinConditions = newMJC;
 				}
 
 				splan->nominalRelation += rtoffset;
@@ -2775,11 +2760,11 @@ build_tlist_index_other_vars(List *tlist, int ignore_rel)
  * Also ensure that varnosyn is incremented by rtoffset.
  * If no match, return NULL.
  *
- * We cross-check the varnullingrels of the subplan output Var based on
- * nrm_match.  Most call sites should pass NRM_EQUAL indicating we expect
- * an exact match.  However, there are places where we haven't cleaned
- * things up completely, and we have to settle for allowing subset or
- * superset matches.
+ * In debugging builds, we cross-check the varnullingrels of the subplan
+ * output Var based on nrm_match.  Most call sites should pass NRM_EQUAL
+ * indicating we expect an exact match.  However, there are places where
+ * we haven't cleaned things up completely, and we have to settle for
+ * allowing subset or superset matches.
  */
 static Var *
 search_indexed_tlist_for_var(Var *var, indexed_tlist *itlist,

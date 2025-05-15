@@ -48,7 +48,7 @@ pg_get_wait_events(PG_FUNCTION_ARGS)
 #define PG_GET_WAIT_EVENTS_COLS 3
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	char	  **waiteventnames;
-	int			nbwaitevents;
+	int			nbextwaitevents;
 
 	/* Build tuplestore to hold the result rows */
 	InitMaterializedSRF(fcinfo, 0);
@@ -67,10 +67,9 @@ pg_get_wait_events(PG_FUNCTION_ARGS)
 	}
 
 	/* Handle custom wait events for extensions */
-	waiteventnames = GetWaitEventCustomNames(PG_WAIT_EXTENSION,
-											 &nbwaitevents);
+	waiteventnames = GetWaitEventExtensionNames(&nbextwaitevents);
 
-	for (int idx = 0; idx < nbwaitevents; idx++)
+	for (int idx = 0; idx < nbextwaitevents; idx++)
 	{
 		StringInfoData buf;
 		Datum		values[PG_GET_WAIT_EVENTS_COLS] = {0};
@@ -83,30 +82,6 @@ pg_get_wait_events(PG_FUNCTION_ARGS)
 		initStringInfo(&buf);
 		appendStringInfo(&buf,
 						 "Waiting for custom wait event \"%s\" defined by extension module",
-						 waiteventnames[idx]);
-
-		values[2] = CStringGetTextDatum(buf.data);
-
-		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
-	}
-
-	/* Likewise for injection points */
-	waiteventnames = GetWaitEventCustomNames(PG_WAIT_INJECTIONPOINT,
-											 &nbwaitevents);
-
-	for (int idx = 0; idx < nbwaitevents; idx++)
-	{
-		StringInfoData buf;
-		Datum		values[PG_GET_WAIT_EVENTS_COLS] = {0};
-		bool		nulls[PG_GET_WAIT_EVENTS_COLS] = {0};
-
-
-		values[0] = CStringGetTextDatum("InjectionPoint");
-		values[1] = CStringGetTextDatum(waiteventnames[idx]);
-
-		initStringInfo(&buf);
-		appendStringInfo(&buf,
-						 "Waiting for injection point \"%s\"",
 						 waiteventnames[idx]);
 
 		values[2] = CStringGetTextDatum(buf.data);

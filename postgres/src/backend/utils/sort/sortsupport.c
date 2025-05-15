@@ -17,6 +17,7 @@
 
 #include "access/gist.h"
 #include "access/nbtree.h"
+#include "catalog/pg_am.h"
 #include "fmgr.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"

@@ -189,11 +189,6 @@ Set to true when running under MSYS2.
 
 INIT
 {
-	# See https://github.com/cpan-authors/IPC-Run/commit/fc9288c for how this
-	# reduces idle time.  Remove this when IPC::Run 20231003.0 is too old to
-	# matter (when all versions that matter provide the optimization).
-	$SIG{CHLD} = sub { }
-	  unless defined $SIG{CHLD};
 
 	# Return EPIPE instead of killing the process with SIGPIPE.  An affected
 	# test may still fail, but it's more likely to report useful facts.
@@ -216,10 +211,10 @@ INIT
 	  or die "could not open STDOUT to logfile \"$test_logfile\": $!";
 
 	# Hijack STDOUT and STDERR to the log file
-	open(my $orig_stdout, '>&', \*STDOUT) or die $!;
-	open(my $orig_stderr, '>&', \*STDERR) or die $!;
-	open(STDOUT, '>&', $testlog) or die $!;
-	open(STDERR, '>&', $testlog) or die $!;
+	open(my $orig_stdout, '>&', \*STDOUT);
+	open(my $orig_stderr, '>&', \*STDERR);
+	open(STDOUT, '>&', $testlog);
+	open(STDERR, '>&', $testlog);
 
 	# The test output (ok ...) needs to be printed to the original STDOUT so
 	# that the 'prove' program can parse it, and display it to the user in
@@ -569,7 +564,7 @@ Find and replace string of a given file.
 sub string_replace_file
 {
 	my ($filename, $find, $replace) = @_;
-	open(my $in, '<', $filename) or croak $!;
+	open(my $in, '<', $filename);
 	my $content = '';
 	while (<$in>)
 	{
@@ -577,7 +572,7 @@ sub string_replace_file
 		$content = $content . $_;
 	}
 	close $in;
-	open(my $out, '>', $filename) or croak $!;
+	open(my $out, '>', $filename);
 	print $out $content;
 	close($out);
 
@@ -794,11 +789,11 @@ sub dir_symlink
 			# need some indirection on msys
 			$cmd = qq{echo '$cmd' | \$COMSPEC /Q};
 		}
-		system($cmd) == 0 or die;
+		system($cmd);
 	}
 	else
 	{
-		symlink $oldname, $newname or die $!;
+		symlink $oldname, $newname;
 	}
 	die "No $newname" unless -e $newname;
 }

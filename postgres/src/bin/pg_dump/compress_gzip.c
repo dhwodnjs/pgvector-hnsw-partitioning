@@ -154,7 +154,7 @@ WriteDataToArchiveGzip(ArchiveHandle *AH, CompressorState *cs,
 {
 	GzipCompressorState *gzipcs = (GzipCompressorState *) cs->private_data;
 
-	gzipcs->zp->next_in = data;
+	gzipcs->zp->next_in = (void *) unconstify(void *, data);
 	gzipcs->zp->avail_in = dLen;
 	DeflateCompressorCommon(AH, cs, false);
 }
@@ -292,7 +292,7 @@ Gzip_getc(CompressFileHandle *CFH)
 	if (ret == EOF)
 	{
 		if (!gzeof(gzfp))
-			pg_fatal("could not read from input file: %m");
+			pg_fatal("could not read from input file: %s", strerror(errno));
 		else
 			pg_fatal("could not read from input file: end of file");
 	}

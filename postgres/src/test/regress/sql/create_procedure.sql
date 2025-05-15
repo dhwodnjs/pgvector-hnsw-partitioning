@@ -90,16 +90,7 @@ AS $$
 CALL ptest4a(a, b);  -- error, not supported
 $$;
 
--- we used to get confused by a single output argument that is composite
-CREATE PROCEDURE ptest4c(INOUT comp int8_tbl)
-LANGUAGE SQL
-AS $$
-SELECT ROW(1, 2);
-$$;
-
-CALL ptest4c(NULL);
-
-DROP PROCEDURE ptest4a, ptest4c;
+DROP PROCEDURE ptest4a;
 
 
 -- named and default parameters
@@ -130,33 +121,6 @@ SELECT NULL::int;
 $$;
 
 CALL ptest6(1, 2);
-
-CREATE PROCEDURE ptest6a(inout a anyelement, out b anyelement)
-LANGUAGE SQL
-AS $$
-SELECT $1, $1;
-$$;
-
-CALL ptest6a(1, null);
-CALL ptest6a(1.1, null);
-
-CREATE PROCEDURE ptest6b(a anyelement, out b anyelement, out c anyarray)
-LANGUAGE SQL
-AS $$
-SELECT $1, array[$1];
-$$;
-
-CALL ptest6b(1, null, null);
-CALL ptest6b(1.1, null, null);
-
-CREATE PROCEDURE ptest6c(inout a anyelement, inout b anyelement)
-LANGUAGE SQL
-AS $$
-SELECT $1, 1;
-$$;
-
-CALL ptest6c(1, null);
-CALL ptest6c(1.1, null);  -- fails before v13
 
 
 -- collation assignment

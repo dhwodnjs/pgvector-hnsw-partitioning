@@ -348,6 +348,7 @@ _readRangeTblEntry(void)
 {
 	READ_LOCALS(RangeTblEntry);
 
+	/* put alias + eref first to make dump more legible */
 	READ_NODE_FIELD(alias);
 	READ_NODE_FIELD(eref);
 	READ_ENUM_FIELD(rtekind, RTEKind);
@@ -356,18 +357,16 @@ _readRangeTblEntry(void)
 	{
 		case RTE_RELATION:
 			READ_OID_FIELD(relid);
-			READ_BOOL_FIELD(inh);
 			READ_CHAR_FIELD(relkind);
 			READ_INT_FIELD(rellockmode);
-			READ_UINT_FIELD(perminfoindex);
 			READ_NODE_FIELD(tablesample);
+			READ_UINT_FIELD(perminfoindex);
 			break;
 		case RTE_SUBQUERY:
 			READ_NODE_FIELD(subquery);
 			READ_BOOL_FIELD(security_barrier);
 			/* we re-use these RELATION fields, too: */
 			READ_OID_FIELD(relid);
-			READ_BOOL_FIELD(inh);
 			READ_CHAR_FIELD(relkind);
 			READ_INT_FIELD(rellockmode);
 			READ_UINT_FIELD(perminfoindex);
@@ -429,6 +428,7 @@ _readRangeTblEntry(void)
 	}
 
 	READ_BOOL_FIELD(lateral);
+	READ_BOOL_FIELD(inh);
 	READ_BOOL_FIELD(inFromCl);
 	READ_NODE_FIELD(securityQuals);
 

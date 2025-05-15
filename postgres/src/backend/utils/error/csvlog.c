@@ -16,14 +16,16 @@
 #include "postgres.h"
 
 #include "access/xact.h"
+#include "libpq/libpq.h"
 #include "lib/stringinfo.h"
-#include "libpq/libpq-be.h"
 #include "miscadmin.h"
+#include "postmaster/bgworker.h"
 #include "postmaster/syslogger.h"
 #include "storage/lock.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_status.h"
+#include "utils/elog.h"
 #include "utils/guc.h"
 #include "utils/ps_status.h"
 
@@ -120,7 +122,7 @@ write_csvlog(ErrorData *edata)
 	appendStringInfoChar(&buf, ',');
 
 	/* session id */
-	appendStringInfo(&buf, "%" INT64_MODIFIER "x.%x", MyStartTime, MyProcPid);
+	appendStringInfo(&buf, "%lx.%x", (long) MyStartTime, MyProcPid);
 	appendStringInfoChar(&buf, ',');
 
 	/* Line number */

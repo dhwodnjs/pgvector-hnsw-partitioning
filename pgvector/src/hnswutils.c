@@ -835,6 +835,7 @@ HnswSearchLayer(char *base, HnswQuery * q, List *ep, int ef, int lc, Relation in
 	if (initVisited)
 	{
 		InitVisited(base, v, inMemory, ef, m);
+		
 
 		if (discarded != NULL)
 			*discarded = pairingheap_allocate(CompareNearestDiscardedCandidates, NULL);

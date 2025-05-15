@@ -87,8 +87,7 @@ extern Size MemoryContextMemAllocated(MemoryContext context, bool recurse);
 extern void MemoryContextMemConsumed(MemoryContext context,
 									 MemoryContextCounters *consumed);
 extern void MemoryContextStats(MemoryContext context);
-extern void MemoryContextStatsDetail(MemoryContext context,
-									 int max_level, int max_children,
+extern void MemoryContextStatsDetail(MemoryContext context, int max_children,
 									 bool print_to_stderr);
 extern void MemoryContextAllowInCriticalSection(MemoryContext context,
 												bool allow);
@@ -142,13 +141,6 @@ extern MemoryContext GenerationContextCreate(MemoryContext parent,
 											 Size minContextSize,
 											 Size initBlockSize,
 											 Size maxBlockSize);
-
-/* bump.c */
-extern MemoryContext BumpContextCreate(MemoryContext parent,
-									   const char *name,
-									   Size minContextSize,
-									   Size initBlockSize,
-									   Size maxBlockSize);
 
 /*
  * Recommended default alloc parameters, suitable for "ordinary" contexts

@@ -20,6 +20,8 @@
 #include "access/detoast.h"
 #include "access/toast_compression.h"
 #include "common/pg_lzcompress.h"
+#include "fmgr.h"
+#include "utils/builtins.h"
 #include "varatt.h"
 
 /* GUC */

@@ -25,6 +25,7 @@
 #include "miscadmin.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "storage/smgr.h"
 
 /* Minimum tree height for application of fastpath optimization */
 #define BTREE_FASTPATH_MIN_LEVEL	2

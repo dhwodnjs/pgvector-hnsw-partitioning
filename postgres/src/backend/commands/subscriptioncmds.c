@@ -401,6 +401,13 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 					 errmsg("%s and %s are mutually exclusive options",
 							"connect = false", "copy_data = true")));
 
+		if (opts->failover &&
+			IsSet(opts->specified_opts, SUBOPT_FAILOVER))
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("%s and %s are mutually exclusive options",
+							"connect = false", "failover = true")));
+
 		/* Change the defaults of other options. */
 		opts->enabled = false;
 		opts->create_slot = false;
@@ -499,7 +506,8 @@ check_publications(WalReceiverConn *wrconn, List *publications)
 	appendStringInfoChar(cmd, ')');
 
 	res = walrcv_exec(wrconn, cmd->data, 1, tableRow);
-	destroyStringInfo(cmd);
+	pfree(cmd->data);
+	pfree(cmd);
 
 	if (res->status != WALRCV_OK_TUPLES)
 		ereport(ERROR,
@@ -828,6 +836,21 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 				ereport(NOTICE,
 						(errmsg("created replication slot \"%s\" on publisher",
 								opts.slot_name)));
+			}
+
+			/*
+			 * If the slot_name is specified without the create_slot option,
+			 * it is possible that the user intends to use an existing slot on
+			 * the publisher, so here we alter the failover property of the
+			 * slot to match the failover value in subscription.
+			 *
+			 * We do not need to change the failover to false if the server
+			 * does not support failover (e.g. pre-PG17).
+			 */
+			else if (opts.slot_name &&
+					 (opts.failover || walrcv_server_version(wrconn) >= 170000))
+			{
+				walrcv_alter_slot(wrconn, opts.slot_name, opts.failover);
 			}
 		}
 		PG_FINALLY();
@@ -1230,7 +1253,7 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 					if (!sub->slotname)
 						ereport(ERROR,
 								(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-								 errmsg("cannot set option \"%s\" for a subscription that does not have a slot name",
+								 errmsg("cannot set %s for a subscription that does not have a slot name",
 										"failover")));
 
 					/*
@@ -1244,12 +1267,6 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 								(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 								 errmsg("cannot set %s for enabled subscription",
 										"failover")));
-
-					/*
-					 * The changed failover option of the slot can't be rolled
-					 * back.
-					 */
-					PreventInTransactionBlock(isTopLevel, "ALTER SUBSCRIPTION ... SET (failover)");
 
 					values[Anum_pg_subscription_subfailover - 1] =
 						BoolGetDatum(opts.failover);

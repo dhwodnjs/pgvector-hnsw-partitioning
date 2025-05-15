@@ -16,14 +16,16 @@
 #include "postgres.h"
 
 #include "access/xact.h"
-#include "libpq/libpq-be.h"
+#include "libpq/libpq.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
+#include "postmaster/bgworker.h"
 #include "postmaster/syslogger.h"
 #include "storage/lock.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_status.h"
+#include "utils/elog.h"
 #include "utils/guc.h"
 #include "utils/json.h"
 #include "utils/ps_status.h"
@@ -168,8 +170,8 @@ write_jsonlog(ErrorData *edata)
 	}
 
 	/* Session id */
-	appendJSONKeyValueFmt(&buf, "session_id", true, "%" INT64_MODIFIER "x.%x",
-						  MyStartTime, MyProcPid);
+	appendJSONKeyValueFmt(&buf, "session_id", true, "%lx.%x",
+						  (long) MyStartTime, MyProcPid);
 
 	/* Line number */
 	appendJSONKeyValueFmt(&buf, "line_num", false, "%ld", log_line_number);

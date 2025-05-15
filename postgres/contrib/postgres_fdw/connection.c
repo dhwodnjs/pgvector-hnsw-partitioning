@@ -95,13 +95,6 @@ static uint32 pgfdw_we_get_result = 0;
  */
 #define CONNECTION_CLEANUP_TIMEOUT	30000
 
-/*
- * Milliseconds to wait before issuing another cancel request.  This covers
- * the race condition where the remote session ignored our cancel request
- * because it arrived while idle.
- */
-#define RETRY_CANCEL_TIMEOUT	1000
-
 /* Macro for constructing abort command to be sent */
 #define CONSTRUCT_ABORT_COMMAND(sql, entry, toplevel) \
 	do { \
@@ -140,9 +133,8 @@ static void pgfdw_inval_callback(Datum arg, int cacheid, uint32 hashvalue);
 static void pgfdw_reject_incomplete_xact_state_change(ConnCacheEntry *entry);
 static void pgfdw_reset_xact_state(ConnCacheEntry *entry, bool toplevel);
 static bool pgfdw_cancel_query(PGconn *conn);
-static bool pgfdw_cancel_query_begin(PGconn *conn, TimestampTz endtime);
+static bool pgfdw_cancel_query_begin(PGconn *conn);
 static bool pgfdw_cancel_query_end(PGconn *conn, TimestampTz endtime,
-								   TimestampTz retrycanceltime,
 								   bool consume_input);
 static bool pgfdw_exec_cleanup_query(PGconn *conn, const char *query,
 									 bool ignore_errors);
@@ -152,7 +144,6 @@ static bool pgfdw_exec_cleanup_query_end(PGconn *conn, const char *query,
 										 bool consume_input,
 										 bool ignore_errors);
 static bool pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime,
-									 TimestampTz retrycanceltime,
 									 PGresult **result, bool *timed_out);
 static void pgfdw_abort_cleanup(ConnCacheEntry *entry, bool toplevel);
 static bool pgfdw_abort_cleanup_begin(ConnCacheEntry *entry, bool toplevel,
@@ -680,12 +671,10 @@ configure_remote_session(PGconn *conn)
 	 * anyway.  However it makes the regression test outputs more predictable.
 	 *
 	 * We don't risk setting remote zone equal to ours, since the remote
-	 * server might use a different timezone database.  Instead, use GMT
-	 * (quoted, because very old servers are picky about case).  That's
-	 * guaranteed to work regardless of the remote's timezone database,
-	 * because pg_tzset() hard-wires it (at least in PG 9.2 and later).
+	 * server might use a different timezone database.  Instead, use UTC
+	 * (quoted, because very old servers are picky about case).
 	 */
-	do_sql_command(conn, "SET timezone = 'GMT'");
+	do_sql_command(conn, "SET timezone = 'UTC'");
 
 	/*
 	 * Set values needed to ensure unambiguous data output from remote.  (This
@@ -1317,54 +1306,51 @@ pgfdw_reset_xact_state(ConnCacheEntry *entry, bool toplevel)
 static bool
 pgfdw_cancel_query(PGconn *conn)
 {
-	TimestampTz now = GetCurrentTimestamp();
 	TimestampTz endtime;
-	TimestampTz retrycanceltime;
 
 	/*
 	 * If it takes too long to cancel the query and discard the result, assume
 	 * the connection is dead.
 	 */
-	endtime = TimestampTzPlusMilliseconds(now, CONNECTION_CLEANUP_TIMEOUT);
+	endtime = TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
+										  CONNECTION_CLEANUP_TIMEOUT);
+
+	if (!pgfdw_cancel_query_begin(conn))
+		return false;
+	return pgfdw_cancel_query_end(conn, endtime, false);
+}
+
+static bool
+pgfdw_cancel_query_begin(PGconn *conn)
+{
+	PGcancel   *cancel;
+	char		errbuf[256];
 
 	/*
-	 * Also, lose patience and re-issue the cancel request after a little bit.
-	 * (This serves to close some race conditions.)
+	 * Issue cancel request.  Unfortunately, there's no good way to limit the
+	 * amount of time that we might block inside PQgetCancel().
 	 */
-	retrycanceltime = TimestampTzPlusMilliseconds(now, RETRY_CANCEL_TIMEOUT);
+	if ((cancel = PQgetCancel(conn)))
+	{
+		if (!PQcancel(cancel, errbuf, sizeof(errbuf)))
+		{
+			ereport(WARNING,
+					(errcode(ERRCODE_CONNECTION_FAILURE),
+					 errmsg("could not send cancel request: %s",
+							errbuf)));
+			PQfreeCancel(cancel);
+			return false;
+		}
+		PQfreeCancel(cancel);
+	}
 
-	if (!pgfdw_cancel_query_begin(conn, endtime))
-		return false;
-	return pgfdw_cancel_query_end(conn, endtime, retrycanceltime, false);
-}
-
-/*
- * Submit a cancel request to the given connection, waiting only until
- * the given time.
- *
- * We sleep interruptibly until we receive confirmation that the cancel
- * request has been accepted, and if it is, return true; if the timeout
- * lapses without that, or the request fails for whatever reason, return
- * false.
- */
-static bool
-pgfdw_cancel_query_begin(PGconn *conn, TimestampTz endtime)
-{
-	const char *errormsg = libpqsrv_cancel(conn, endtime);
-
-	if (errormsg != NULL)
-		ereport(WARNING,
-				errcode(ERRCODE_CONNECTION_FAILURE),
-				errmsg("could not send cancel request: %s", errormsg));
-
-	return errormsg == NULL;
+	return true;
 }
 
 static bool
-pgfdw_cancel_query_end(PGconn *conn, TimestampTz endtime,
-					   TimestampTz retrycanceltime, bool consume_input)
+pgfdw_cancel_query_end(PGconn *conn, TimestampTz endtime, bool consume_input)
 {
-	PGresult   *result;
+	PGresult   *result = NULL;
 	bool		timed_out;
 
 	/*
@@ -1383,8 +1369,7 @@ pgfdw_cancel_query_end(PGconn *conn, TimestampTz endtime,
 	}
 
 	/* Get and discard the result of the query. */
-	if (pgfdw_get_cleanup_result(conn, endtime, retrycanceltime,
-								 &result, &timed_out))
+	if (pgfdw_get_cleanup_result(conn, endtime, &result, &timed_out))
 	{
 		if (timed_out)
 			ereport(WARNING,
@@ -1437,8 +1422,6 @@ pgfdw_exec_cleanup_query(PGconn *conn, const char *query, bool ignore_errors)
 static bool
 pgfdw_exec_cleanup_query_begin(PGconn *conn, const char *query)
 {
-	Assert(query != NULL);
-
 	/*
 	 * Submit a query.  Since we don't use non-blocking mode, this also can
 	 * block.  But its risk is relatively small, so we ignore that for now.
@@ -1457,10 +1440,8 @@ pgfdw_exec_cleanup_query_end(PGconn *conn, const char *query,
 							 TimestampTz endtime, bool consume_input,
 							 bool ignore_errors)
 {
-	PGresult   *result;
+	PGresult   *result = NULL;
 	bool		timed_out;
-
-	Assert(query != NULL);
 
 	/*
 	 * If requested, consume whatever data is available from the socket. (Note
@@ -1475,12 +1456,12 @@ pgfdw_exec_cleanup_query_end(PGconn *conn, const char *query,
 	}
 
 	/* Get the result of the query. */
-	if (pgfdw_get_cleanup_result(conn, endtime, endtime, &result, &timed_out))
+	if (pgfdw_get_cleanup_result(conn, endtime, &result, &timed_out))
 	{
 		if (timed_out)
 			ereport(WARNING,
 					(errmsg("could not get query result due to timeout"),
-					 errcontext("remote SQL command: %s", query)));
+					 query ? errcontext("remote SQL command: %s", query) : 0));
 		else
 			pgfdw_report_error(WARNING, NULL, conn, false, query);
 
@@ -1499,36 +1480,28 @@ pgfdw_exec_cleanup_query_end(PGconn *conn, const char *query,
 }
 
 /*
- * Get, during abort cleanup, the result of a query that is in progress.
- * This might be a query that is being interrupted by a cancel request or by
- * transaction abort, or it might be a query that was initiated as part of
- * transaction abort to get the remote side back to the appropriate state.
+ * Get, during abort cleanup, the result of a query that is in progress.  This
+ * might be a query that is being interrupted by transaction abort, or it might
+ * be a query that was initiated as part of transaction abort to get the remote
+ * side back to the appropriate state.
  *
- * endtime is the time at which we should give up and assume the remote side
- * is dead.  retrycanceltime is the time at which we should issue a fresh
- * cancel request (pass the same value as endtime if this is not wanted).
- *
- * Returns true if the timeout expired or connection trouble occurred,
- * false otherwise.  Sets *result except in case of a true result.
- * Sets *timed_out to true only when the timeout expired.
+ * endtime is the time at which we should give up and assume the remote
+ * side is dead.  Returns true if the timeout expired or connection trouble
+ * occurred, false otherwise.  Sets *result except in case of a timeout.
+ * Sets timed_out to true only when the timeout expired.
  */
 static bool
-pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime,
-						 TimestampTz retrycanceltime,
-						 PGresult **result,
+pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime, PGresult **result,
 						 bool *timed_out)
 {
 	volatile bool failed = false;
 	PGresult   *volatile last_res = NULL;
 
-	*result = NULL;
 	*timed_out = false;
 
 	/* In what follows, do not leak any PGresults on an error. */
 	PG_TRY();
 	{
-		int			canceldelta = RETRY_CANCEL_TIMEOUT * 2;
-
 		for (;;)
 		{
 			PGresult   *res;
@@ -1539,33 +1512,8 @@ pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime,
 				TimestampTz now = GetCurrentTimestamp();
 				long		cur_timeout;
 
-				/* If timeout has expired, give up. */
-				if (now >= endtime)
-				{
-					*timed_out = true;
-					failed = true;
-					goto exit;
-				}
-
-				/* If we need to re-issue the cancel request, do that. */
-				if (now >= retrycanceltime)
-				{
-					/* We ignore failure to issue the repeated request. */
-					(void) libpqsrv_cancel(conn, endtime);
-
-					/* Recompute "now" in case that took measurable time. */
-					now = GetCurrentTimestamp();
-
-					/* Adjust re-cancel timeout in increasing steps. */
-					retrycanceltime = TimestampTzPlusMilliseconds(now,
-																  canceldelta);
-					canceldelta += canceldelta;
-				}
-
 				/* If timeout has expired, give up, else get sleep time. */
-				cur_timeout = TimestampDifferenceMilliseconds(now,
-															  Min(endtime,
-																  retrycanceltime));
+				cur_timeout = TimestampDifferenceMilliseconds(now, endtime);
 				if (cur_timeout <= 0)
 				{
 					*timed_out = true;
@@ -1737,11 +1685,7 @@ pgfdw_abort_cleanup_begin(ConnCacheEntry *entry, bool toplevel,
 	 */
 	if (PQtransactionStatus(entry->conn) == PQTRANS_ACTIVE)
 	{
-		TimestampTz endtime;
-
-		endtime = TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
-											  CONNECTION_CLEANUP_TIMEOUT);
-		if (!pgfdw_cancel_query_begin(entry->conn, endtime))
+		if (!pgfdw_cancel_query_begin(entry->conn))
 			return false;		/* Unable to cancel running query */
 		*cancel_requested = lappend(*cancel_requested, entry);
 	}
@@ -1886,9 +1830,7 @@ pgfdw_finish_abort_cleanup(List *pending_entries, List *cancel_requested,
 		foreach(lc, cancel_requested)
 		{
 			ConnCacheEntry *entry = (ConnCacheEntry *) lfirst(lc);
-			TimestampTz now = GetCurrentTimestamp();
 			TimestampTz endtime;
-			TimestampTz retrycanceltime;
 			char		sql[100];
 
 			Assert(entry->changing_xact_state);
@@ -1902,13 +1844,10 @@ pgfdw_finish_abort_cleanup(List *pending_entries, List *cancel_requested,
 			 * remaining entries in the list, leading to slamming that entry's
 			 * connection shut.
 			 */
-			endtime = TimestampTzPlusMilliseconds(now,
+			endtime = TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
 												  CONNECTION_CLEANUP_TIMEOUT);
-			retrycanceltime = TimestampTzPlusMilliseconds(now,
-														  RETRY_CANCEL_TIMEOUT);
 
-			if (!pgfdw_cancel_query_end(entry->conn, endtime,
-										retrycanceltime, true))
+			if (!pgfdw_cancel_query_end(entry->conn, endtime, true))
 			{
 				/* Unable to cancel running query */
 				pgfdw_reset_xact_state(entry, toplevel);

@@ -61,6 +61,7 @@
 #include "access/sysattr.h"
 #include "access/tupdesc_details.h"
 #include "common/hashfn.h"
+#include "executor/tuptable.h"
 #include "utils/datum.h"
 #include "utils/expandeddatum.h"
 #include "utils/hsearch.h"
@@ -495,8 +496,8 @@ heap_attisnull(HeapTuple tup, int attnum, TupleDesc tupleDesc)
 /* ----------------
  *		nocachegetattr
  *
- *		This only gets called from fastgetattr(), in cases where we
- *		can't use a cacheoffset and the value is not null.
+ *		This only gets called from fastgetattr() macro, in cases where
+ *		we can't use a cacheoffset and the value is not null.
  *
  *		This caches attribute offsets in the attribute descriptor.
  *
@@ -715,8 +716,8 @@ nocachegetattr(HeapTuple tup,
  *
  *		Fetch the value of a system attribute for a tuple.
  *
- * This is a support routine for heap_getattr().  The function has already
- * determined that the attnum refers to a system attribute.
+ * This is a support routine for the heap_getattr macro.  The macro
+ * has already determined that the attnum refers to a system attribute.
  * ----------------
  */
 Datum

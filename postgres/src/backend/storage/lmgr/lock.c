@@ -35,10 +35,12 @@
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/twophase_rmgr.h"
+#include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
 #include "miscadmin.h"
 #include "pg_trace.h"
+#include "pgstat.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
@@ -360,8 +362,7 @@ static PROCLOCK *SetupLockInTable(LockMethod lockMethodTable, PGPROC *proc,
 static void GrantLockLocal(LOCALLOCK *locallock, ResourceOwner owner);
 static void BeginStrongLockAcquire(LOCALLOCK *locallock, uint32 fasthashcode);
 static void FinishStrongLockAcquire(void);
-static void WaitOnLock(LOCALLOCK *locallock, ResourceOwner owner,
-					   bool dontWait);
+static void WaitOnLock(LOCALLOCK *locallock, ResourceOwner owner);
 static void ReleaseLockIfHeld(LOCALLOCK *locallock, bool sessionLock);
 static void LockReassignOwner(LOCALLOCK *locallock, ResourceOwner parent);
 static bool UnGrantLock(LOCK *lock, LOCKMODE lockmode,
@@ -578,17 +579,11 @@ DoLockModesConflict(LOCKMODE mode1, LOCKMODE mode2)
 }
 
 /*
- * LockHeldByMe -- test whether lock 'locktag' is held by the current
- *		transaction
- *
- * Returns true if current transaction holds a lock on 'tag' of mode
- * 'lockmode'.  If 'orstronger' is true, a stronger lockmode is also OK.
- * ("Stronger" is defined as "numerically higher", which is a bit
- * semantically dubious but is OK for the purposes we use this for.)
+ * LockHeldByMe -- test whether lock 'locktag' is held with mode 'lockmode'
+ *		by the current transaction
  */
 bool
-LockHeldByMe(const LOCKTAG *locktag,
-			 LOCKMODE lockmode, bool orstronger)
+LockHeldByMe(const LOCKTAG *locktag, LOCKMODE lockmode)
 {
 	LOCALLOCKTAG localtag;
 	LOCALLOCK  *locallock;
@@ -604,23 +599,7 @@ LockHeldByMe(const LOCKTAG *locktag,
 										  &localtag,
 										  HASH_FIND, NULL);
 
-	if (locallock && locallock->nLocks > 0)
-		return true;
-
-	if (orstronger)
-	{
-		LOCKMODE	slockmode;
-
-		for (slockmode = lockmode + 1;
-			 slockmode <= MaxLockMode;
-			 slockmode++)
-		{
-			if (LockHeldByMe(locktag, slockmode, false))
-				return true;
-		}
-	}
-
-	return false;
+	return (locallock && locallock->nLocks > 0);
 }
 
 #ifdef USE_ASSERT_CHECKING
@@ -982,7 +961,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 				ereport(ERROR,
 						(errcode(ERRCODE_OUT_OF_MEMORY),
 						 errmsg("out of shared memory"),
-						 errhint("You might need to increase \"%s\".", "max_locks_per_transaction")));
+						 errhint("You might need to increase %s.", "max_locks_per_transaction")));
 			else
 				return LOCKACQUIRE_NOT_AVAIL;
 		}
@@ -1020,7 +999,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of shared memory"),
-					 errhint("You might need to increase \"%s\".", "max_locks_per_transaction")));
+					 errhint("You might need to increase %s.", "max_locks_per_transaction")));
 		else
 			return LOCKACQUIRE_NOT_AVAIL;
 	}
@@ -1048,14 +1027,49 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	else
 	{
 		/*
+		 * We can't acquire the lock immediately.  If caller specified no
+		 * blocking, remove useless table entries and return
+		 * LOCKACQUIRE_NOT_AVAIL without waiting.
+		 */
+		if (dontWait)
+		{
+			AbortStrongLockAcquire();
+			if (proclock->holdMask == 0)
+			{
+				uint32		proclock_hashcode;
+
+				proclock_hashcode = ProcLockHashCode(&proclock->tag, hashcode);
+				dlist_delete(&proclock->lockLink);
+				dlist_delete(&proclock->procLink);
+				if (!hash_search_with_hash_value(LockMethodProcLockHash,
+												 &(proclock->tag),
+												 proclock_hashcode,
+												 HASH_REMOVE,
+												 NULL))
+					elog(PANIC, "proclock table corrupted");
+			}
+			else
+				PROCLOCK_PRINT("LockAcquire: NOWAIT", proclock);
+			lock->nRequested--;
+			lock->requested[lockmode]--;
+			LOCK_PRINT("LockAcquire: conditional lock failed", lock, lockmode);
+			Assert((lock->nRequested > 0) && (lock->requested[lockmode] >= 0));
+			Assert(lock->nGranted <= lock->nRequested);
+			LWLockRelease(partitionLock);
+			if (locallock->nLocks == 0)
+				RemoveLocalLock(locallock);
+			if (locallockp)
+				*locallockp = NULL;
+			return LOCKACQUIRE_NOT_AVAIL;
+		}
+
+		/*
 		 * Set bitmask of locks this process already holds on this object.
 		 */
 		MyProc->heldLocks = proclock->holdMask;
 
 		/*
-		 * Sleep till someone wakes me up. We do this even in the dontWait
-		 * case, because while trying to go to sleep, we may discover that we
-		 * can acquire the lock immediately after all.
+		 * Sleep till someone wakes me up.
 		 */
 
 		TRACE_POSTGRESQL_LOCK_WAIT_START(locktag->locktag_field1,
@@ -1065,7 +1079,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 										 locktag->locktag_type,
 										 lockmode);
 
-		WaitOnLock(locallock, owner, dontWait);
+		WaitOnLock(locallock, owner);
 
 		TRACE_POSTGRESQL_LOCK_WAIT_DONE(locktag->locktag_field1,
 										locktag->locktag_field2,
@@ -1081,63 +1095,17 @@ LockAcquireExtended(const LOCKTAG *locktag,
 		 */
 
 		/*
-		 * Check the proclock entry status. If dontWait = true, this is an
-		 * expected case; otherwise, it will only happen if something in the
-		 * ipc communication doesn't work correctly.
+		 * Check the proclock entry status, in case something in the ipc
+		 * communication doesn't work correctly.
 		 */
 		if (!(proclock->holdMask & LOCKBIT_ON(lockmode)))
 		{
 			AbortStrongLockAcquire();
-
-			if (dontWait)
-			{
-				/*
-				 * We can't acquire the lock immediately.  If caller specified
-				 * no blocking, remove useless table entries and return
-				 * LOCKACQUIRE_NOT_AVAIL without waiting.
-				 */
-				if (proclock->holdMask == 0)
-				{
-					uint32		proclock_hashcode;
-
-					proclock_hashcode = ProcLockHashCode(&proclock->tag,
-														 hashcode);
-					dlist_delete(&proclock->lockLink);
-					dlist_delete(&proclock->procLink);
-					if (!hash_search_with_hash_value(LockMethodProcLockHash,
-													 &(proclock->tag),
-													 proclock_hashcode,
-													 HASH_REMOVE,
-													 NULL))
-						elog(PANIC, "proclock table corrupted");
-				}
-				else
-					PROCLOCK_PRINT("LockAcquire: NOWAIT", proclock);
-				lock->nRequested--;
-				lock->requested[lockmode]--;
-				LOCK_PRINT("LockAcquire: conditional lock failed",
-						   lock, lockmode);
-				Assert((lock->nRequested > 0) &&
-					   (lock->requested[lockmode] >= 0));
-				Assert(lock->nGranted <= lock->nRequested);
-				LWLockRelease(partitionLock);
-				if (locallock->nLocks == 0)
-					RemoveLocalLock(locallock);
-				if (locallockp)
-					*locallockp = NULL;
-				return LOCKACQUIRE_NOT_AVAIL;
-			}
-			else
-			{
-				/*
-				 * We should have gotten the lock, but somehow that didn't
-				 * happen. If we get here, it's a bug.
-				 */
-				PROCLOCK_PRINT("LockAcquire: INCONSISTENT", proclock);
-				LOCK_PRINT("LockAcquire: INCONSISTENT", lock, lockmode);
-				LWLockRelease(partitionLock);
-				elog(ERROR, "LockAcquire failed");
-			}
+			PROCLOCK_PRINT("LockAcquire: INCONSISTENT", proclock);
+			LOCK_PRINT("LockAcquire: INCONSISTENT", lock, lockmode);
+			/* Should we retry ? */
+			LWLockRelease(partitionLock);
+			elog(ERROR, "LockAcquire failed");
 		}
 		PROCLOCK_PRINT("LockAcquire: granted", proclock);
 		LOCK_PRINT("LockAcquire: granted", lock, lockmode);
@@ -1811,11 +1779,10 @@ MarkLockClear(LOCALLOCK *locallock)
  * Caller must have set MyProc->heldLocks to reflect locks already held
  * on the lockable object by this process.
  *
- * The appropriate partition lock must be held at entry, and will still be
- * held at exit.
+ * The appropriate partition lock must be held at entry.
  */
 static void
-WaitOnLock(LOCALLOCK *locallock, ResourceOwner owner, bool dontWait)
+WaitOnLock(LOCALLOCK *locallock, ResourceOwner owner)
 {
 	LOCKMETHODID lockmethodid = LOCALLOCK_LOCKMETHOD(*locallock);
 	LockMethod	lockMethodTable = LockMethods[lockmethodid];
@@ -1848,14 +1815,8 @@ WaitOnLock(LOCALLOCK *locallock, ResourceOwner owner, bool dontWait)
 	 */
 	PG_TRY();
 	{
-		/*
-		 * If dontWait = true, we handle success and failure in the same way
-		 * here. The caller will be able to sort out what has happened.
-		 */
-		if (ProcSleep(locallock, lockMethodTable, dontWait) != PROC_WAIT_STATUS_OK
-			&& !dontWait)
+		if (ProcSleep(locallock, lockMethodTable) != PROC_WAIT_STATUS_OK)
 		{
-
 			/*
 			 * We failed as a result of a deadlock, see CheckDeadLock(). Quit
 			 * now.
@@ -2255,16 +2216,6 @@ LockReleaseAll(LOCKMETHODID lockmethodid, bool allLocks)
 			else
 				locallock->numLockOwners = 0;
 		}
-
-#ifdef USE_ASSERT_CHECKING
-
-		/*
-		 * Tuple locks are currently held only for short durations within a
-		 * transaction. Check that we didn't forget to release one.
-		 */
-		if (LOCALLOCK_LOCKTAG(*locallock) == LOCKTAG_TUPLE && !allLocks)
-			elog(WARNING, "tuple lock held at commit");
-#endif
 
 		/*
 		 * If the lock or proclock pointers are NULL, this lock was taken via
@@ -2833,7 +2784,7 @@ FastPathGetRelationLockEntry(LOCALLOCK *locallock)
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of shared memory"),
-					 errhint("You might need to increase \"%s\".", "max_locks_per_transaction")));
+					 errhint("You might need to increase %s.", "max_locks_per_transaction")));
 		}
 		GrantLock(proclock->tag.myLock, proclock, lockmode);
 		FAST_PATH_CLEAR_LOCKMODE(MyProc, f, lockmode);
@@ -4218,7 +4169,7 @@ lock_twophase_recover(TransactionId xid, uint16 info,
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of shared memory"),
-				 errhint("You might need to increase \"%s\".", "max_locks_per_transaction")));
+				 errhint("You might need to increase %s.", "max_locks_per_transaction")));
 	}
 
 	/*
@@ -4283,7 +4234,7 @@ lock_twophase_recover(TransactionId xid, uint16 info,
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of shared memory"),
-				 errhint("You might need to increase \"%s\".", "max_locks_per_transaction")));
+				 errhint("You might need to increase %s.", "max_locks_per_transaction")));
 	}
 
 	/*
@@ -4633,7 +4584,7 @@ VirtualXactLock(VirtualTransactionId vxid, bool wait)
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of shared memory"),
-					 errhint("You might need to increase \"%s\".", "max_locks_per_transaction")));
+					 errhint("You might need to increase %s.", "max_locks_per_transaction")));
 		}
 		GrantLock(proclock->tag.myLock, proclock, ExclusiveLock);
 

@@ -142,7 +142,10 @@
 #include "miscadmin.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
+#include "storage/proc.h"
+#include "storage/procarray.h"
 #include "storage/procsignal.h"
+#include "storage/sinval.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/guc_hooks.h"
@@ -283,7 +286,7 @@ typedef struct AsyncQueueControl
 	QueuePosition head;			/* head points to the next free location */
 	QueuePosition tail;			/* tail must be <= the queue position of every
 								 * listening backend */
-	int64		stopPage;		/* oldest unrecycled page; must be <=
+	int			stopPage;		/* oldest unrecycled page; must be <=
 								 * tail.page */
 	ProcNumber	firstListener;	/* id of first listener, or
 								 * INVALID_PROC_NUMBER */
@@ -396,10 +399,10 @@ typedef struct NotificationList
 
 #define MIN_HASHABLE_NOTIFIES 16	/* threshold to build hashtab */
 
-struct NotificationHash
+typedef struct NotificationHash
 {
 	Notification *event;		/* => the actual Notification struct */
-};
+} NotificationHash;
 
 static NotificationList *pendingNotifies = NULL;
 
@@ -1271,9 +1274,9 @@ asyncQueueUnregister(void)
 static bool
 asyncQueueIsFull(void)
 {
-	int64		headPage = QUEUE_POS_PAGE(QUEUE_HEAD);
-	int64		tailPage = QUEUE_POS_PAGE(QUEUE_TAIL);
-	int64		occupied = headPage - tailPage;
+	int			headPage = QUEUE_POS_PAGE(QUEUE_HEAD);
+	int			tailPage = QUEUE_POS_PAGE(QUEUE_TAIL);
+	int			occupied = headPage - tailPage;
 
 	return occupied >= max_notify_queue_pages;
 }
@@ -1505,9 +1508,9 @@ pg_notification_queue_usage(PG_FUNCTION_ARGS)
 static double
 asyncQueueUsage(void)
 {
-	int64		headPage = QUEUE_POS_PAGE(QUEUE_HEAD);
-	int64		tailPage = QUEUE_POS_PAGE(QUEUE_TAIL);
-	int64		occupied = headPage - tailPage;
+	int			headPage = QUEUE_POS_PAGE(QUEUE_HEAD);
+	int			tailPage = QUEUE_POS_PAGE(QUEUE_TAIL);
+	int			occupied = headPage - tailPage;
 
 	if (occupied == 0)
 		return (double) 0;		/* fast exit for common case */
@@ -1932,7 +1935,7 @@ asyncQueueReadAllNotifications(void)
 
 		do
 		{
-			int64		curpage = QUEUE_POS_PAGE(pos);
+			int			curpage = QUEUE_POS_PAGE(pos);
 			int			curoffset = QUEUE_POS_OFFSET(pos);
 			int			slotno;
 			int			copysize;
@@ -2108,9 +2111,9 @@ static void
 asyncQueueAdvanceTail(void)
 {
 	QueuePosition min;
-	int64		oldtailpage;
-	int64		newtailpage;
-	int64		boundary;
+	int			oldtailpage;
+	int			newtailpage;
+	int			boundary;
 
 	/* Restrict task to one backend per cluster; see SimpleLruTruncate(). */
 	LWLockAcquire(NotifyQueueTailLock, LW_EXCLUSIVE);
@@ -2182,8 +2185,6 @@ asyncQueueAdvanceTail(void)
 static void
 ProcessIncomingNotify(bool flush)
 {
-	MemoryContext oldcontext;
-
 	/* We *must* reset the flag */
 	notifyInterruptPending = false;
 
@@ -2198,20 +2199,13 @@ ProcessIncomingNotify(bool flush)
 
 	/*
 	 * We must run asyncQueueReadAllNotifications inside a transaction, else
-	 * bad things happen if it gets an error.  However, we need to preserve
-	 * the caller's memory context (typically MessageContext).
+	 * bad things happen if it gets an error.
 	 */
-	oldcontext = CurrentMemoryContext;
-
 	StartTransactionCommand();
 
 	asyncQueueReadAllNotifications();
 
 	CommitTransactionCommand();
-
-	/* Caller's context had better not have been transaction-local */
-	Assert(MemoryContextIsValid(oldcontext));
-	MemoryContextSwitchTo(oldcontext);
 
 	/*
 	 * If this isn't an end-of-command case, we must flush the notify messages
@@ -2308,7 +2302,7 @@ AddEventToPendingNotifies(Notification *n)
 
 		/* Create the hash table */
 		hash_ctl.keysize = sizeof(Notification *);
-		hash_ctl.entrysize = sizeof(struct NotificationHash);
+		hash_ctl.entrysize = sizeof(NotificationHash);
 		hash_ctl.hash = notification_hash;
 		hash_ctl.match = notification_match;
 		hash_ctl.hcxt = CurTransactionContext;

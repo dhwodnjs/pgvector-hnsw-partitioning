@@ -21,9 +21,11 @@
 #include "postmaster/postmaster.h"
 #include "replication/logicallauncher.h"
 #include "replication/logicalworker.h"
+#include "storage/dsm.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lwlock.h"
+#include "storage/pg_shmem.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
@@ -720,29 +722,17 @@ bgworker_die(SIGNAL_ARGS)
  * Main entry point for background worker processes.
  */
 void
-BackgroundWorkerMain(char *startup_data, size_t startup_data_len)
+BackgroundWorkerMain(void)
 {
 	sigjmp_buf	local_sigjmp_buf;
-	BackgroundWorker *worker;
+	BackgroundWorker *worker = MyBgworkerEntry;
 	bgworker_main_type entrypt;
 
-	if (startup_data == NULL)
+	if (worker == NULL)
 		elog(FATAL, "unable to find bgworker entry");
-	Assert(startup_data_len == sizeof(BackgroundWorker));
-	worker = MemoryContextAlloc(TopMemoryContext, sizeof(BackgroundWorker));
-	memcpy(worker, startup_data, sizeof(BackgroundWorker));
 
-	/*
-	 * Now that we're done reading the startup data, release postmaster's
-	 * working memory context.
-	 */
-	if (PostmasterContext)
-	{
-		MemoryContextDelete(PostmasterContext);
-		PostmasterContext = NULL;
-	}
+	IsBackgroundWorker = true;
 
-	MyBgworkerEntry = worker;
 	MyBackendType = B_BG_WORKER;
 	init_ps_display(worker->bgw_name);
 
@@ -885,7 +875,7 @@ RegisterBackgroundWorker(BackgroundWorker *worker)
 			return;
 		ereport(LOG,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("background worker \"%s\": must be registered in \"shared_preload_libraries\"",
+				 errmsg("background worker \"%s\": must be registered in shared_preload_libraries",
 						worker->bgw_name)));
 		return;
 	}
@@ -928,7 +918,7 @@ RegisterBackgroundWorker(BackgroundWorker *worker)
 								  "Up to %d background workers can be registered with the current settings.",
 								  max_worker_processes,
 								  max_worker_processes),
-				 errhint("Consider increasing the configuration parameter \"%s\".", "max_worker_processes")));
+				 errhint("Consider increasing the configuration parameter max_worker_processes.")));
 		return;
 	}
 

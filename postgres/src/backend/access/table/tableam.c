@@ -120,6 +120,16 @@ table_beginscan_catalog(Relation relation, int nkeys, struct ScanKeyData *key)
 											NULL, flags);
 }
 
+void
+table_scan_update_snapshot(TableScanDesc scan, Snapshot snapshot)
+{
+	Assert(IsMVCCSnapshot(snapshot));
+
+	RegisterSnapshot(snapshot);
+	scan->rs_snapshot = snapshot;
+	scan->rs_flags |= SO_TEMP_SNAPSHOT;
+}
+
 
 /* ----------------------------------------------------------------------------
  * Parallel table scan related functions.

@@ -159,7 +159,6 @@ static void discard_query_text(PsqlScanState scan_state, ConditionalStack cstack
 static bool copy_previous_query(PQExpBuffer query_buf, PQExpBuffer previous_buf);
 static bool do_connect(enum trivalue reuse_previous_specification,
 					   char *dbname, char *user, char *host, char *port);
-static void wait_until_connected(PGconn *conn);
 static bool do_edit(const char *filename_arg, PQExpBuffer query_buf,
 					int lineno, bool discard_on_quit, bool *edited);
 static bool do_shell(const char *command);
@@ -471,7 +470,7 @@ exec_command_bind(PsqlScanState scan_state, bool active_branch)
 		int			nparams = 0;
 		int			nalloc = 0;
 
-		clean_bind_state();
+		pset.bind_params = NULL;
 
 		while ((opt = psql_scan_slash_option(scan_state, OT_NORMAL, NULL, false)))
 		{
@@ -3596,12 +3595,11 @@ do_connect(enum trivalue reuse_previous_specification,
 		values[paramnum] = NULL;
 
 		/* Note we do not want libpq to re-expand the dbname parameter */
-		n_conn = PQconnectStartParams(keywords, values, false);
+		n_conn = PQconnectdbParams(keywords, values, false);
 
 		pg_free(keywords);
 		pg_free(values);
 
-		wait_until_connected(n_conn);
 		if (PQstatus(n_conn) == CONNECTION_OK)
 			break;
 
@@ -3750,72 +3748,6 @@ do_connect(enum trivalue reuse_previous_specification,
 	return true;
 }
 
-/*
- * Processes the connection sequence described by PQconnectStartParams(). Don't
- * worry about reporting errors in this function. Our caller will check the
- * connection's status, and report appropriately.
- */
-static void
-wait_until_connected(PGconn *conn)
-{
-	bool		forRead = false;
-
-	while (true)
-	{
-		int			rc;
-		int			sock;
-		pg_usec_time_t end_time;
-
-		/*
-		 * On every iteration of the connection sequence, let's check if the
-		 * user has requested a cancellation.
-		 */
-		if (cancel_pressed)
-			break;
-
-		/*
-		 * Do not assume that the socket remains the same across
-		 * PQconnectPoll() calls.
-		 */
-		sock = PQsocket(conn);
-		if (sock == -1)
-			break;
-
-		/*
-		 * If the user sends SIGINT between the cancel_pressed check, and
-		 * polling of the socket, it will not be recognized. Instead, we will
-		 * just wait until the next step in the connection sequence or
-		 * forever, which might require users to send SIGTERM or SIGQUIT.
-		 *
-		 * Some solutions would include the "self-pipe trick," using
-		 * pselect(2) and ppoll(2), or using a timeout.
-		 *
-		 * The self-pipe trick requires a bit of code to setup. pselect(2) and
-		 * ppoll(2) are not on all the platforms we support. The simplest
-		 * solution happens to just be adding a timeout, so let's wait for 1
-		 * second and check cancel_pressed again.
-		 */
-		end_time = PQgetCurrentTimeUSec() + 1000000;
-		rc = PQsocketPoll(sock, forRead, !forRead, end_time);
-		if (rc == -1)
-			return;
-
-		switch (PQconnectPoll(conn))
-		{
-			case PGRES_POLLING_OK:
-			case PGRES_POLLING_FAILED:
-				return;
-			case PGRES_POLLING_READING:
-				forRead = true;
-				continue;
-			case PGRES_POLLING_WRITING:
-				forRead = false;
-				continue;
-			case PGRES_POLLING_ACTIVE:
-				pg_unreachable();
-		}
-	}
-}
 
 void
 connection_warnings(bool in_startup)
@@ -3882,7 +3814,6 @@ printSSLInfo(void)
 	const char *protocol;
 	const char *cipher;
 	const char *compression;
-	const char *alpn;
 
 	if (!PQsslInUse(pset.db))
 		return;					/* no SSL */
@@ -3890,13 +3821,11 @@ printSSLInfo(void)
 	protocol = PQsslAttribute(pset.db, "protocol");
 	cipher = PQsslAttribute(pset.db, "cipher");
 	compression = PQsslAttribute(pset.db, "compression");
-	alpn = PQsslAttribute(pset.db, "alpn");
 
-	printf(_("SSL connection (protocol: %s, cipher: %s, compression: %s, ALPN: %s)\n"),
+	printf(_("SSL connection (protocol: %s, cipher: %s, compression: %s)\n"),
 		   protocol ? protocol : _("unknown"),
 		   cipher ? cipher : _("unknown"),
-		   (compression && strcmp(compression, "off") != 0) ? _("on") : _("off"),
-		   (alpn && alpn[0] != '\0') ? alpn : _("none"));
+		   (compression && strcmp(compression, "off") != 0) ? _("on") : _("off"));
 }
 
 /*
@@ -5231,10 +5160,6 @@ do_shell(const char *command)
  *
  * We break this out of exec_command to avoid having to plaster "volatile"
  * onto a bunch of exec_command's variables to silence stupider compilers.
- *
- * "sleep" is the amount of time to sleep during each loop, measured in
- * seconds.  The internals of this function should use "sleep_ms" for
- * precise sleep time calculations.
  */
 static bool
 do_watch(PQExpBuffer query_buf, double sleep, int iter, int min_rows)
@@ -5248,12 +5173,12 @@ do_watch(PQExpBuffer query_buf, double sleep, int iter, int min_rows)
 	FILE	   *pagerpipe = NULL;
 	int			title_len;
 	int			res = 0;
-	bool		done = false;
 #ifndef WIN32
 	sigset_t	sigalrm_sigchld_sigint;
 	sigset_t	sigalrm_sigchld;
 	sigset_t	sigint;
 	struct itimerval interval;
+	bool		done = false;
 #endif
 
 	if (!query_buf || query_buf->len <= 0)
@@ -5335,6 +5260,7 @@ do_watch(PQExpBuffer query_buf, double sleep, int iter, int min_rows)
 	if (!pagerpipe)
 		myopt.topt.pager = 0;
 
+
 	/*
 	 * If there's a title in the user configuration, make sure we have room
 	 * for it in the title buffer.  Allow 128 bytes for the timestamp plus 128
@@ -5344,8 +5270,7 @@ do_watch(PQExpBuffer query_buf, double sleep, int iter, int min_rows)
 	title_len = (user_title ? strlen(user_title) : 0) + 256;
 	title = pg_malloc(title_len);
 
-	/* Loop to run query and then sleep awhile */
-	while (!done)
+	for (;;)
 	{
 		time_t		timer;
 		char		timebuf[128];
@@ -5360,10 +5285,10 @@ do_watch(PQExpBuffer query_buf, double sleep, int iter, int min_rows)
 
 		if (user_title)
 			snprintf(title, title_len, _("%s\t%s (every %gs)\n"),
-					 user_title, timebuf, sleep_ms / 1000.0);
+					 user_title, timebuf, sleep);
 		else
 			snprintf(title, title_len, _("%s (every %gs)\n"),
-					 timebuf, sleep_ms / 1000.0);
+					 timebuf, sleep);
 		myopt.title = title;
 
 		/* Run the query and print out the result */
@@ -5380,33 +5305,37 @@ do_watch(PQExpBuffer query_buf, double sleep, int iter, int min_rows)
 		if (iter && (--iter <= 0))
 			break;
 
-		/* Quit if error on pager pipe (probably pager has quit) */
 		if (pagerpipe && ferror(pagerpipe))
 			break;
 
-		/* Tight loop, no wait needed */
-		if (sleep_ms == 0)
+		if (sleep == 0)
 			continue;
 
 #ifdef WIN32
 
 		/*
-		 * Wait a while before running the query again.  Break the sleep into
-		 * short intervals (at most 1s); that's probably unnecessary since
-		 * pg_usleep is interruptible on Windows, but it's cheap insurance.
+		 * Set up cancellation of 'watch' via SIGINT.  We redo this each time
+		 * through the loop since it's conceivable something inside
+		 * PSQLexecWatch could change sigint_interrupt_jmp.
 		 */
+		if (sigsetjmp(sigint_interrupt_jmp, 1) != 0)
+			break;
+
+		/*
+		 * Enable 'watch' cancellations and wait a while before running the
+		 * query again.  Break the sleep into short intervals (at most 1s).
+		 */
+		sigint_interrupt_enabled = true;
 		for (long i = sleep_ms; i > 0;)
 		{
 			long		s = Min(i, 1000L);
 
 			pg_usleep(s * 1000L);
 			if (cancel_pressed)
-			{
-				done = true;
 				break;
-			}
 			i -= s;
 		}
+		sigint_interrupt_enabled = false;
 #else
 		/* sigwait() will handle SIGINT. */
 		sigprocmask(SIG_BLOCK, &sigint, NULL);
@@ -5440,6 +5369,8 @@ do_watch(PQExpBuffer query_buf, double sleep, int iter, int min_rows)
 
 		/* Unblock SIGINT so that slow queries can be interrupted. */
 		sigprocmask(SIG_UNBLOCK, &sigint, NULL);
+		if (done)
+			break;
 #endif
 	}
 

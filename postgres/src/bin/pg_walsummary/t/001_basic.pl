@@ -1,7 +1,7 @@
 # Copyright (c) 2021-2024, PostgreSQL Global Development Group
 
 use strict;
-use warnings FATAL => 'all';
+use warnings;
 use PostgreSQL::Test::Utils;
 use Test::More;
 

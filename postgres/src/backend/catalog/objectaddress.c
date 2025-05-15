@@ -18,6 +18,7 @@
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
+#include "access/sysattr.h"
 #include "access/table.h"
 #include "catalog/catalog.h"
 #include "catalog/objectaddress.h"
@@ -33,6 +34,7 @@
 #include "catalog/pg_conversion.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_default_acl.h"
+#include "catalog/pg_enum.h"
 #include "catalog/pg_event_trigger.h"
 #include "catalog/pg_extension.h"
 #include "catalog/pg_foreign_data_wrapper.h"
@@ -73,6 +75,7 @@
 #include "foreign/foreign.h"
 #include "funcapi.h"
 #include "miscadmin.h"
+#include "nodes/makefuncs.h"
 #include "parser/parse_func.h"
 #include "parser/parse_oper.h"
 #include "parser/parse_type.h"
@@ -655,6 +658,7 @@ static const struct object_type_map
 
 			ObjectTypeMap[] =
 {
+	/* OCLASS_CLASS, all kinds of relations */
 	{
 		"table", OBJECT_TABLE
 	},
@@ -703,6 +707,7 @@ static const struct object_type_map
 	{
 		"foreign table column", OBJECT_COLUMN
 	},
+	/* OCLASS_PROC */
 	{
 		"aggregate", OBJECT_AGGREGATE
 	},
@@ -712,123 +717,162 @@ static const struct object_type_map
 	{
 		"procedure", OBJECT_PROCEDURE
 	},
+	/* OCLASS_TYPE */
 	{
 		"type", OBJECT_TYPE
 	},
+	/* OCLASS_CAST */
 	{
 		"cast", OBJECT_CAST
 	},
+	/* OCLASS_COLLATION */
 	{
 		"collation", OBJECT_COLLATION
 	},
+	/* OCLASS_CONSTRAINT */
 	{
 		"table constraint", OBJECT_TABCONSTRAINT
 	},
 	{
 		"domain constraint", OBJECT_DOMCONSTRAINT
 	},
+	/* OCLASS_CONVERSION */
 	{
 		"conversion", OBJECT_CONVERSION
 	},
+	/* OCLASS_DEFAULT */
 	{
 		"default value", OBJECT_DEFAULT
 	},
+	/* OCLASS_LANGUAGE */
 	{
 		"language", OBJECT_LANGUAGE
 	},
+	/* OCLASS_LARGEOBJECT */
 	{
 		"large object", OBJECT_LARGEOBJECT
 	},
+	/* OCLASS_OPERATOR */
 	{
 		"operator", OBJECT_OPERATOR
 	},
+	/* OCLASS_OPCLASS */
 	{
 		"operator class", OBJECT_OPCLASS
 	},
+	/* OCLASS_OPFAMILY */
 	{
 		"operator family", OBJECT_OPFAMILY
 	},
+	/* OCLASS_AM */
 	{
 		"access method", OBJECT_ACCESS_METHOD
 	},
+	/* OCLASS_AMOP */
 	{
 		"operator of access method", OBJECT_AMOP
 	},
+	/* OCLASS_AMPROC */
 	{
 		"function of access method", OBJECT_AMPROC
 	},
+	/* OCLASS_REWRITE */
 	{
 		"rule", OBJECT_RULE
 	},
+	/* OCLASS_TRIGGER */
 	{
 		"trigger", OBJECT_TRIGGER
 	},
+	/* OCLASS_SCHEMA */
 	{
 		"schema", OBJECT_SCHEMA
 	},
+	/* OCLASS_TSPARSER */
 	{
 		"text search parser", OBJECT_TSPARSER
 	},
+	/* OCLASS_TSDICT */
 	{
 		"text search dictionary", OBJECT_TSDICTIONARY
 	},
+	/* OCLASS_TSTEMPLATE */
 	{
 		"text search template", OBJECT_TSTEMPLATE
 	},
+	/* OCLASS_TSCONFIG */
 	{
 		"text search configuration", OBJECT_TSCONFIGURATION
 	},
+	/* OCLASS_ROLE */
 	{
 		"role", OBJECT_ROLE
 	},
+	/* OCLASS_ROLE_MEMBERSHIP */
 	{
 		"role membership", -1	/* unmapped */
 	},
+	/* OCLASS_DATABASE */
 	{
 		"database", OBJECT_DATABASE
 	},
+	/* OCLASS_TBLSPACE */
 	{
 		"tablespace", OBJECT_TABLESPACE
 	},
+	/* OCLASS_FDW */
 	{
 		"foreign-data wrapper", OBJECT_FDW
 	},
+	/* OCLASS_FOREIGN_SERVER */
 	{
 		"server", OBJECT_FOREIGN_SERVER
 	},
+	/* OCLASS_USER_MAPPING */
 	{
 		"user mapping", OBJECT_USER_MAPPING
 	},
+	/* OCLASS_DEFACL */
 	{
 		"default acl", OBJECT_DEFACL
 	},
+	/* OCLASS_EXTENSION */
 	{
 		"extension", OBJECT_EXTENSION
 	},
+	/* OCLASS_EVENT_TRIGGER */
 	{
 		"event trigger", OBJECT_EVENT_TRIGGER
 	},
+	/* OCLASS_PARAMETER_ACL */
 	{
 		"parameter ACL", OBJECT_PARAMETER_ACL
 	},
+	/* OCLASS_POLICY */
 	{
 		"policy", OBJECT_POLICY
 	},
+	/* OCLASS_PUBLICATION */
 	{
 		"publication", OBJECT_PUBLICATION
 	},
+	/* OCLASS_PUBLICATION_NAMESPACE */
 	{
 		"publication namespace", OBJECT_PUBLICATION_NAMESPACE
 	},
+	/* OCLASS_PUBLICATION_REL */
 	{
 		"publication relation", OBJECT_PUBLICATION_REL
 	},
+	/* OCLASS_SUBSCRIPTION */
 	{
 		"subscription", OBJECT_SUBSCRIPTION
 	},
+	/* OCLASS_TRANSFORM */
 	{
 		"transform", OBJECT_TRANSFORM
 	},
+	/* OCLASS_STATISTIC_EXT */
 	{
 		"statistics object", OBJECT_STATISTIC_EXT
 	}
@@ -2780,34 +2824,13 @@ get_object_property_data(Oid class_id)
 HeapTuple
 get_catalog_object_by_oid(Relation catalog, AttrNumber oidcol, Oid objectId)
 {
-	return
-		get_catalog_object_by_oid_extended(catalog, oidcol, objectId, false);
-}
-
-/*
- * Same as get_catalog_object_by_oid(), but with an additional "locktup"
- * argument controlling whether to acquire a LOCKTAG_TUPLE at mode
- * InplaceUpdateTupleLock.  See README.tuplock section "Locking to write
- * inplace-updated tables".
- */
-HeapTuple
-get_catalog_object_by_oid_extended(Relation catalog,
-								   AttrNumber oidcol,
-								   Oid objectId,
-								   bool locktup)
-{
 	HeapTuple	tuple;
 	Oid			classId = RelationGetRelid(catalog);
 	int			oidCacheId = get_object_catcache_oid(classId);
 
 	if (oidCacheId > 0)
 	{
-		if (locktup)
-			tuple = SearchSysCacheLockedCopy1(oidCacheId,
-											  ObjectIdGetDatum(objectId));
-		else
-			tuple = SearchSysCacheCopy1(oidCacheId,
-										ObjectIdGetDatum(objectId));
+		tuple = SearchSysCacheCopy1(oidCacheId, ObjectIdGetDatum(objectId));
 		if (!HeapTupleIsValid(tuple))	/* should not happen */
 			return NULL;
 	}
@@ -2832,10 +2855,6 @@ get_catalog_object_by_oid_extended(Relation catalog,
 			systable_endscan(scan);
 			return NULL;
 		}
-
-		if (locktup)
-			LockTuple(catalog, &tuple->t_self, InplaceUpdateTupleLock);
-
 		tuple = heap_copytuple(tuple);
 
 		systable_endscan(scan);
@@ -2906,9 +2925,9 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 
 	initStringInfo(&buffer);
 
-	switch (object->classId)
+	switch (getObjectClass(object))
 	{
-		case RelationRelationId:
+		case OCLASS_CLASS:
 			if (object->objectSubId == 0)
 				getRelationDescription(&buffer, object->objectId, missing_ok);
 			else
@@ -2931,7 +2950,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 			}
 			break;
 
-		case ProcedureRelationId:
+		case OCLASS_PROC:
 			{
 				bits16		flags = FORMAT_PROC_INVALID_AS_NULL;
 				char	   *proname = format_procedure_extended(object->objectId,
@@ -2944,7 +2963,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case TypeRelationId:
+		case OCLASS_TYPE:
 			{
 				bits16		flags = FORMAT_TYPE_INVALID_AS_NULL;
 				char	   *typname = format_type_extended(object->objectId, -1,
@@ -2957,7 +2976,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case CastRelationId:
+		case OCLASS_CAST:
 			{
 				Relation	castDesc;
 				ScanKeyData skey[1];
@@ -2999,7 +3018,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case CollationRelationId:
+		case OCLASS_COLLATION:
 			{
 				HeapTuple	collTup;
 				Form_pg_collation coll;
@@ -3030,7 +3049,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case ConstraintRelationId:
+		case OCLASS_CONSTRAINT:
 			{
 				HeapTuple	conTup;
 				Form_pg_constraint con;
@@ -3068,7 +3087,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case ConversionRelationId:
+		case OCLASS_CONVERSION:
 			{
 				HeapTuple	conTup;
 				Form_pg_conversion conv;
@@ -3099,7 +3118,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case AttrDefaultRelationId:
+		case OCLASS_DEFAULT:
 			{
 				ObjectAddress colobject;
 
@@ -3119,7 +3138,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case LanguageRelationId:
+		case OCLASS_LANGUAGE:
 			{
 				char	   *langname = get_language_name(object->objectId,
 														 missing_ok);
@@ -3130,14 +3149,14 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case LargeObjectRelationId:
+		case OCLASS_LARGEOBJECT:
 			if (!LargeObjectExists(object->objectId))
 				break;
 			appendStringInfo(&buffer, _("large object %u"),
 							 object->objectId);
 			break;
 
-		case OperatorRelationId:
+		case OCLASS_OPERATOR:
 			{
 				bits16		flags = FORMAT_OPERATOR_INVALID_AS_NULL;
 				char	   *oprname = format_operator_extended(object->objectId,
@@ -3150,7 +3169,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case OperatorClassRelationId:
+		case OCLASS_OPCLASS:
 			{
 				HeapTuple	opcTup;
 				Form_pg_opclass opcForm;
@@ -3193,11 +3212,11 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case OperatorFamilyRelationId:
+		case OCLASS_OPFAMILY:
 			getOpFamilyDescription(&buffer, object->objectId, missing_ok);
 			break;
 
-		case AccessMethodRelationId:
+		case OCLASS_AM:
 			{
 				HeapTuple	tup;
 
@@ -3217,7 +3236,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case AccessMethodOperatorRelationId:
+		case OCLASS_AMOP:
 			{
 				Relation	amopDesc;
 				HeapTuple	tup;
@@ -3255,12 +3274,6 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				initStringInfo(&opfam);
 				getOpFamilyDescription(&opfam, amopForm->amopfamily, false);
 
-				/*
-				 * We use FORMAT_TYPE_ALLOW_INVALID here so as not to fail
-				 * completely if the type links are dangling, which is a form
-				 * of catalog corruption that could occur due to old bugs.
-				 */
-
 				/*------
 				   translator: %d is the operator strategy (a number), the
 				   first two %s's are data type names, the third %s is the
@@ -3268,10 +3281,8 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				   textual form of the operator with arguments.  */
 				appendStringInfo(&buffer, _("operator %d (%s, %s) of %s: %s"),
 								 amopForm->amopstrategy,
-								 format_type_extended(amopForm->amoplefttype,
-													  -1, FORMAT_TYPE_ALLOW_INVALID),
-								 format_type_extended(amopForm->amoprighttype,
-													  -1, FORMAT_TYPE_ALLOW_INVALID),
+								 format_type_be(amopForm->amoplefttype),
+								 format_type_be(amopForm->amoprighttype),
 								 opfam.data,
 								 format_operator(amopForm->amopopr));
 
@@ -3282,7 +3293,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case AccessMethodProcedureRelationId:
+		case OCLASS_AMPROC:
 			{
 				Relation	amprocDesc;
 				ScanKeyData skey[1];
@@ -3320,12 +3331,6 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				initStringInfo(&opfam);
 				getOpFamilyDescription(&opfam, amprocForm->amprocfamily, false);
 
-				/*
-				 * We use FORMAT_TYPE_ALLOW_INVALID here so as not to fail
-				 * completely if the type links are dangling, which is a form
-				 * of catalog corruption that could occur due to old bugs.
-				 */
-
 				/*------
 				   translator: %d is the function number, the first two %s's
 				   are data type names, the third %s is the description of the
@@ -3333,10 +3338,8 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				   function with arguments.  */
 				appendStringInfo(&buffer, _("function %d (%s, %s) of %s: %s"),
 								 amprocForm->amprocnum,
-								 format_type_extended(amprocForm->amproclefttype,
-													  -1, FORMAT_TYPE_ALLOW_INVALID),
-								 format_type_extended(amprocForm->amprocrighttype,
-													  -1, FORMAT_TYPE_ALLOW_INVALID),
+								 format_type_be(amprocForm->amproclefttype),
+								 format_type_be(amprocForm->amprocrighttype),
 								 opfam.data,
 								 format_procedure(amprocForm->amproc));
 
@@ -3347,7 +3350,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case RewriteRelationId:
+		case OCLASS_REWRITE:
 			{
 				Relation	ruleDesc;
 				ScanKeyData skey[1];
@@ -3393,7 +3396,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case TriggerRelationId:
+		case OCLASS_TRIGGER:
 			{
 				Relation	trigDesc;
 				ScanKeyData skey[1];
@@ -3439,7 +3442,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case NamespaceRelationId:
+		case OCLASS_SCHEMA:
 			{
 				char	   *nspname;
 
@@ -3455,7 +3458,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case StatisticExtRelationId:
+		case OCLASS_STATISTIC_EXT:
 			{
 				HeapTuple	stxTup;
 				Form_pg_statistic_ext stxForm;
@@ -3487,7 +3490,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case TSParserRelationId:
+		case OCLASS_TSPARSER:
 			{
 				HeapTuple	tup;
 				Form_pg_ts_parser prsForm;
@@ -3517,7 +3520,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case TSDictionaryRelationId:
+		case OCLASS_TSDICT:
 			{
 				HeapTuple	tup;
 				Form_pg_ts_dict dictForm;
@@ -3548,7 +3551,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case TSTemplateRelationId:
+		case OCLASS_TSTEMPLATE:
 			{
 				HeapTuple	tup;
 				Form_pg_ts_template tmplForm;
@@ -3579,7 +3582,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case TSConfigRelationId:
+		case OCLASS_TSCONFIG:
 			{
 				HeapTuple	tup;
 				Form_pg_ts_config cfgForm;
@@ -3610,7 +3613,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case AuthIdRelationId:
+		case OCLASS_ROLE:
 			{
 				char	   *username = GetUserNameFromId(object->objectId,
 														 missing_ok);
@@ -3620,7 +3623,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case AuthMemRelationId:
+		case OCLASS_ROLE_MEMBERSHIP:
 			{
 				Relation	amDesc;
 				ScanKeyData skey[1];
@@ -3662,7 +3665,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case DatabaseRelationId:
+		case OCLASS_DATABASE:
 			{
 				char	   *datname;
 
@@ -3678,7 +3681,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case TableSpaceRelationId:
+		case OCLASS_TBLSPACE:
 			{
 				char	   *tblspace;
 
@@ -3694,7 +3697,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case ForeignDataWrapperRelationId:
+		case OCLASS_FDW:
 			{
 				ForeignDataWrapper *fdw;
 
@@ -3705,7 +3708,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case ForeignServerRelationId:
+		case OCLASS_FOREIGN_SERVER:
 			{
 				ForeignServer *srv;
 
@@ -3715,7 +3718,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case UserMappingRelationId:
+		case OCLASS_USER_MAPPING:
 			{
 				HeapTuple	tup;
 				Oid			useid;
@@ -3749,7 +3752,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case DefaultAclRelationId:
+		case OCLASS_DEFACL:
 			{
 				Relation	defaclrel;
 				ScanKeyData skey[1];
@@ -3857,7 +3860,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case ExtensionRelationId:
+		case OCLASS_EXTENSION:
 			{
 				char	   *extname;
 
@@ -3873,7 +3876,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case EventTriggerRelationId:
+		case OCLASS_EVENT_TRIGGER:
 			{
 				HeapTuple	tup;
 
@@ -3892,7 +3895,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case ParameterAclRelationId:
+		case OCLASS_PARAMETER_ACL:
 			{
 				HeapTuple	tup;
 				Datum		nameDatum;
@@ -3915,7 +3918,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case PolicyRelationId:
+		case OCLASS_POLICY:
 			{
 				Relation	policy_rel;
 				ScanKeyData skey[1];
@@ -3961,7 +3964,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case PublicationRelationId:
+		case OCLASS_PUBLICATION:
 			{
 				char	   *pubname = get_publication_name(object->objectId,
 														   missing_ok);
@@ -3971,7 +3974,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case PublicationNamespaceRelationId:
+		case OCLASS_PUBLICATION_NAMESPACE:
 			{
 				char	   *pubname;
 				char	   *nspname;
@@ -3987,7 +3990,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case PublicationRelRelationId:
+		case OCLASS_PUBLICATION_REL:
 			{
 				HeapTuple	tup;
 				char	   *pubname;
@@ -4018,7 +4021,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case SubscriptionRelationId:
+		case OCLASS_SUBSCRIPTION:
 			{
 				char	   *subname = get_subscription_name(object->objectId,
 															missing_ok);
@@ -4028,7 +4031,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		case TransformRelationId:
+		case OCLASS_TRANSFORM:
 			{
 				HeapTuple	trfTup;
 				Form_pg_transform trfForm;
@@ -4053,8 +4056,10 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 				break;
 			}
 
-		default:
-			elog(ERROR, "unsupported object class: %u", object->classId);
+			/*
+			 * There's intentionally no default: case here; we want the
+			 * compiler to warn if a new OCLASS hasn't been handled above.
+			 */
 	}
 
 	/* an empty buffer is equivalent to no object found */
@@ -4416,178 +4421,180 @@ getObjectTypeDescription(const ObjectAddress *object, bool missing_ok)
 
 	initStringInfo(&buffer);
 
-	switch (object->classId)
+	switch (getObjectClass(object))
 	{
-		case RelationRelationId:
+		case OCLASS_CLASS:
 			getRelationTypeDescription(&buffer, object->objectId,
 									   object->objectSubId,
 									   missing_ok);
 			break;
 
-		case ProcedureRelationId:
+		case OCLASS_PROC:
 			getProcedureTypeDescription(&buffer, object->objectId,
 										missing_ok);
 			break;
 
-		case TypeRelationId:
+		case OCLASS_TYPE:
 			appendStringInfoString(&buffer, "type");
 			break;
 
-		case CastRelationId:
+		case OCLASS_CAST:
 			appendStringInfoString(&buffer, "cast");
 			break;
 
-		case CollationRelationId:
+		case OCLASS_COLLATION:
 			appendStringInfoString(&buffer, "collation");
 			break;
 
-		case ConstraintRelationId:
+		case OCLASS_CONSTRAINT:
 			getConstraintTypeDescription(&buffer, object->objectId,
 										 missing_ok);
 			break;
 
-		case ConversionRelationId:
+		case OCLASS_CONVERSION:
 			appendStringInfoString(&buffer, "conversion");
 			break;
 
-		case AttrDefaultRelationId:
+		case OCLASS_DEFAULT:
 			appendStringInfoString(&buffer, "default value");
 			break;
 
-		case LanguageRelationId:
+		case OCLASS_LANGUAGE:
 			appendStringInfoString(&buffer, "language");
 			break;
 
-		case LargeObjectRelationId:
+		case OCLASS_LARGEOBJECT:
 			appendStringInfoString(&buffer, "large object");
 			break;
 
-		case OperatorRelationId:
+		case OCLASS_OPERATOR:
 			appendStringInfoString(&buffer, "operator");
 			break;
 
-		case OperatorClassRelationId:
+		case OCLASS_OPCLASS:
 			appendStringInfoString(&buffer, "operator class");
 			break;
 
-		case OperatorFamilyRelationId:
+		case OCLASS_OPFAMILY:
 			appendStringInfoString(&buffer, "operator family");
 			break;
 
-		case AccessMethodRelationId:
+		case OCLASS_AM:
 			appendStringInfoString(&buffer, "access method");
 			break;
 
-		case AccessMethodOperatorRelationId:
+		case OCLASS_AMOP:
 			appendStringInfoString(&buffer, "operator of access method");
 			break;
 
-		case AccessMethodProcedureRelationId:
+		case OCLASS_AMPROC:
 			appendStringInfoString(&buffer, "function of access method");
 			break;
 
-		case RewriteRelationId:
+		case OCLASS_REWRITE:
 			appendStringInfoString(&buffer, "rule");
 			break;
 
-		case TriggerRelationId:
+		case OCLASS_TRIGGER:
 			appendStringInfoString(&buffer, "trigger");
 			break;
 
-		case NamespaceRelationId:
+		case OCLASS_SCHEMA:
 			appendStringInfoString(&buffer, "schema");
 			break;
 
-		case StatisticExtRelationId:
+		case OCLASS_STATISTIC_EXT:
 			appendStringInfoString(&buffer, "statistics object");
 			break;
 
-		case TSParserRelationId:
+		case OCLASS_TSPARSER:
 			appendStringInfoString(&buffer, "text search parser");
 			break;
 
-		case TSDictionaryRelationId:
+		case OCLASS_TSDICT:
 			appendStringInfoString(&buffer, "text search dictionary");
 			break;
 
-		case TSTemplateRelationId:
+		case OCLASS_TSTEMPLATE:
 			appendStringInfoString(&buffer, "text search template");
 			break;
 
-		case TSConfigRelationId:
+		case OCLASS_TSCONFIG:
 			appendStringInfoString(&buffer, "text search configuration");
 			break;
 
-		case AuthIdRelationId:
+		case OCLASS_ROLE:
 			appendStringInfoString(&buffer, "role");
 			break;
 
-		case AuthMemRelationId:
+		case OCLASS_ROLE_MEMBERSHIP:
 			appendStringInfoString(&buffer, "role membership");
 			break;
 
-		case DatabaseRelationId:
+		case OCLASS_DATABASE:
 			appendStringInfoString(&buffer, "database");
 			break;
 
-		case TableSpaceRelationId:
+		case OCLASS_TBLSPACE:
 			appendStringInfoString(&buffer, "tablespace");
 			break;
 
-		case ForeignDataWrapperRelationId:
+		case OCLASS_FDW:
 			appendStringInfoString(&buffer, "foreign-data wrapper");
 			break;
 
-		case ForeignServerRelationId:
+		case OCLASS_FOREIGN_SERVER:
 			appendStringInfoString(&buffer, "server");
 			break;
 
-		case UserMappingRelationId:
+		case OCLASS_USER_MAPPING:
 			appendStringInfoString(&buffer, "user mapping");
 			break;
 
-		case DefaultAclRelationId:
+		case OCLASS_DEFACL:
 			appendStringInfoString(&buffer, "default acl");
 			break;
 
-		case ExtensionRelationId:
+		case OCLASS_EXTENSION:
 			appendStringInfoString(&buffer, "extension");
 			break;
 
-		case EventTriggerRelationId:
+		case OCLASS_EVENT_TRIGGER:
 			appendStringInfoString(&buffer, "event trigger");
 			break;
 
-		case ParameterAclRelationId:
+		case OCLASS_PARAMETER_ACL:
 			appendStringInfoString(&buffer, "parameter ACL");
 			break;
 
-		case PolicyRelationId:
+		case OCLASS_POLICY:
 			appendStringInfoString(&buffer, "policy");
 			break;
 
-		case PublicationRelationId:
+		case OCLASS_PUBLICATION:
 			appendStringInfoString(&buffer, "publication");
 			break;
 
-		case PublicationNamespaceRelationId:
+		case OCLASS_PUBLICATION_NAMESPACE:
 			appendStringInfoString(&buffer, "publication namespace");
 			break;
 
-		case PublicationRelRelationId:
+		case OCLASS_PUBLICATION_REL:
 			appendStringInfoString(&buffer, "publication relation");
 			break;
 
-		case SubscriptionRelationId:
+		case OCLASS_SUBSCRIPTION:
 			appendStringInfoString(&buffer, "subscription");
 			break;
 
-		case TransformRelationId:
+		case OCLASS_TRANSFORM:
 			appendStringInfoString(&buffer, "transform");
 			break;
 
-		default:
-			elog(ERROR, "unsupported object class: %u", object->classId);
+			/*
+			 * There's intentionally no default: case here; we want the
+			 * compiler to warn if a new OCLASS hasn't been handled above.
+			 */
 	}
 
 	/* the result can never be empty */
@@ -4773,9 +4780,9 @@ getObjectIdentityParts(const ObjectAddress *object,
 		*objargs = NIL;
 	}
 
-	switch (object->classId)
+	switch (getObjectClass(object))
 	{
-		case RelationRelationId:
+		case OCLASS_CLASS:
 			{
 				char	   *attr = NULL;
 
@@ -4808,7 +4815,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 			}
 			break;
 
-		case ProcedureRelationId:
+		case OCLASS_PROC:
 			{
 				bits16		flags = FORMAT_PROC_FORCE_QUALIFY | FORMAT_PROC_INVALID_AS_NULL;
 				char	   *proname = format_procedure_extended(object->objectId,
@@ -4824,7 +4831,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case TypeRelationId:
+		case OCLASS_TYPE:
 			{
 				bits16		flags = FORMAT_TYPE_INVALID_AS_NULL | FORMAT_TYPE_FORCE_QUALIFY;
 				char	   *typeout;
@@ -4840,7 +4847,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 			}
 			break;
 
-		case CastRelationId:
+		case OCLASS_CAST:
 			{
 				Relation	castRel;
 				HeapTuple	tup;
@@ -4877,7 +4884,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case CollationRelationId:
+		case OCLASS_COLLATION:
 			{
 				HeapTuple	collTup;
 				Form_pg_collation coll;
@@ -4904,7 +4911,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case ConstraintRelationId:
+		case OCLASS_CONSTRAINT:
 			{
 				HeapTuple	conTup;
 				Form_pg_constraint con;
@@ -4951,7 +4958,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case ConversionRelationId:
+		case OCLASS_CONVERSION:
 			{
 				HeapTuple	conTup;
 				Form_pg_conversion conForm;
@@ -4978,7 +4985,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case AttrDefaultRelationId:
+		case OCLASS_DEFAULT:
 			{
 				ObjectAddress colobject;
 
@@ -4999,7 +5006,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case LanguageRelationId:
+		case OCLASS_LANGUAGE:
 			{
 				HeapTuple	langTup;
 				Form_pg_language langForm;
@@ -5021,8 +5028,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				ReleaseSysCache(langTup);
 				break;
 			}
-
-		case LargeObjectRelationId:
+		case OCLASS_LARGEOBJECT:
 			if (!LargeObjectExists(object->objectId))
 				break;
 			appendStringInfo(&buffer, "%u",
@@ -5031,7 +5037,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				*objname = list_make1(psprintf("%u", object->objectId));
 			break;
 
-		case OperatorRelationId:
+		case OCLASS_OPERATOR:
 			{
 				bits16		flags = FORMAT_OPERATOR_FORCE_QUALIFY | FORMAT_OPERATOR_INVALID_AS_NULL;
 				char	   *oprname = format_operator_extended(object->objectId,
@@ -5046,7 +5052,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case OperatorClassRelationId:
+		case OCLASS_OPCLASS:
 			{
 				HeapTuple	opcTup;
 				Form_pg_opclass opcForm;
@@ -5087,12 +5093,12 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case OperatorFamilyRelationId:
+		case OCLASS_OPFAMILY:
 			getOpFamilyIdentity(&buffer, object->objectId, objname,
 								missing_ok);
 			break;
 
-		case AccessMethodRelationId:
+		case OCLASS_AM:
 			{
 				char	   *amname;
 
@@ -5110,7 +5116,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 			}
 			break;
 
-		case AccessMethodOperatorRelationId:
+		case OCLASS_AMOP:
 			{
 				Relation	amopDesc;
 				HeapTuple	tup;
@@ -5172,7 +5178,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case AccessMethodProcedureRelationId:
+		case OCLASS_AMPROC:
 			{
 				Relation	amprocDesc;
 				ScanKeyData skey[1];
@@ -5234,7 +5240,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case RewriteRelationId:
+		case OCLASS_REWRITE:
 			{
 				Relation	ruleDesc;
 				HeapTuple	tup;
@@ -5267,7 +5273,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case TriggerRelationId:
+		case OCLASS_TRIGGER:
 			{
 				Relation	trigDesc;
 				HeapTuple	tup;
@@ -5300,7 +5306,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case NamespaceRelationId:
+		case OCLASS_SCHEMA:
 			{
 				char	   *nspname;
 
@@ -5319,7 +5325,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case StatisticExtRelationId:
+		case OCLASS_STATISTIC_EXT:
 			{
 				HeapTuple	tup;
 				Form_pg_statistic_ext formStatistic;
@@ -5346,7 +5352,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 			}
 			break;
 
-		case TSParserRelationId:
+		case OCLASS_TSPARSER:
 			{
 				HeapTuple	tup;
 				Form_pg_ts_parser formParser;
@@ -5373,7 +5379,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case TSDictionaryRelationId:
+		case OCLASS_TSDICT:
 			{
 				HeapTuple	tup;
 				Form_pg_ts_dict formDict;
@@ -5400,7 +5406,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case TSTemplateRelationId:
+		case OCLASS_TSTEMPLATE:
 			{
 				HeapTuple	tup;
 				Form_pg_ts_template formTmpl;
@@ -5427,7 +5433,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case TSConfigRelationId:
+		case OCLASS_TSCONFIG:
 			{
 				HeapTuple	tup;
 				Form_pg_ts_config formCfg;
@@ -5454,7 +5460,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case AuthIdRelationId:
+		case OCLASS_ROLE:
 			{
 				char	   *username;
 
@@ -5468,7 +5474,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case AuthMemRelationId:
+		case OCLASS_ROLE_MEMBERSHIP:
 			{
 				Relation	authMemDesc;
 				ScanKeyData skey[1];
@@ -5511,7 +5517,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case DatabaseRelationId:
+		case OCLASS_DATABASE:
 			{
 				char	   *datname;
 
@@ -5530,7 +5536,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case TableSpaceRelationId:
+		case OCLASS_TBLSPACE:
 			{
 				char	   *tblspace;
 
@@ -5549,7 +5555,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case ForeignDataWrapperRelationId:
+		case OCLASS_FDW:
 			{
 				ForeignDataWrapper *fdw;
 
@@ -5564,7 +5570,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case ForeignServerRelationId:
+		case OCLASS_FOREIGN_SERVER:
 			{
 				ForeignServer *srv;
 
@@ -5580,7 +5586,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case UserMappingRelationId:
+		case OCLASS_USER_MAPPING:
 			{
 				HeapTuple	tup;
 				Oid			useid;
@@ -5620,7 +5626,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case DefaultAclRelationId:
+		case OCLASS_DEFACL:
 			{
 				Relation	defaclrel;
 				ScanKeyData skey[1];
@@ -5707,7 +5713,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case ExtensionRelationId:
+		case OCLASS_EXTENSION:
 			{
 				char	   *extname;
 
@@ -5725,7 +5731,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case EventTriggerRelationId:
+		case OCLASS_EVENT_TRIGGER:
 			{
 				HeapTuple	tup;
 				Form_pg_event_trigger trigForm;
@@ -5749,7 +5755,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case ParameterAclRelationId:
+		case OCLASS_PARAMETER_ACL:
 			{
 				HeapTuple	tup;
 				Datum		nameDatum;
@@ -5774,7 +5780,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case PolicyRelationId:
+		case OCLASS_POLICY:
 			{
 				Relation	polDesc;
 				HeapTuple	tup;
@@ -5807,7 +5813,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case PublicationRelationId:
+		case OCLASS_PUBLICATION:
 			{
 				char	   *pubname;
 
@@ -5822,7 +5828,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case PublicationNamespaceRelationId:
+		case OCLASS_PUBLICATION_NAMESPACE:
 			{
 				char	   *pubname;
 				char	   *nspname;
@@ -5846,7 +5852,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case PublicationRelRelationId:
+		case OCLASS_PUBLICATION_REL:
 			{
 				HeapTuple	tup;
 				char	   *pubname;
@@ -5875,7 +5881,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case SubscriptionRelationId:
+		case OCLASS_SUBSCRIPTION:
 			{
 				char	   *subname;
 
@@ -5890,7 +5896,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				break;
 			}
 
-		case TransformRelationId:
+		case OCLASS_TRANSFORM:
 			{
 				Relation	transformDesc;
 				HeapTuple	tup;
@@ -5932,8 +5938,10 @@ getObjectIdentityParts(const ObjectAddress *object,
 			}
 			break;
 
-		default:
-			elog(ERROR, "unsupported object class: %u", object->classId);
+			/*
+			 * There's intentionally no default: case here; we want the
+			 * compiler to warn if a new OCLASS hasn't been handled above.
+			 */
 	}
 
 	if (!missing_ok)
@@ -5944,8 +5952,8 @@ getObjectIdentityParts(const ObjectAddress *object,
 		 * cases above leave it as NIL.
 		 */
 		if (objname && *objname == NIL)
-			elog(ERROR, "requested object address for unsupported object class %u: text result \"%s\"",
-				 object->classId, buffer.data);
+			elog(ERROR, "requested object address for unsupported object class %d: text result \"%s\"",
+				 (int) getObjectClass(object), buffer.data);
 	}
 	else
 	{

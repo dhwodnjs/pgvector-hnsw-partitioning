@@ -4755,7 +4755,7 @@ number of rows: 0
 last error message: syntax error at end of input
 \echo 'last error code:' :LAST_ERROR_SQLSTATE
 last error code: 42601
--- check row count for a query with chunked results
+-- check row count for a cursor-fetched query
 \set FETCH_COUNT 10
 select unique2 from tenk1 order by unique2 limit 19;
  unique2 
@@ -4787,9 +4787,7 @@ error: false
 error code: 00000
 \echo 'number of rows:' :ROW_COUNT
 number of rows: 19
--- chunked results with an error after the first chunk
--- (we must disable parallel query here, else the behavior is timing-dependent)
-set debug_parallel_query = off;
+-- cursor-fetched query with an error after the first group
 select 1/(15-unique2) from tenk1 order by unique2 limit 19;
  ?column? 
 ----------
@@ -4814,7 +4812,6 @@ number of rows: 0
 last error message: division by zero
 \echo 'last error code:' :LAST_ERROR_SQLSTATE
 last error code: 22012
-reset debug_parallel_query;
 \unset FETCH_COUNT
 create schema testpart;
 create role regress_partitioning_role;
@@ -6224,9 +6221,9 @@ List of schemas
 (0 rows)
 
 \dO "no.such.collation"
-                                List of collations
- Schema | Name | Provider | Collate | Ctype | Locale | ICU Rules | Deterministic? 
---------+------+----------+---------+-------+--------+-----------+----------------
+                                  List of collations
+ Schema | Name | Provider | Collate | Ctype | ICU Locale | ICU Rules | Deterministic? 
+--------+------+----------+---------+-------+------------+-----------+----------------
 (0 rows)
 
 \dp "no.such.access.privilege"
@@ -6413,9 +6410,9 @@ cross-database references are not implemented: "no.such.schema"."no.such.languag
 (0 rows)
 
 \dO "no.such.schema"."no.such.collation"
-                                List of collations
- Schema | Name | Provider | Collate | Ctype | Locale | ICU Rules | Deterministic? 
---------+------+----------+---------+-------+--------+-----------+----------------
+                                  List of collations
+ Schema | Name | Provider | Collate | Ctype | ICU Locale | ICU Rules | Deterministic? 
+--------+------+----------+---------+-------+------------+-----------+----------------
 (0 rows)
 
 \dp "no.such.schema"."no.such.access.privilege"
@@ -6556,9 +6553,9 @@ List of text search templates
 (0 rows)
 
 \dO regression."no.such.schema"."no.such.collation"
-                                List of collations
- Schema | Name | Provider | Collate | Ctype | Locale | ICU Rules | Deterministic? 
---------+------+----------+---------+-------+--------+-----------+----------------
+                                  List of collations
+ Schema | Name | Provider | Collate | Ctype | ICU Locale | ICU Rules | Deterministic? 
+--------+------+----------+---------+-------+------------+-----------+----------------
 (0 rows)
 
 \dp regression."no.such.schema"."no.such.access.privilege"

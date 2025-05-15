@@ -26,19 +26,22 @@
  */
 #include "postgres.h"
 
+#include "access/heapam.h"
 #include "access/heapam_xlog.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "access/xlogreader.h"
 #include "access/xlogrecord.h"
+#include "access/xlogutils.h"
 #include "catalog/pg_control.h"
 #include "replication/decode.h"
 #include "replication/logical.h"
 #include "replication/message.h"
+#include "replication/origin.h"
 #include "replication/reorderbuffer.h"
 #include "replication/snapbuild.h"
-#include "storage/standbydefs.h"
+#include "storage/standby.h"
 
 /* individual record(group)'s handlers */
 static void DecodeInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf);
@@ -174,7 +177,7 @@ xlog_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 					Assert(RecoveryInProgress());
 					ereport(ERROR,
 							(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-							 errmsg("logical decoding on standby requires \"wal_level\" >= \"logical\" on the primary")));
+							 errmsg("logical decoding on standby requires wal_level >= logical on the primary")));
 				}
 				break;
 			}
@@ -445,9 +448,9 @@ heap2_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 			 * Everything else here is just low level physical stuff we're not
 			 * interested in.
 			 */
-		case XLOG_HEAP2_PRUNE_ON_ACCESS:
-		case XLOG_HEAP2_PRUNE_VACUUM_SCAN:
-		case XLOG_HEAP2_PRUNE_VACUUM_CLEANUP:
+		case XLOG_HEAP2_FREEZE_PAGE:
+		case XLOG_HEAP2_PRUNE:
+		case XLOG_HEAP2_VACUUM:
 		case XLOG_HEAP2_VISIBLE:
 		case XLOG_HEAP2_LOCK_UPDATED:
 			break;

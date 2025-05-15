@@ -21,25 +21,16 @@
 
 #include "access/timeline.h"
 #include "access/xlog.h"
+#include "access/xlogrecovery.h"
 #include "backup/basebackup_incremental.h"
 #include "backup/walsummary.h"
 #include "common/blkreftable.h"
+#include "common/parse_manifest.h"
 #include "common/hashfn.h"
 #include "common/int.h"
-#include "common/parse_manifest.h"
-#include "datatype/timestamp.h"
 #include "postmaster/walsummarizer.h"
-#include "utils/timestamp.h"
 
 #define	BLOCKS_PER_READ			512
-
-/*
- * We expect to find the last lines of the manifest, including the checksum,
- * in the last MIN_CHUNK bytes of the manifest. We trigger an incremental
- * parse step if we are about to overflow MAX_CHUNK bytes.
- */
-#define MIN_CHUNK  1024
-#define MAX_CHUNK (128 *  1024)
 
 /*
  * Details extracted from the WAL ranges present in the supplied backup manifest.
@@ -88,8 +79,8 @@ struct IncrementalBackupInfo
 	 * Files extracted from the backup manifest.
 	 *
 	 * We don't really need this information, because we use WAL summaries to
-	 * figure out what's changed. It would be unsafe to just rely on the list
-	 * of files that existed before, because it's possible for a file to be
+	 * figure what's changed. It would be unsafe to just rely on the list of
+	 * files that existed before, because it's possible for a file to be
 	 * removed and a new one created with the same name and different
 	 * contents. In such cases, the whole file must still be sent. We can tell
 	 * from the WAL summaries whether that happened, but not from the file
@@ -120,19 +111,10 @@ struct IncrementalBackupInfo
 	 * turns out to be a problem in practice, we'll need to be more clever.
 	 */
 	BlockRefTable *brtab;
-
-	/*
-	 * State object for incremental JSON parsing
-	 */
-	JsonManifestParseIncrementalState *inc_state;
 };
 
-static void manifest_process_version(JsonManifestParseContext *context,
-									 int manifest_version);
-static void manifest_process_system_identifier(JsonManifestParseContext *context,
-											   uint64 manifest_system_identifier);
 static void manifest_process_file(JsonManifestParseContext *context,
-								  const char *pathname,
+								  char *pathname,
 								  size_t size,
 								  pg_checksum_type checksum_type,
 								  int checksum_length,
@@ -141,7 +123,7 @@ static void manifest_process_wal_range(JsonManifestParseContext *context,
 									   TimeLineID tli,
 									   XLogRecPtr start_lsn,
 									   XLogRecPtr end_lsn);
-static void manifest_report_error(JsonManifestParseContext *context,
+static void manifest_report_error(JsonManifestParseContext *ib,
 								  const char *fmt,...)
 			pg_attribute_printf(2, 3) pg_attribute_noreturn();
 static int	compare_block_numbers(const void *a, const void *b);
@@ -155,7 +137,6 @@ CreateIncrementalBackupInfo(MemoryContext mcxt)
 {
 	IncrementalBackupInfo *ib;
 	MemoryContext oldcontext;
-	JsonManifestParseContext *context;
 
 	oldcontext = MemoryContextSwitchTo(mcxt);
 
@@ -170,17 +151,6 @@ CreateIncrementalBackupInfo(MemoryContext mcxt)
 	 * substantially higher.
 	 */
 	ib->manifest_files = backup_file_create(mcxt, 10000, NULL);
-
-	context = palloc0(sizeof(JsonManifestParseContext));
-	/* Parse the manifest. */
-	context->private_data = ib;
-	context->version_cb = manifest_process_version;
-	context->system_identifier_cb = manifest_process_system_identifier;
-	context->per_file_cb = manifest_process_file;
-	context->per_wal_range_cb = manifest_process_wal_range;
-	context->error_cb = manifest_report_error;
-
-	ib->inc_state = json_parse_manifest_incremental_init(context);
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -201,20 +171,13 @@ AppendIncrementalManifestData(IncrementalBackupInfo *ib, const char *data,
 	/* Switch to our memory context. */
 	oldcontext = MemoryContextSwitchTo(ib->mcxt);
 
-	if (ib->buf.len > MIN_CHUNK && ib->buf.len + len > MAX_CHUNK)
-	{
-		/*
-		 * time for an incremental parse. We'll do all but the last MIN_CHUNK
-		 * so that we have enough left for the final piece.
-		 */
-		json_parse_manifest_incremental_chunk(ib->inc_state, ib->buf.data,
-											  ib->buf.len - MIN_CHUNK, false);
-		/* now remove what we just parsed  */
-		memmove(ib->buf.data, ib->buf.data + (ib->buf.len - MIN_CHUNK),
-				MIN_CHUNK + 1);
-		ib->buf.len = MIN_CHUNK;
-	}
-
+	/*
+	 * XXX. Our json parser is at present incapable of parsing json blobs
+	 * incrementally, so we have to accumulate the entire backup manifest
+	 * before we can do anything with it. This should really be fixed, since
+	 * some users might have very large numbers of files in the data
+	 * directory.
+	 */
 	appendBinaryStringInfo(&ib->buf, data, len);
 
 	/* Switch back to previous memory context. */
@@ -228,21 +191,22 @@ AppendIncrementalManifestData(IncrementalBackupInfo *ib, const char *data,
 void
 FinalizeIncrementalManifest(IncrementalBackupInfo *ib)
 {
+	JsonManifestParseContext context;
 	MemoryContext oldcontext;
 
 	/* Switch to our memory context. */
 	oldcontext = MemoryContextSwitchTo(ib->mcxt);
 
-	/* Parse the last chunk of the manifest */
-	json_parse_manifest_incremental_chunk(ib->inc_state, ib->buf.data,
-										  ib->buf.len, true);
+	/* Parse the manifest. */
+	context.private_data = ib;
+	context.per_file_cb = manifest_process_file;
+	context.per_wal_range_cb = manifest_process_wal_range;
+	context.error_cb = manifest_report_error;
+	json_parse_manifest(&context, ib->buf.data, ib->buf.len);
 
 	/* Done with the buffer, so release memory. */
 	pfree(ib->buf.data);
 	ib->buf.data = NULL;
-
-	/* Done with inc_state, so release that memory too */
-	json_parse_manifest_incremental_shutdown(ib->inc_state);
 
 	/* Switch back to previous memory context. */
 	MemoryContextSwitchTo(oldcontext);
@@ -277,6 +241,12 @@ PrepareForIncrementalBackup(IncrementalBackupInfo *ib,
 	TimeLineID	earliest_wal_range_tli = 0;
 	XLogRecPtr	earliest_wal_range_start_lsn = InvalidXLogRecPtr;
 	TimeLineID	latest_wal_range_tli = 0;
+	XLogRecPtr	summarized_lsn;
+	XLogRecPtr	pending_lsn;
+	XLogRecPtr	prior_pending_lsn = InvalidXLogRecPtr;
+	int			deadcycles = 0;
+	TimestampTz initial_time,
+				current_time;
 
 	Assert(ib->buf.data == NULL);
 
@@ -435,8 +405,7 @@ PrepareForIncrementalBackup(IncrementalBackupInfo *ib,
 						 errmsg("manifest requires WAL from final timeline %u ending at %X/%X, but this backup starts at %X/%X",
 								range->tli,
 								LSN_FORMAT_ARGS(range->end_lsn),
-								LSN_FORMAT_ARGS(backup_state->startpoint)),
-						 errhint("This can happen for incremental backups on a standby if there was little activity since the previous backup.")));
+								LSN_FORMAT_ARGS(backup_state->startpoint))));
 		}
 		else
 		{
@@ -452,13 +421,85 @@ PrepareForIncrementalBackup(IncrementalBackupInfo *ib,
 	}
 
 	/*
-	 * Wait for WAL summarization to catch up to the backup start LSN. This
-	 * will throw an error if the WAL summarizer appears to be stuck. If WAL
-	 * summarization gets disabled while we're waiting, this will return
-	 * immediately, and we'll error out further down if the WAL summaries are
-	 * incomplete.
+	 * Wait for WAL summarization to catch up to the backup start LSN (but
+	 * time out if it doesn't do so quickly enough).
 	 */
-	WaitForWalSummarization(backup_state->startpoint);
+	initial_time = current_time = GetCurrentTimestamp();
+	while (1)
+	{
+		long		timeout_in_ms = 10000;
+		long		elapsed_seconds;
+
+		/*
+		 * Align the wait time to prevent drift. This doesn't really matter,
+		 * but we'd like the warnings about how long we've been waiting to say
+		 * 10 seconds, 20 seconds, 30 seconds, 40 seconds ... without ever
+		 * drifting to something that is not a multiple of ten.
+		 */
+		timeout_in_ms -=
+			TimestampDifferenceMilliseconds(initial_time, current_time) %
+			timeout_in_ms;
+
+		/* Wait for up to 10 seconds. */
+		summarized_lsn = WaitForWalSummarization(backup_state->startpoint,
+												 timeout_in_ms, &pending_lsn);
+
+		/* If WAL summarization has progressed sufficiently, stop waiting. */
+		if (summarized_lsn >= backup_state->startpoint)
+			break;
+
+		/*
+		 * Keep track of the number of cycles during which there has been no
+		 * progression of pending_lsn. If pending_lsn is not advancing, that
+		 * means that not only are no new files appearing on disk, but we're
+		 * not even incorporating new records into the in-memory state.
+		 */
+		if (pending_lsn > prior_pending_lsn)
+		{
+			prior_pending_lsn = pending_lsn;
+			deadcycles = 0;
+		}
+		else
+			++deadcycles;
+
+		/*
+		 * If we've managed to wait for an entire minute without the WAL
+		 * summarizer absorbing a single WAL record, error out; probably
+		 * something is wrong.
+		 *
+		 * We could consider also erroring out if the summarizer is taking too
+		 * long to catch up, but it's not clear what rate of progress would be
+		 * acceptable and what would be too slow. So instead, we just try to
+		 * error out in the case where there's no progress at all. That seems
+		 * likely to catch a reasonable number of the things that can go wrong
+		 * in practice (e.g. the summarizer process is completely hung, say
+		 * because somebody hooked up a debugger to it or something) without
+		 * giving up too quickly when the system is just slow.
+		 */
+		if (deadcycles >= 6)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("WAL summarization is not progressing"),
+					 errdetail("Summarization is needed through %X/%X, but is stuck at %X/%X on disk and %X/%X in memory.",
+							   LSN_FORMAT_ARGS(backup_state->startpoint),
+							   LSN_FORMAT_ARGS(summarized_lsn),
+							   LSN_FORMAT_ARGS(pending_lsn))));
+
+		/*
+		 * Otherwise, just let the user know what's happening.
+		 */
+		current_time = GetCurrentTimestamp();
+		elapsed_seconds =
+			TimestampDifferenceMilliseconds(initial_time, current_time) / 1000;
+		ereport(WARNING,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("still waiting for WAL summarization through %X/%X after %ld seconds",
+						LSN_FORMAT_ARGS(backup_state->startpoint),
+						elapsed_seconds),
+				 errdetail("Summarization has reached %X/%X on disk and %X/%X in memory.",
+						   LSN_FORMAT_ARGS(summarized_lsn),
+						   LSN_FORMAT_ARGS(pending_lsn))));
+	}
 
 	/*
 	 * Retrieve a list of all WAL summaries on any timeline that overlap with
@@ -652,8 +693,7 @@ GetIncrementalFilePath(Oid dboid, Oid spcoid, RelFileNumber relfilenumber,
  * How should we back up a particular file as part of an incremental backup?
  *
  * If the return value is BACK_UP_FILE_FULLY, caller should back up the whole
- * file just as if this were not an incremental backup.  The contents of the
- * relative_block_numbers array are unspecified in this case.
+ * file just as if this were not an incremental backup.
  *
  * If the return value is BACK_UP_FILE_INCREMENTALLY, caller should include
  * an incremental file in the backup instead of the entire file. On return,
@@ -672,6 +712,7 @@ GetFileBackupMethod(IncrementalBackupInfo *ib, const char *path,
 					BlockNumber *relative_block_numbers,
 					unsigned *truncation_block_length)
 {
+	BlockNumber absolute_block_numbers[RELSEG_SIZE];
 	BlockNumber limit_block;
 	BlockNumber start_blkno;
 	BlockNumber stop_blkno;
@@ -736,25 +777,9 @@ GetFileBackupMethod(IncrementalBackupInfo *ib, const char *path,
 			return BACK_UP_FILE_FULLY;
 	}
 
-	/*
-	 * Look up the special block reference table entry for the database as a
-	 * whole.
-	 */
+	/* Look up the block reference table entry. */
 	rlocator.spcOid = spcoid;
 	rlocator.dbOid = dboid;
-	rlocator.relNumber = 0;
-	if (BlockRefTableGetEntry(ib->brtab, &rlocator, MAIN_FORKNUM,
-							  &limit_block) != NULL)
-	{
-		/*
-		 * According to the WAL summary, this database OID/tablespace OID
-		 * pairing has been created since the previous backup. So, everything
-		 * in it must be backed up fully.
-		 */
-		return BACK_UP_FILE_FULLY;
-	}
-
-	/* Look up the block reference table entry for this relfilenode. */
 	rlocator.relNumber = relfilenumber;
 	brtentry = BlockRefTableGetEntry(ib->brtab, &rlocator, forknum,
 									 &limit_block);
@@ -798,13 +823,8 @@ GetFileBackupMethod(IncrementalBackupInfo *ib, const char *path,
 				errcode(ERRCODE_INTERNAL_ERROR),
 				errmsg_internal("overflow computing block number bounds for segment %u with size %zu",
 								segno, size));
-
-	/*
-	 * This will write *absolute* block numbers into the output array, but
-	 * we'll transpose them below.
-	 */
 	nblocks = BlockRefTableEntryGetBlocks(brtentry, start_blkno, stop_blkno,
-										  relative_block_numbers, RELSEG_SIZE);
+										  absolute_block_numbers, RELSEG_SIZE);
 	Assert(nblocks <= RELSEG_SIZE);
 
 	/*
@@ -823,22 +843,19 @@ GetFileBackupMethod(IncrementalBackupInfo *ib, const char *path,
 		return BACK_UP_FILE_FULLY;
 
 	/*
-	 * Looks like we can send an incremental file, so sort the block numbers
-	 * and then transpose them from absolute block numbers to relative block
-	 * numbers if necessary.
+	 * Looks like we can send an incremental file, so sort the absolute the
+	 * block numbers and then transpose absolute block numbers to relative
+	 * block numbers.
 	 *
 	 * NB: If the block reference table was using the bitmap representation
 	 * for a given chunk, the block numbers in that chunk will already be
 	 * sorted, but when the array-of-offsets representation is used, we can
 	 * receive block numbers here out of order.
 	 */
-	qsort(relative_block_numbers, nblocks, sizeof(BlockNumber),
+	qsort(absolute_block_numbers, nblocks, sizeof(BlockNumber),
 		  compare_block_numbers);
-	if (start_blkno != 0)
-	{
-		for (i = 0; i < nblocks; ++i)
-			relative_block_numbers[i] -= start_blkno;
-	}
+	for (i = 0; i < nblocks; ++i)
+		relative_block_numbers[i] = absolute_block_numbers[i] - start_blkno;
 	*num_blocks_required = nblocks;
 
 	/*
@@ -863,36 +880,6 @@ GetFileBackupMethod(IncrementalBackupInfo *ib, const char *path,
 }
 
 /*
- * Compute the size for a header of an incremental file containing a given
- * number of blocks. The header is rounded to a multiple of BLCKSZ, but
- * only if the file will store some block data.
- */
-extern size_t
-GetIncrementalHeaderSize(unsigned num_blocks_required)
-{
-	size_t		result;
-
-	/* Make sure we're not going to overflow. */
-	Assert(num_blocks_required <= RELSEG_SIZE);
-
-	/*
-	 * Three four byte quantities (magic number, truncation block length,
-	 * block count) followed by block numbers.
-	 */
-	result = 3 * sizeof(uint32) + (sizeof(BlockNumber) * num_blocks_required);
-
-	/*
-	 * Round the header size to a multiple of BLCKSZ - when not a multiple of
-	 * BLCKSZ, add the missing fraction of a block. But do this only if the
-	 * file will store data for some blocks, otherwise keep it small.
-	 */
-	if ((num_blocks_required > 0) && (result % BLCKSZ != 0))
-		result += BLCKSZ - (result % BLCKSZ);
-
-	return result;
-}
-
-/*
  * Compute the size for an incremental file containing a given number of blocks.
  */
 extern size_t
@@ -904,12 +891,11 @@ GetIncrementalFileSize(unsigned num_blocks_required)
 	Assert(num_blocks_required <= RELSEG_SIZE);
 
 	/*
-	 * Header with three four byte quantities (magic number, truncation block
-	 * length, block count) followed by block numbers, rounded to a multiple
-	 * of BLCKSZ (for files with block data), followed by block contents.
+	 * Three four byte quantities (magic number, truncation block length,
+	 * block count) followed by block numbers followed by block contents.
 	 */
-	result = GetIncrementalHeaderSize(num_blocks_required);
-	result += BLCKSZ * num_blocks_required;
+	result = 3 * sizeof(uint32);
+	result += (BLCKSZ + sizeof(BlockNumber)) * num_blocks_required;
 
 	return result;
 }
@@ -926,39 +912,6 @@ hash_string_pointer(const char *s)
 }
 
 /*
- * This callback to validate the manifest version for incremental backup.
- */
-static void
-manifest_process_version(JsonManifestParseContext *context,
-						 int manifest_version)
-{
-	/* Incremental backups don't work with manifest version 1 */
-	if (manifest_version == 1)
-		context->error_cb(context,
-						  "backup manifest version 1 does not support incremental backup");
-}
-
-/*
- * This callback to validate the manifest system identifier against the current
- * database server.
- */
-static void
-manifest_process_system_identifier(JsonManifestParseContext *context,
-								   uint64 manifest_system_identifier)
-{
-	uint64		system_identifier;
-
-	/* Get system identifier of current system */
-	system_identifier = GetSystemIdentifier();
-
-	if (manifest_system_identifier != system_identifier)
-		context->error_cb(context,
-						  "system identifier in backup manifest is %llu, but database system identifier is %llu",
-						  (unsigned long long) manifest_system_identifier,
-						  (unsigned long long) system_identifier);
-}
-
-/*
  * This callback is invoked for each file mentioned in the backup manifest.
  *
  * We store the path to each file and the size of each file for sanity-checking
@@ -966,7 +919,7 @@ manifest_process_system_identifier(JsonManifestParseContext *context,
  */
 static void
 manifest_process_file(JsonManifestParseContext *context,
-					  const char *pathname, size_t size,
+					  char *pathname, size_t size,
 					  pg_checksum_type checksum_type,
 					  int checksum_length,
 					  uint8 *checksum_payload)

@@ -50,14 +50,8 @@ typedef int IpcSemaphoreId;		/* semaphore ID returned by semget(2) */
  * we allocate.  It must be *less than* your kernel's SEMMSL (max semaphores
  * per set) parameter, which is often around 25.  (Less than, because we
  * allocate one extra sema in each set for identification purposes.)
- *
- * The present value of 19 is chosen with one eye on NetBSD/OpenBSD's default
- * SEMMNS setting of 60.  Remembering the extra sema per set, this lets us
- * allocate three sets with 57 useful semaphores before exceeding that, which
- * is enough to run our core regression tests.  Users of those systems will
- * still want to raise SEMMNS for any sort of production work, though.
  */
-#define SEMAS_PER_SET	19
+#define SEMAS_PER_SET	16
 
 #define IPCProtection	(0600)	/* access/modify by user only */
 
@@ -133,7 +127,7 @@ InternalIpcSemaphoreCreate(IpcSemaphoreKey semKey, int numSems)
 						 "semaphore sets (SEMMNI), or the system wide maximum number of "
 						 "semaphores (SEMMNS), would be exceeded.  You need to raise the "
 						 "respective kernel parameter.  Alternatively, reduce PostgreSQL's "
-						 "consumption of semaphores by reducing its \"max_connections\" parameter.\n"
+						 "consumption of semaphores by reducing its max_connections parameter.\n"
 						 "The PostgreSQL documentation contains more information about "
 						 "configuring your system for PostgreSQL.") : 0));
 	}

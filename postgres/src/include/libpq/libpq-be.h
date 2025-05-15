@@ -58,6 +58,17 @@ typedef struct
 #include "libpq/pqcomm.h"
 
 
+typedef enum CAC_state
+{
+	CAC_OK,
+	CAC_STARTUP,
+	CAC_SHUTDOWN,
+	CAC_RECOVERY,
+	CAC_NOTCONSISTENT,
+	CAC_TOOMANY,
+} CAC_state;
+
+
 /*
  * GSSAPI specific state information
  */
@@ -110,9 +121,12 @@ typedef struct ClientConnectionInfo
 } ClientConnectionInfo;
 
 /*
- * The Port structure holds state information about a client connection in a
- * backend process.  It is available in the global variable MyProcPort.  The
- * struct and all the data it points are kept in TopMemoryContext.
+ * This is used by the postmaster in its communication with frontends.  It
+ * contains all state information needed during this communication before the
+ * backend is run.  The Port structure is kept in malloc'd memory and is
+ * still available when a backend is running (see MyProcPort).  The data
+ * it points to must also be malloc'd, or else palloc'd in TopMemoryContext,
+ * so that it survives into PostgresMain execution!
  *
  * remote_hostname is set if we did a successful reverse lookup of the
  * client's IP address during connection setup.
@@ -142,6 +156,7 @@ typedef struct Port
 	int			remote_hostname_resolv; /* see above */
 	int			remote_hostname_errcode;	/* see above */
 	char	   *remote_port;	/* text rep of remote port */
+	CAC_state	canAcceptConnections;	/* postmaster connection status */
 
 	/*
 	 * Information that needs to be saved from the startup packet and passed
@@ -189,8 +204,7 @@ typedef struct Port
 	/*
 	 * If GSSAPI is supported and used on this connection, store GSSAPI
 	 * information.  Even when GSSAPI is not compiled in, store a NULL pointer
-	 * to keep struct offsets of the "SSL structures" below the same (for
-	 * extension ABI compatibility).
+	 * to keep struct offsets the same (for extension ABI compatibility).
 	 */
 	pg_gssinfo *gss;
 #else
@@ -204,43 +218,16 @@ typedef struct Port
 	char	   *peer_cn;
 	char	   *peer_dn;
 	bool		peer_cert_valid;
-	bool		alpn_used;
 
 	/*
-	 * OpenSSL structures.
+	 * OpenSSL structures. (Keep these last so that the locations of other
+	 * fields are the same whether or not you build with SSL enabled.)
 	 */
 #ifdef USE_OPENSSL
 	SSL		   *ssl;
 	X509	   *peer;
 #endif
-
-	/*
-	 * This is a bit of a hack. raw_buf is data that was previously read and
-	 * buffered in a higher layer but then "unread" and needs to be read again
-	 * while establishing an SSL connection via the SSL library layer.
-	 *
-	 * There's no API to "unread", the upper layer just places the data in the
-	 * Port structure in raw_buf and sets raw_buf_remaining to the amount of
-	 * bytes unread and raw_buf_consumed to 0.
-	 *
-	 * NB: the offsets of these fields depend on USE_OPENSSL.  These should
-	 * not be accessed in an extension because of the ABI incompatibility.
-	 */
-	char	   *raw_buf;
-	ssize_t		raw_buf_consumed,
-				raw_buf_remaining;
 } Port;
-
-/*
- * ClientSocket holds a socket for an accepted connection, along with the
- * information about the remote endpoint.  This is passed from postmaster to
- * the backend process.
- */
-typedef struct ClientSocket
-{
-	pgsocket	sock;			/* File descriptor */
-	SockAddr	raddr;			/* remote addr (client) */
-} ClientSocket;
 
 #ifdef USE_SSL
 /*

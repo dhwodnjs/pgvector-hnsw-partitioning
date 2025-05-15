@@ -46,13 +46,18 @@
 #include "postgres.h"
 
 #include "access/parallel.h"
+#include "access/relscan.h"
 #include "access/table.h"
 #include "access/tableam.h"
+#include "access/transam.h"
 #include "executor/executor.h"
+#include "executor/execPartition.h"
 #include "executor/nodeModifyTable.h"
 #include "jit/jit.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "nodes/nodeFuncs.h"
+#include "parser/parsetree.h"
 #include "parser/parse_relation.h"
 #include "partitioning/partdesc.h"
 #include "storage/lmgr.h"
@@ -756,7 +761,7 @@ ExecInitRangeTable(EState *estate, List *rangeTable, List *permInfos)
  * ExecGetRangeTableRelation
  *		Open the Relation for a range table entry, if not already done
  *
- * The Relations will be closed in ExecEndPlan().
+ * The Relations will be closed again in ExecEndPlan().
  */
 Relation
 ExecGetRangeTableRelation(EState *estate, Index rti)

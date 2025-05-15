@@ -29,6 +29,7 @@
 #include "tsearch/ts_utils.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/lsyscache.h"
 #include "utils/regproc.h"
 #include "utils/rel.h"
 

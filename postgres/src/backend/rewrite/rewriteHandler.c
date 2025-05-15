@@ -24,6 +24,8 @@
 #include "access/sysattr.h"
 #include "access/table.h"
 #include "catalog/dependency.h"
+#include "catalog/partition.h"
+#include "catalog/pg_type.h"
 #include "commands/trigger.h"
 #include "executor/executor.h"
 #include "foreign/fdwapi.h"
@@ -40,7 +42,6 @@
 #include "rewrite/rewriteManip.h"
 #include "rewrite/rewriteSearchCycle.h"
 #include "rewrite/rowsecurity.h"
-#include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -57,12 +58,6 @@ typedef struct acquireLocksOnSubLinks_context
 {
 	bool		for_execute;	/* AcquireRewriteLocks' forExecute param */
 } acquireLocksOnSubLinks_context;
-
-typedef struct fireRIRonSubLink_context
-{
-	List	   *activeRIRs;
-	bool		hasRowSecurity;
-} fireRIRonSubLink_context;
 
 static bool acquireLocksOnSubLinks(Node *node,
 								   acquireLocksOnSubLinks_context *context);
@@ -1092,9 +1087,9 @@ process_matched_tle(TargetEntry *src_tle,
 	 * resulting in each assignment containing a CoerceToDomain node over a
 	 * FieldStore or SubscriptingRef.  These should have matching target
 	 * domains, so we strip them and reconstitute a single CoerceToDomain over
-	 * the combined FieldStore/SubscriptingRef nodes.  (Notice that this has
-	 * the result that the domain's checks are applied only after we do all
-	 * the field or element updates, not after each one.  This is desirable.)
+	 * the combined FieldStore/SubscriptingRef nodes.  (Notice that this has the
+	 * result that the domain's checks are applied only after we do all the
+	 * field or element updates, not after each one.  This is arguably desirable.)
 	 *----------
 	 */
 	src_expr = (Node *) src_tle->expr;
@@ -1239,8 +1234,24 @@ build_column_default(Relation rel, int attrno)
 	if (att_tup->attidentity)
 	{
 		NextValueExpr *nve = makeNode(NextValueExpr);
+		Oid			reloid;
 
-		nve->seqid = getIdentitySequence(rel, attrno, false);
+		/*
+		 * The identity sequence is associated with the topmost partitioned
+		 * table.
+		 */
+		if (rel->rd_rel->relispartition)
+		{
+			List	   *ancestors =
+				get_partition_ancestors(RelationGetRelid(rel));
+
+			reloid = llast_oid(ancestors);
+			list_free(ancestors);
+		}
+		else
+			reloid = RelationGetRelid(rel);
+
+		nve->seqid = getIdentitySequence(reloid, attrno, false);
 		nve->typeId = att_tup->atttypid;
 
 		return (Node *) nve;
@@ -1736,14 +1747,6 @@ ApplyRetrieveRule(Query *parsetree,
 	if (rule->qual != NULL)
 		elog(ERROR, "cannot handle qualified ON SELECT rule");
 
-	/* Check if the expansion of non-system views are restricted */
-	if (unlikely((restrict_nonsystem_relation_kind & RESTRICT_RELKIND_VIEW) != 0 &&
-				 RelationGetRelid(relation) >= FirstNormalObjectId))
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("access to non-system view \"%s\" is restricted",
-						RelationGetRelationName(relation))));
-
 	if (rt_index == parsetree->resultRelation)
 	{
 		/*
@@ -1844,12 +1847,6 @@ ApplyRetrieveRule(Query *parsetree,
 	 * Recursively expand any view references inside the view.
 	 */
 	rule_action = fireRIRrules(rule_action, activeRIRs);
-
-	/*
-	 * Make sure the query is marked as having row security if the view query
-	 * does.
-	 */
-	parsetree->hasRowSecurity |= rule_action->hasRowSecurity;
 
 	/*
 	 * Now, plug the view query in as a subselect, converting the relation's
@@ -1964,7 +1961,7 @@ markQueryForLocking(Query *qry, Node *jtnode,
  * the SubLink's subselect link with the possibly-rewritten subquery.
  */
 static bool
-fireRIRonSubLink(Node *node, fireRIRonSubLink_context *context)
+fireRIRonSubLink(Node *node, List *activeRIRs)
 {
 	if (node == NULL)
 		return false;
@@ -1974,13 +1971,7 @@ fireRIRonSubLink(Node *node, fireRIRonSubLink_context *context)
 
 		/* Do what we came for */
 		sub->subselect = (Node *) fireRIRrules((Query *) sub->subselect,
-											   context->activeRIRs);
-
-		/*
-		 * Remember if any of the sublinks have row security.
-		 */
-		context->hasRowSecurity |= ((Query *) sub->subselect)->hasRowSecurity;
-
+											   activeRIRs);
 		/* Fall through to process lefthand args of SubLink */
 	}
 
@@ -1989,7 +1980,7 @@ fireRIRonSubLink(Node *node, fireRIRonSubLink_context *context)
 	 * subselects of subselects for us.
 	 */
 	return expression_tree_walker(node, fireRIRonSubLink,
-								  (void *) context);
+								  (void *) activeRIRs);
 }
 
 
@@ -2050,13 +2041,6 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 		if (rte->rtekind == RTE_SUBQUERY)
 		{
 			rte->subquery = fireRIRrules(rte->subquery, activeRIRs);
-
-			/*
-			 * While we are here, make sure the query is marked as having row
-			 * security if any of its subqueries do.
-			 */
-			parsetree->hasRowSecurity |= rte->subquery->hasRowSecurity;
-
 			continue;
 		}
 
@@ -2170,12 +2154,6 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 
 		cte->ctequery = (Node *)
 			fireRIRrules((Query *) cte->ctequery, activeRIRs);
-
-		/*
-		 * While we are here, make sure the query is marked as having row
-		 * security if any of its CTEs do.
-		 */
-		parsetree->hasRowSecurity |= ((Query *) cte->ctequery)->hasRowSecurity;
 	}
 
 	/*
@@ -2183,21 +2161,8 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 	 * the rtable and cteList.
 	 */
 	if (parsetree->hasSubLinks)
-	{
-		fireRIRonSubLink_context context;
-
-		context.activeRIRs = activeRIRs;
-		context.hasRowSecurity = false;
-
-		query_tree_walker(parsetree, fireRIRonSubLink, (void *) &context,
+		query_tree_walker(parsetree, fireRIRonSubLink, (void *) activeRIRs,
 						  QTW_IGNORE_RC_SUBQUERIES);
-
-		/*
-		 * Make sure the query is marked as having row security if any of its
-		 * sublinks do.
-		 */
-		parsetree->hasRowSecurity |= context.hasRowSecurity;
-	}
 
 	/*
 	 * Apply any row-level security policies.  We do this last because it
@@ -2237,7 +2202,6 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 			if (hasSubLinks)
 			{
 				acquireLocksOnSubLinks_context context;
-				fireRIRonSubLink_context fire_context;
 
 				/*
 				 * Recursively process the new quals, checking for infinite
@@ -2268,21 +2232,11 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 				 * Now that we have the locks on anything added by
 				 * get_row_security_policies, fire any RIR rules for them.
 				 */
-				fire_context.activeRIRs = activeRIRs;
-				fire_context.hasRowSecurity = false;
-
 				expression_tree_walker((Node *) securityQuals,
-									   fireRIRonSubLink, (void *) &fire_context);
+									   fireRIRonSubLink, (void *) activeRIRs);
 
 				expression_tree_walker((Node *) withCheckOptions,
-									   fireRIRonSubLink, (void *) &fire_context);
-
-				/*
-				 * We can ignore the value of fire_context.hasRowSecurity
-				 * since we only reach this code in cases where hasRowSecurity
-				 * is already true.
-				 */
-				Assert(hasRowSecurity);
+									   fireRIRonSubLink, (void *) activeRIRs);
 
 				activeRIRs = list_delete_last(activeRIRs);
 			}
@@ -3050,7 +3004,7 @@ relation_is_updatable(Oid reloid,
  *
  * This is used with simply-updatable views to map column-permissions sets for
  * the view columns onto the matching columns in the underlying base relation.
- * Relevant entries in the targetlist must be plain Vars of the underlying
+ * The targetlist is expected to be a list of plain Vars of the underlying
  * relation (as per the checks above in view_query_is_auto_updatable).
  */
 static Bitmapset *
@@ -3250,10 +3204,6 @@ rewriteTargetView(Query *parsetree, Relation view)
 	 */
 	viewquery = copyObject(get_view_query(view));
 
-	/* Locate RTE and perminfo describing the view in the outer query */
-	view_rte = rt_fetch(parsetree->resultRelation, parsetree->rtable);
-	view_perminfo = getRTEPermissionInfo(parsetree->rteperminfos, view_rte);
-
 	/*
 	 * Are we doing INSERT/UPDATE, or MERGE containing INSERT/UPDATE?  If so,
 	 * various additional checks on the view columns need to be applied, and
@@ -3276,14 +3226,6 @@ rewriteTargetView(Query *parsetree, Relation view)
 		}
 	}
 
-	/* Check if the expansion of non-system views are restricted */
-	if (unlikely((restrict_nonsystem_relation_kind & RESTRICT_RELKIND_VIEW) != 0 &&
-				 RelationGetRelid(view) >= FirstNormalObjectId))
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("access to non-system view \"%s\" is restricted",
-						RelationGetRelationName(view))));
-
 	/*
 	 * The view must be updatable, else fail.
 	 *
@@ -3301,25 +3243,16 @@ rewriteTargetView(Query *parsetree, Relation view)
 
 	/*
 	 * For INSERT/UPDATE (or MERGE containing INSERT/UPDATE) the modified
-	 * columns must all be updatable.
+	 * columns must all be updatable. Note that we get the modified columns
+	 * from the query's targetlist, not from the result RTE's insertedCols
+	 * and/or updatedCols set, since rewriteTargetListIU may have added
+	 * additional targetlist entries for view defaults, and these must also be
+	 * updatable.
 	 */
 	if (insert_or_update)
 	{
-		Bitmapset  *modified_cols;
+		Bitmapset  *modified_cols = NULL;
 		char	   *non_updatable_col;
-
-		/*
-		 * Compute the set of modified columns as those listed in the result
-		 * RTE's insertedCols and/or updatedCols sets plus those that are
-		 * targets of the query's targetlist(s).  We must consider the query's
-		 * targetlist because rewriteTargetListIU may have added additional
-		 * targetlist entries for view defaults, and these must also be
-		 * updatable.  But rewriteTargetListIU can also remove entries if they
-		 * are DEFAULT markers and the column's default is NULL, so
-		 * considering only the targetlist would also be wrong.
-		 */
-		modified_cols = bms_union(view_perminfo->insertedCols,
-								  view_perminfo->updatedCols);
 
 		foreach(lc, parsetree->targetList)
 		{
@@ -3417,10 +3350,13 @@ rewriteTargetView(Query *parsetree, Relation view)
 						errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						errmsg("cannot merge into view \"%s\"",
 							   RelationGetRelationName(view)),
-						errdetail("MERGE is not supported for views with INSTEAD OF triggers for some actions but not all."),
+						errdetail("MERGE is not supported for views with INSTEAD OF triggers for some actions, but not others."),
 						errhint("To enable merging into the view, either provide a full set of INSTEAD OF triggers or drop the existing INSTEAD OF triggers."));
 		}
 	}
+
+	/* Locate RTE describing the view in the outer query */
+	view_rte = rt_fetch(parsetree->resultRelation, parsetree->rtable);
 
 	/*
 	 * If we get here, view_query_is_auto_updatable() has verified that the
@@ -3516,7 +3452,10 @@ rewriteTargetView(Query *parsetree, Relation view)
 	 * Note: the original view's RTEPermissionInfo remains in the query's
 	 * rteperminfos so that the executor still performs appropriate
 	 * permissions checks for the query caller's use of the view.
-	 *
+	 */
+	view_perminfo = getRTEPermissionInfo(parsetree->rteperminfos, view_rte);
+
+	/*
 	 * Disregard the perminfo in viewquery->rteperminfos that the base_rte
 	 * would currently be pointing at, because we'd like it to point now to a
 	 * new one that will be filled below.  Must set perminfoindex to 0 to not
@@ -3895,9 +3834,9 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length)
 	ListCell   *lc1;
 
 	/*
-	 * First, recursively process any insert/update/delete/merge statements in
-	 * WITH clauses.  (We have to do this first because the WITH clauses may
-	 * get copied into rule actions below.)
+	 * First, recursively process any insert/update/delete statements in WITH
+	 * clauses.  (We have to do this first because the WITH clauses may get
+	 * copied into rule actions below.)
 	 */
 	foreach(lc1, parsetree->cteList)
 	{
@@ -3922,8 +3861,7 @@ RewriteQuery(Query *parsetree, List *rewrite_events, int orig_rt_length)
 			if (!(ctequery->commandType == CMD_SELECT ||
 				  ctequery->commandType == CMD_UPDATE ||
 				  ctequery->commandType == CMD_INSERT ||
-				  ctequery->commandType == CMD_DELETE ||
-				  ctequery->commandType == CMD_MERGE))
+				  ctequery->commandType == CMD_DELETE))
 			{
 				/*
 				 * Currently it could only be NOTIFY; this error message will

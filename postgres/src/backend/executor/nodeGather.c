@@ -30,13 +30,18 @@
 
 #include "postgres.h"
 
+#include "access/relscan.h"
+#include "access/xact.h"
+#include "executor/execdebug.h"
 #include "executor/execParallel.h"
-#include "executor/executor.h"
 #include "executor/nodeGather.h"
+#include "executor/nodeSubplan.h"
 #include "executor/tqueue.h"
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
-#include "utils/wait_event.h"
+#include "pgstat.h"
+#include "utils/memutils.h"
+#include "utils/rel.h"
 
 
 static TupleTableSlot *ExecGather(PlanState *pstate);

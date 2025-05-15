@@ -23,10 +23,12 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/session.h"
+#include "access/sysattr.h"
 #include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
+#include "catalog/catalog.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_collation.h"
@@ -318,7 +320,7 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 	bool		isnull;
 	char	   *collate;
 	char	   *ctype;
-	char	   *datlocale;
+	char	   *iculocale;
 
 	/* Fetch our pg_database row normally, via syscache */
 	tup = SearchSysCache1(DATABASEOID, ObjectIdGetDatum(MyDatabaseId));
@@ -341,13 +343,13 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 	 * These checks are not enforced when in standalone mode, so that there is
 	 * a way to recover from disabling all access to all databases, for
 	 * example "UPDATE pg_database SET datallowconn = false;".
+	 *
+	 * We do not enforce them for autovacuum worker processes either.
 	 */
-	if (IsUnderPostmaster)
+	if (IsUnderPostmaster && !IsAutoVacuumWorkerProcess())
 	{
 		/*
 		 * Check that the database is currently allowing connections.
-		 * (Background processes can override this test and the next one by
-		 * setting override_allow_connections.)
 		 */
 		if (!dbform->datallowconn && !override_allow_connections)
 			ereport(FATAL,
@@ -360,7 +362,7 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 		 * is redundant, but since we have the flag, might as well check it
 		 * and save a few cycles.)
 		 */
-		if (!am_superuser && !override_allow_connections &&
+		if (!am_superuser &&
 			object_aclcheck(DatabaseRelationId, MyDatabaseId, GetUserId(),
 							ACL_CONNECT) != ACLCHECK_OK)
 			ereport(FATAL,
@@ -369,9 +371,7 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 					 errdetail("User does not have CONNECT privilege.")));
 
 		/*
-		 * Check connection limit for this database.  We enforce the limit
-		 * only for regular backends, since other process types have their own
-		 * PGPROC pools.
+		 * Check connection limit for this database.
 		 *
 		 * There is a race condition here --- we create our PGPROC before
 		 * checking for other PGPROCs.  If two backends did this at about the
@@ -381,7 +381,6 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 		 * just document that the connection limit is approximate.
 		 */
 		if (dbform->datconnlimit >= 0 &&
-			AmRegularBackendProcess() &&
 			!am_superuser &&
 			CountDBConnections(MyDatabaseId) > dbform->datconnlimit)
 			ereport(FATAL,
@@ -426,21 +425,12 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 		strcmp(ctype, "POSIX") == 0)
 		database_ctype_is_c = true;
 
-	if (dbform->datlocprovider == COLLPROVIDER_BUILTIN)
-	{
-		datum = SysCacheGetAttrNotNull(DATABASEOID, tup, Anum_pg_database_datlocale);
-		datlocale = TextDatumGetCString(datum);
-
-		builtin_validate_locale(dbform->encoding, datlocale);
-
-		default_locale.info.builtin.locale = MemoryContextStrdup(TopMemoryContext, datlocale);
-	}
-	else if (dbform->datlocprovider == COLLPROVIDER_ICU)
+	if (dbform->datlocprovider == COLLPROVIDER_ICU)
 	{
 		char	   *icurules;
 
-		datum = SysCacheGetAttrNotNull(DATABASEOID, tup, Anum_pg_database_datlocale);
-		datlocale = TextDatumGetCString(datum);
+		datum = SysCacheGetAttrNotNull(DATABASEOID, tup, Anum_pg_database_daticulocale);
+		iculocale = TextDatumGetCString(datum);
 
 		datum = SysCacheGetAttr(DATABASEOID, tup, Anum_pg_database_daticurules, &isnull);
 		if (!isnull)
@@ -448,10 +438,10 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 		else
 			icurules = NULL;
 
-		make_icu_collator(datlocale, icurules, &default_locale);
+		make_icu_collator(iculocale, icurules, &default_locale);
 	}
 	else
-		datlocale = NULL;
+		iculocale = NULL;
 
 	default_locale.provider = dbform->datlocprovider;
 
@@ -473,16 +463,10 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 	{
 		char	   *actual_versionstr;
 		char	   *collversionstr;
-		char	   *locale;
 
 		collversionstr = TextDatumGetCString(datum);
 
-		if (dbform->datlocprovider == COLLPROVIDER_LIBC)
-			locale = collate;
-		else
-			locale = datlocale;
-
-		actual_versionstr = get_collation_actual_version(dbform->datlocprovider, locale);
+		actual_versionstr = get_collation_actual_version(dbform->datlocprovider, dbform->datlocprovider == COLLPROVIDER_ICU ? iculocale : collate);
 		if (!actual_versionstr)
 			/* should not happen */
 			elog(WARNING,
@@ -578,9 +562,9 @@ InitializeMaxBackends(void)
 {
 	Assert(MaxBackends == 0);
 
-	/* Note that this does not include "auxiliary" processes */
-	MaxBackends = MaxConnections + autovacuum_max_workers +
-		max_worker_processes + max_wal_senders + NUM_SPECIAL_WORKER_PROCS;
+	/* the extra unit accounts for the autovacuum launcher */
+	MaxBackends = MaxConnections + autovacuum_max_workers + 1 +
+		max_worker_processes + max_wal_senders;
 
 	/* internal error because the values were all checked previously */
 	if (MaxBackends > MAX_BACKENDS)
@@ -844,7 +828,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	before_shmem_exit(ShutdownPostgres, 0);
 
 	/* The autovacuum launcher is done here */
-	if (AmAutoVacuumLauncherProcess())
+	if (IsAutoVacuumLauncherProcess())
 	{
 		/* report this backend in the PgBackendStatus array */
 		pgstat_bestart();
@@ -889,7 +873,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 * process, we use a fixed ID, otherwise we figure it out from the
 	 * authenticated user name.
 	 */
-	if (bootstrap || AmAutoVacuumWorkerProcess() || AmLogicalSlotSyncWorkerProcess())
+	if (bootstrap || IsAutoVacuumWorkerProcess() || IsLogicalSlotSyncWorker())
 	{
 		InitializeSessionUserIdStandalone();
 		am_superuser = true;
@@ -905,7 +889,7 @@ InitPostgres(const char *in_dbname, Oid dboid,
 					 errhint("You should immediately run CREATE USER \"%s\" SUPERUSER;.",
 							 username != NULL ? username : "postgres")));
 	}
-	else if (AmBackgroundWorkerProcess())
+	else if (IsBackgroundWorker)
 	{
 		if (username == NULL && !OidIsValid(useroid))
 		{
@@ -943,16 +927,17 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	}
 
 	/*
-	 * The last few regular connection slots are reserved for superusers and
-	 * roles with privileges of pg_use_reserved_connections.  We do not apply
-	 * these limits to background processes, since they all have their own
-	 * pools of PGPROC slots.
+	 * The last few connection slots are reserved for superusers and roles
+	 * with privileges of pg_use_reserved_connections.  Replication
+	 * connections are drawn from slots reserved with max_wal_senders and are
+	 * not limited by max_connections, superuser_reserved_connections, or
+	 * reserved_connections.
 	 *
 	 * Note: At this point, the new backend has already claimed a proc struct,
 	 * so we must check whether the number of free slots is strictly less than
 	 * the reserved connection limits.
 	 */
-	if (AmRegularBackendProcess() && !am_superuser &&
+	if (!am_superuser && !am_walsender &&
 		(SuperuserReservedConnections + ReservedConnections) > 0 &&
 		!HaveNFreeProcs(SuperuserReservedConnections + ReservedConnections, &nfree))
 	{

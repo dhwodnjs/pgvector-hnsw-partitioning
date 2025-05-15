@@ -66,7 +66,7 @@ my @options = (
 	# name, options, stderr checks
 	[
 		'bad option',
-		'-h home -p 5432 -U calvin ---debug --bad-option',
+		'-h home -p 5432 -U calvin -d --bad-option',
 		[qr{--help.*more information}]
 	],
 	[

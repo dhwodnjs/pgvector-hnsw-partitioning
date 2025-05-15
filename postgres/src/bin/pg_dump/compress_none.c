@@ -94,7 +94,8 @@ read_none(void *ptr, size_t size, size_t *rsize, CompressFileHandle *CFH)
 
 	ret = fread(ptr, 1, size, fp);
 	if (ret != size && !feof(fp))
-		pg_fatal("could not read from input file: %m");
+		pg_fatal("could not read from input file: %s",
+				 strerror(errno));
 
 	if (rsize)
 		*rsize = ret;
@@ -136,7 +137,7 @@ getc_none(CompressFileHandle *CFH)
 	if (ret == EOF)
 	{
 		if (!feof(fp))
-			pg_fatal("could not read from input file: %m");
+			pg_fatal("could not read from input file: %s", strerror(errno));
 		else
 			pg_fatal("could not read from input file: end of file");
 	}

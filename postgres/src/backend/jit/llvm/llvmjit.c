@@ -38,7 +38,6 @@
 #endif
 
 #include "jit/llvmjit.h"
-#include "jit/llvmjit_backport.h"
 #include "jit/llvmjit_emit.h"
 #include "miscadmin.h"
 #include "portability/instr_time.h"
@@ -250,7 +249,7 @@ llvm_create_context(int jitFlags)
 	context->base.flags = jitFlags;
 
 	/* ensure cleanup */
-	context->resowner = CurrentResourceOwner;
+	context->base.resowner = CurrentResourceOwner;
 	ResourceOwnerRememberJIT(CurrentResourceOwner, context);
 
 	llvm_jit_context_in_use_count++;
@@ -324,8 +323,8 @@ llvm_release_context(JitContext *context)
 
 	llvm_leave_fatal_on_oom();
 
-	if (llvm_jit_context->resowner)
-		ResourceOwnerForgetJIT(llvm_jit_context->resowner, llvm_jit_context);
+	if (context->resowner)
+		ResourceOwnerForgetJIT(context->resowner, llvm_jit_context);
 }
 
 /*
@@ -553,11 +552,8 @@ llvm_copy_attributes(LLVMValueRef v_from, LLVMValueRef v_to)
 	/* copy function attributes */
 	llvm_copy_attributes_at_index(v_from, v_to, LLVMAttributeFunctionIndex);
 
-	if (LLVMGetTypeKind(LLVMGetFunctionReturnType(v_to)) != LLVMVoidTypeKind)
-	{
-		/* and the return value attributes */
-		llvm_copy_attributes_at_index(v_from, v_to, LLVMAttributeReturnIndex);
-	}
+	/* and the return value attributes */
+	llvm_copy_attributes_at_index(v_from, v_to, LLVMAttributeReturnIndex);
 
 	/* and each function parameter's attribute */
 	param_count = LLVMCountParams(v_from);
@@ -1034,12 +1030,20 @@ llvm_shutdown(int code, Datum arg)
 
 		if (llvm_opt3_orc)
 		{
+#if defined(HAVE_DECL_LLVMORCREGISTERPERF) && HAVE_DECL_LLVMORCREGISTERPERF
+			if (jit_profiling_support)
+				LLVMOrcUnregisterPerf(llvm_opt3_orc);
+#endif
 			LLVMOrcDisposeInstance(llvm_opt3_orc);
 			llvm_opt3_orc = NULL;
 		}
 
 		if (llvm_opt0_orc)
 		{
+#if defined(HAVE_DECL_LLVMORCREGISTERPERF) && HAVE_DECL_LLVMORCREGISTERPERF
+			if (jit_profiling_support)
+				LLVMOrcUnregisterPerf(llvm_opt0_orc);
+#endif
 			LLVMOrcDisposeInstance(llvm_opt0_orc);
 			llvm_opt0_orc = NULL;
 		}
@@ -1274,14 +1278,8 @@ llvm_log_jit_error(void *ctx, LLVMErrorRef error)
 static LLVMOrcObjectLayerRef
 llvm_create_object_layer(void *Ctx, LLVMOrcExecutionSessionRef ES, const char *Triple)
 {
-#ifdef USE_LLVM_BACKPORT_SECTION_MEMORY_MANAGER
-	LLVMOrcObjectLayerRef objlayer =
-		LLVMOrcCreateRTDyldObjectLinkingLayerWithSafeSectionMemoryManager(ES);
-#else
 	LLVMOrcObjectLayerRef objlayer =
 		LLVMOrcCreateRTDyldObjectLinkingLayerWithSectionMemoryManager(ES);
-#endif
-
 
 #if defined(HAVE_DECL_LLVMCREATEGDBREGISTRATIONLISTENER) && HAVE_DECL_LLVMCREATEGDBREGISTRATIONLISTENER
 	if (jit_debugging_support)
@@ -1379,8 +1377,8 @@ llvm_error_message(LLVMErrorRef error)
 static void
 ResOwnerReleaseJitContext(Datum res)
 {
-	LLVMJitContext *context = (LLVMJitContext *) DatumGetPointer(res);
+	JitContext *context = (JitContext *) DatumGetPointer(res);
 
 	context->resowner = NULL;
-	jit_release_context(&context->base);
+	jit_release_context(context);
 }

@@ -82,46 +82,35 @@ add_include_path(char *path)
 	}
 }
 
-/*
- * Process a command line -D switch
- */
 static void
 add_preprocessor_define(char *define)
 {
-	/* copy the argument to avoid relying on argv storage */
-	char	   *define_copy = mm_strdup(define);
-	char	   *ptr;
-	struct _defines *newdef;
+	struct _defines *pd = defines;
+	char	   *ptr,
+			   *define_copy = mm_strdup(define);
 
-	newdef = mm_alloc(sizeof(struct _defines));
+	defines = mm_alloc(sizeof(struct _defines));
 
 	/* look for = sign */
 	ptr = strchr(define_copy, '=');
 	if (ptr != NULL)
 	{
-		/* symbol has a value */
 		char	   *tmp;
 
-		/* strip any spaces between name and '=' */
-		for (tmp = ptr - 1; tmp >= define_copy && *tmp == ' '; tmp--);
+		/* symbol has a value */
+		for (tmp = ptr - 1; *tmp == ' '; tmp--);
 		tmp[1] = '\0';
-
-		/*
-		 * Note we don't bother to separately malloc cmdvalue; it will never
-		 * be freed so that's not necessary.
-		 */
-		newdef->cmdvalue = ptr + 1;
+		defines->olddef = define_copy;
+		defines->newdef = ptr + 1;
 	}
 	else
 	{
-		/* define it as "1"; again no need to malloc it */
-		newdef->cmdvalue = "1";
+		defines->olddef = define_copy;
+		defines->newdef = mm_strdup("1");
 	}
-	newdef->name = define_copy;
-	newdef->value = mm_strdup(newdef->cmdvalue);
-	newdef->used = NULL;
-	newdef->next = defines;
-	defines = newdef;
+	defines->pertinent = true;
+	defines->used = NULL;
+	defines->next = pd;
 }
 
 #define ECPG_GETOPT_LONG_REGRESSION		1
@@ -227,8 +216,8 @@ main(int argc, char *const argv[])
 
 				if (base_yyout == NULL)
 				{
-					fprintf(stderr, _("%s: could not open file \"%s\": %m\n"),
-							progname, output_filename);
+					fprintf(stderr, _("%s: could not open file \"%s\": %s\n"),
+							progname, output_filename, strerror(errno));
 					output_filename = NULL;
 				}
 				else
@@ -342,8 +331,8 @@ main(int argc, char *const argv[])
 					base_yyout = fopen(output_filename, PG_BINARY_W);
 					if (base_yyout == NULL)
 					{
-						fprintf(stderr, _("%s: could not open file \"%s\": %m\n"),
-								progname, output_filename);
+						fprintf(stderr, _("%s: could not open file \"%s\": %s\n"),
+								progname, output_filename, strerror(errno));
 						free(output_filename);
 						output_filename = NULL;
 						free(input_filename);
@@ -353,14 +342,12 @@ main(int argc, char *const argv[])
 			}
 
 			if (base_yyin == NULL)
-				fprintf(stderr, _("%s: could not open file \"%s\": %m\n"),
-						progname, argv[fnr]);
+				fprintf(stderr, _("%s: could not open file \"%s\": %s\n"),
+						progname, argv[fnr], strerror(errno));
 			else
 			{
 				struct cursor *ptr;
 				struct _defines *defptr;
-				struct _defines *prevdefptr;
-				struct _defines *nextdefptr;
 				struct typedefs *typeptr;
 				struct declared_list *list;
 
@@ -398,28 +385,28 @@ main(int argc, char *const argv[])
 					free(this);
 				}
 
-				/* restore defines to their command-line state */
-				prevdefptr = NULL;
-				for (defptr = defines; defptr != NULL; defptr = nextdefptr)
+				/* remove non-pertinent old defines as well */
+				while (defines && !defines->pertinent)
 				{
-					nextdefptr = defptr->next;
-					if (defptr->cmdvalue != NULL)
+					defptr = defines;
+					defines = defines->next;
+
+					free(defptr->newdef);
+					free(defptr->olddef);
+					free(defptr);
+				}
+
+				for (defptr = defines; defptr != NULL; defptr = defptr->next)
+				{
+					struct _defines *this = defptr->next;
+
+					if (this && !this->pertinent)
 					{
-						/* keep it, resetting the value */
-						free(defptr->value);
-						defptr->value = mm_strdup(defptr->cmdvalue);
-						prevdefptr = defptr;
-					}
-					else
-					{
-						/* remove it */
-						if (prevdefptr != NULL)
-							prevdefptr->next = nextdefptr;
-						else
-							defines = nextdefptr;
-						free(defptr->name);
-						free(defptr->value);
-						free(defptr);
+						defptr->next = this->next;
+
+						free(this->newdef);
+						free(this->olddef);
+						free(this);
 					}
 				}
 

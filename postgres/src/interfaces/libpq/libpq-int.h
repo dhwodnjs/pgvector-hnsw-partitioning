@@ -231,12 +231,6 @@ typedef enum
 	PGASYNC_PIPELINE_IDLE,		/* "Idle" between commands in pipeline mode */
 } PGAsyncStatusType;
 
-/* Bitmasks for allowed_enc_methods and failed_enc_methods */
-#define ENC_ERROR			0
-#define ENC_PLAINTEXT		0x01
-#define ENC_GSSAPI			0x02
-#define ENC_SSL				0x04
-
 /* Target server type (decoded value of target_session_attrs) */
 typedef enum
 {
@@ -394,7 +388,6 @@ struct pg_conn
 	char	   *keepalives_count;	/* maximum number of TCP keepalive
 									 * retransmits */
 	char	   *sslmode;		/* SSL mode (require,prefer,allow,disable) */
-	char	   *sslnegotiation; /* SSL initiation style (postgres,direct) */
 	char	   *sslcompression; /* SSL compression (0 or 1) */
 	char	   *sslkey;			/* client key filename */
 	char	   *sslcert;		/* client certificate filename */
@@ -415,10 +408,6 @@ struct pg_conn
 	char	   *target_session_attrs;	/* desired session properties */
 	char	   *require_auth;	/* name of the expected auth method */
 	char	   *load_balance_hosts; /* load balance over hosts */
-
-	bool		cancelRequest;	/* true if this connection is used to send a
-								 * cancel request, instead of being a normal
-								 * connection that's used for queries */
 
 	/* Optional file to write trace info to */
 	FILE	   *Pfdebug;
@@ -441,10 +430,7 @@ struct pg_conn
 	bool		nonblocking;	/* whether this connection is using nonblock
 								 * sending semantics */
 	PGpipelineStatus pipelineStatus;	/* status of pipeline mode */
-	bool		partialResMode; /* true if single-row or chunked mode */
 	bool		singleRowMode;	/* return current query result row-by-row? */
-	int			maxChunkSize;	/* return query result in chunks not exceeding
-								 * this number of rows */
 	char		copy_is_binary; /* 1 = copy binary, 0 = copy text */
 	int			copy_already_done;	/* # bytes already returned in COPY OUT */
 	PGnotify   *notifyHead;		/* oldest unreported Notify msg */
@@ -545,30 +531,27 @@ struct pg_conn
 	 * and error_result is true, then we need to return a PGRES_FATAL_ERROR
 	 * result, but haven't yet constructed it; text for the error has been
 	 * appended to conn->errorMessage.  (Delaying construction simplifies
-	 * dealing with out-of-memory cases.)  If saved_result isn't NULL, it is a
-	 * PGresult that will replace "result" after we return that one; we use
-	 * that in partial-result mode to remember the query's tuple metadata.
+	 * dealing with out-of-memory cases.)  If next_result isn't NULL, it is a
+	 * PGresult that will replace "result" after we return that one.
 	 */
 	PGresult   *result;			/* result being constructed */
 	bool		error_result;	/* do we need to make an ERROR result? */
-	PGresult   *saved_result;	/* original, empty result in partialResMode */
+	PGresult   *next_result;	/* next result (used in single-row mode) */
 
 	/* Assorted state for SASL, SSL, GSS, etc */
 	const pg_fe_sasl_mech *sasl;
 	void	   *sasl_state;
 	int			scram_sha_256_iterations;
 
-	uint8		allowed_enc_methods;
-	uint8		failed_enc_methods;
-	uint8		current_enc_method;
-
 	/* SSL structures */
 	bool		ssl_in_use;
-	bool		ssl_handshake_started;
 	bool		ssl_cert_requested; /* Did the server ask us for a cert? */
 	bool		ssl_cert_sent;	/* Did we send one in reply? */
 
 #ifdef USE_SSL
+	bool		allow_ssl_try;	/* Allowed to try SSL negotiation */
+	bool		wait_ssl_try;	/* Delay SSL negotiation until after
+								 * attempting normal connection */
 #ifdef USE_OPENSSL
 	SSL		   *ssl;			/* SSL status, if have SSL connection */
 	X509	   *peer;			/* X509 cert of server */
@@ -591,6 +574,7 @@ struct pg_conn
 	gss_name_t	gtarg_nam;		/* GSS target name */
 
 	/* The following are encryption-only */
+	bool		try_gss;		/* GSS attempting permitted */
 	bool		gssenc;			/* GSS encryption is usable */
 	gss_cred_id_t gcred;		/* GSS credential temp storage. */
 
@@ -635,6 +619,24 @@ struct pg_conn
 
 	/* Buffer for receiving various parts of messages */
 	PQExpBufferData workBuffer; /* expansible string */
+};
+
+/* PGcancel stores all data necessary to cancel a connection. A copy of this
+ * data is required to safely cancel a connection running on a different
+ * thread.
+ */
+struct pg_cancel
+{
+	SockAddr	raddr;			/* Remote address */
+	int			be_pid;			/* PID of backend --- needed for cancels */
+	int			be_key;			/* key of backend --- needed for cancels */
+	int			pgtcp_user_timeout; /* tcp user timeout */
+	int			keepalives;		/* use TCP keepalives? */
+	int			keepalives_idle;	/* time between TCP keepalives */
+	int			keepalives_interval;	/* time between TCP keepalive
+										 * retransmits */
+	int			keepalives_count;	/* maximum number of TCP keepalive
+									 * retransmits */
 };
 
 
@@ -685,7 +687,6 @@ extern void pqClosePGconn(PGconn *conn);
 extern int	pqPacketSend(PGconn *conn, char pack_type,
 						 const void *buf, size_t buf_len);
 extern bool pqGetHomeDirectory(char *buf, int bufsize);
-extern bool pqCopyPGconn(PGconn *srcConn, PGconn *dstConn);
 extern bool pqParseIntParam(const char *value, int *result, PGconn *conn,
 							const char *context);
 
@@ -755,7 +756,7 @@ extern int	pqReadData(PGconn *conn);
 extern int	pqFlush(PGconn *conn);
 extern int	pqWait(int forRead, int forWrite, PGconn *conn);
 extern int	pqWaitTimed(int forRead, int forWrite, PGconn *conn,
-						pg_usec_time_t end_time);
+						time_t finish_time);
 extern int	pqReadReady(PGconn *conn);
 extern int	pqWriteReady(PGconn *conn);
 

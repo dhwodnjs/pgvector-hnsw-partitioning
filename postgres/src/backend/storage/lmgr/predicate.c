@@ -137,7 +137,7 @@
  *	SerialControlLock
  *		- Protects SerialControlData members
  *
- *	SLRU per-bank locks
+ *	SerialSLRULock
  *		- Protects SerialSlruCtl
  *
  * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
@@ -199,6 +199,7 @@
 
 #include "access/parallel.h"
 #include "access/slru.h"
+#include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/twophase_rmgr.h"
@@ -207,6 +208,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "port/pg_lfind.h"
+#include "storage/bufmgr.h"
 #include "storage/predicate.h"
 #include "storage/predicate_internals.h"
 #include "storage/proc.h"
@@ -344,7 +346,7 @@ static SlruCtlData SerialSlruCtlData;
 
 typedef struct SerialControlData
 {
-	int64		headPage;		/* newest initialized page */
+	int			headPage;		/* newest initialized page */
 	TransactionId headXid;		/* newest valid Xid in the SLRU */
 	TransactionId tailXid;		/* oldest xmin we might be interested in */
 }			SerialControlData;
@@ -651,7 +653,7 @@ SetRWConflict(SERIALIZABLEXACT *reader, SERIALIZABLEXACT *writer)
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("not enough elements in RWConflictPool to record a read/write conflict"),
-				 errhint("You might need to run fewer transactions at a time or increase \"max_connections\".")));
+				 errhint("You might need to run fewer transactions at a time or increase max_connections.")));
 
 	conflict = dlist_head_element(RWConflictData, outLink, &RWConflictPool->availableList);
 	dlist_delete(&conflict->outLink);
@@ -676,7 +678,7 @@ SetPossibleUnsafeConflict(SERIALIZABLEXACT *roXact,
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("not enough elements in RWConflictPool to record a potential read/write conflict"),
-				 errhint("You might need to run fewer transactions at a time or increase \"max_connections\".")));
+				 errhint("You might need to run fewer transactions at a time or increase max_connections.")));
 
 	conflict = dlist_head_element(RWConflictData, outLink, &RWConflictPool->availableList);
 	dlist_delete(&conflict->outLink);
@@ -877,17 +879,12 @@ SerialAdd(TransactionId xid, SerCommitSeqNo minConflictCommitSeqNo)
 	LWLockAcquire(SerialControlLock, LW_EXCLUSIVE);
 
 	/*
-	 * If 'xid' is older than the global xmin (== tailXid), there's no need to
-	 * store it, after all. This can happen if the oldest transaction holding
-	 * back the global xmin just finished, making 'xid' uninteresting, but
-	 * ClearOldPredicateLocks() has not yet run.
+	 * If no serializable transactions are active, there shouldn't be anything
+	 * to push out to the SLRU.  Hitting this assert would mean there's
+	 * something wrong with the earlier cleanup logic.
 	 */
 	tailXid = serialControl->tailXid;
-	if (!TransactionIdIsValid(tailXid) || TransactionIdPrecedes(xid, tailXid))
-	{
-		LWLockRelease(SerialControlLock);
-		return;
-	}
+	Assert(TransactionIdIsValid(tailXid));
 
 	/*
 	 * If the SLRU is currently unused, zero out the whole active region from
@@ -913,25 +910,20 @@ SerialAdd(TransactionId xid, SerCommitSeqNo minConflictCommitSeqNo)
 	if (isNewPage)
 		serialControl->headPage = targetPage;
 
+	LWLockAcquire(lock, LW_EXCLUSIVE);
+
 	if (isNewPage)
 	{
-		/* Initialize intervening pages; might involve trading locks */
-		for (;;)
+		/* Initialize intervening pages. */
+		while (firstZeroPage != targetPage)
 		{
-			lock = SimpleLruGetBankLock(SerialSlruCtl, firstZeroPage);
-			LWLockAcquire(lock, LW_EXCLUSIVE);
-			slotno = SimpleLruZeroPage(SerialSlruCtl, firstZeroPage);
-			if (firstZeroPage == targetPage)
-				break;
+			(void) SimpleLruZeroPage(SerialSlruCtl, firstZeroPage);
 			firstZeroPage = SerialNextPage(firstZeroPage);
-			LWLockRelease(lock);
 		}
+		slotno = SimpleLruZeroPage(SerialSlruCtl, targetPage);
 	}
 	else
-	{
-		LWLockAcquire(lock, LW_EXCLUSIVE);
 		slotno = SimpleLruReadPage(SerialSlruCtl, targetPage, true, xid);
-	}
 
 	SerialValue(slotno, xid) = minConflictCommitSeqNo;
 	SerialSlruCtl->shared->page_dirty[slotno] = true;
@@ -1040,7 +1032,7 @@ SerialSetActiveSerXmin(TransactionId xid)
 void
 CheckPointPredicate(void)
 {
-	int64		truncateCutoffPage;
+	int			truncateCutoffPage;
 
 	LWLockAcquire(SerialControlLock, LW_EXCLUSIVE);
 
@@ -1053,7 +1045,7 @@ CheckPointPredicate(void)
 
 	if (TransactionIdIsValid(serialControl->tailXid))
 	{
-		int64		tailPage;
+		int			tailPage;
 
 		tailPage = SerialPage(serialControl->tailXid);
 
@@ -1683,7 +1675,7 @@ GetSerializableTransactionSnapshot(Snapshot snapshot)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot use serializable mode in a hot standby"),
-				 errdetail("\"default_transaction_isolation\" is set to \"serializable\"."),
+				 errdetail("default_transaction_isolation is set to \"serializable\"."),
 				 errhint("You can use \"SET default_transaction_isolation = 'repeatable read'\" to change the default.")));
 
 	/*
@@ -2466,7 +2458,7 @@ CreatePredicateLock(const PREDICATELOCKTARGETTAG *targettag,
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of shared memory"),
-				 errhint("You might need to increase \"%s\".", "max_pred_locks_per_transaction")));
+				 errhint("You might need to increase %s.", "max_pred_locks_per_transaction")));
 	if (!found)
 		dlist_init(&target->predicateLocks);
 
@@ -2481,7 +2473,7 @@ CreatePredicateLock(const PREDICATELOCKTARGETTAG *targettag,
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of shared memory"),
-				 errhint("You might need to increase \"%s\".", "max_pred_locks_per_transaction")));
+				 errhint("You might need to increase %s.", "max_pred_locks_per_transaction")));
 
 	if (!found)
 	{
@@ -3878,7 +3870,7 @@ ReleaseOneSerializableXact(SERIALIZABLEXACT *sxact, bool partial,
 				ereport(ERROR,
 						(errcode(ERRCODE_OUT_OF_MEMORY),
 						 errmsg("out of shared memory"),
-						 errhint("You might need to increase \"%s\".", "max_pred_locks_per_transaction")));
+						 errhint("You might need to increase %s.", "max_pred_locks_per_transaction")));
 			if (found)
 			{
 				Assert(predlock->commitSeqNo != 0);

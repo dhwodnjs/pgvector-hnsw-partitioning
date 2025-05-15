@@ -41,7 +41,6 @@ extern bool standard_strings(void);
 extern const char *session_username(void);
 
 extern void expand_tilde(char **filename);
-extern void clean_bind_state(void);
 
 extern bool recognized_connection_string(const char *connstr);
 

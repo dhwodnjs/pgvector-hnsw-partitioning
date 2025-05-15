@@ -21,6 +21,7 @@ my $node = PostgreSQL::Test::Cluster->new('wraparound');
 $node->init;
 $node->append_conf(
 	'postgresql.conf', qq[
+autovacuum = off # run autovacuum only when to anti wraparound
 autovacuum_naptime = 1s
 # so it's easier to verify the order of operations
 autovacuum_max_workers = 1
@@ -29,11 +30,10 @@ log_autovacuum_min_duration = 0
 $node->start;
 $node->safe_psql('postgres', 'CREATE EXTENSION xid_wraparound');
 
-# Create a test table. We disable autovacuum on the table to run
-# it only to prevent wraparound.
+# Create a test table
 $node->safe_psql(
 	'postgres', qq[
-CREATE TABLE wraparoundtest(t text) WITH (autovacuum_enabled = off);
+CREATE TABLE wraparoundtest(t text);
 INSERT INTO wraparoundtest VALUES ('beginning');
 ]);
 

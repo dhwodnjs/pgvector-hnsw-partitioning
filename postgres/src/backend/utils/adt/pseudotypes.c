@@ -23,7 +23,10 @@
 #include "postgres.h"
 
 #include "libpq/pqformat.h"
-#include "utils/fmgrprotos.h"
+#include "utils/array.h"
+#include "utils/builtins.h"
+#include "utils/rangetypes.h"
+#include "utils/multirangetypes.h"
 
 
 /*

@@ -38,6 +38,7 @@
 #include "utils/catcache.h"
 #include "utils/fmgroids.h"
 #include "utils/syscache.h"
+#include "utils/timestamp.h"
 #include "utils/varlena.h"
 
 /*

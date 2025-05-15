@@ -65,8 +65,8 @@ static char *shellprog = SHELLPROG;
 const char *basic_diff_opts = "";
 const char *pretty_diff_opts = "-U3";
 #else
-const char *basic_diff_opts = "--strip-trailing-cr";
-const char *pretty_diff_opts = "--strip-trailing-cr -U3";
+const char *basic_diff_opts = "-w";
+const char *pretty_diff_opts = "-w -U3";
 #endif
 
 /*
@@ -341,14 +341,6 @@ emit_tap_output_v(TAPtype type, const char *fmt, va_list argp)
 {
 	va_list		argp_logfile;
 	FILE	   *fp;
-	int			save_errno;
-
-	/*
-	 * The fprintf() calls used to output TAP-protocol elements might clobber
-	 * errno, so save it here and restore it before vfprintf()-ing the user's
-	 * format string, in case it contains %m placeholders.
-	 */
-	save_errno = errno;
 
 	/*
 	 * Diagnostic output will be hidden by prove unless printed to stderr. The
@@ -387,13 +379,9 @@ emit_tap_output_v(TAPtype type, const char *fmt, va_list argp)
 		if (logfile)
 			fprintf(logfile, "# ");
 	}
-	errno = save_errno;
 	vfprintf(fp, fmt, argp);
 	if (logfile)
-	{
-		errno = save_errno;
 		vfprintf(logfile, fmt, argp_logfile);
-	}
 
 	/*
 	 * If we are entering into a note with more details to follow, register
@@ -504,7 +492,10 @@ make_temp_sockdir(void)
 
 	temp_sockdir = mkdtemp(template);
 	if (temp_sockdir == NULL)
-		bail("could not create directory \"%s\": %m", template);
+	{
+		bail("could not create directory \"%s\": %s",
+			 template, strerror(errno));
+	}
 
 	/* Stage file names for remove_temp().  Unsafe in a signal handler. */
 	UNIXSOCK_PATH(sockself, port, temp_sockdir);
@@ -625,7 +616,8 @@ load_resultmap(void)
 		/* OK if it doesn't exist, else complain */
 		if (errno == ENOENT)
 			return;
-		bail("could not open file \"%s\" for reading: %m", buf);
+		bail("could not open file \"%s\" for reading: %s",
+			 buf, strerror(errno));
 	}
 
 	while (fgets(buf, sizeof(buf), f))
@@ -777,7 +769,7 @@ initialize_environment(void)
 	/*
 	 * Set timezone and datestyle for datetime-related tests
 	 */
-	setenv("PGTZ", "America/Los_Angeles", 1);
+	setenv("PGTZ", "PST8PDT", 1);
 	setenv("PGDATESTYLE", "Postgres, MDY", 1);
 
 	/*
@@ -1054,7 +1046,10 @@ config_sspi_auth(const char *pgdata, const char *superuser_name)
 #define CW(cond)	\
 	do { \
 		if (!(cond)) \
-			bail("could not write to file \"%s\": %m", fname); \
+		{ \
+			bail("could not write to file \"%s\": %s", \
+				 fname, strerror(errno)); \
+		} \
 	} while (0)
 
 	res = snprintf(fname, sizeof(fname), "%s/pg_hba.conf", pgdata);
@@ -1069,7 +1064,8 @@ config_sspi_auth(const char *pgdata, const char *superuser_name)
 	hba = fopen(fname, "w");
 	if (hba == NULL)
 	{
-		bail("could not open file \"%s\" for writing: %m", fname);
+		bail("could not open file \"%s\" for writing: %s",
+			 fname, strerror(errno));
 	}
 	CW(fputs("# Configuration written by config_sspi_auth()\n", hba) >= 0);
 	CW(fputs("host all all 127.0.0.1/32  sspi include_realm=1 map=regress\n",
@@ -1083,7 +1079,8 @@ config_sspi_auth(const char *pgdata, const char *superuser_name)
 	ident = fopen(fname, "w");
 	if (ident == NULL)
 	{
-		bail("could not open file \"%s\" for writing: %m", fname);
+		bail("could not open file \"%s\" for writing: %s",
+			 fname, strerror(errno));
 	}
 	CW(fputs("# Configuration written by config_sspi_auth()\n", ident) >= 0);
 
@@ -1177,7 +1174,8 @@ psql_end_command(StringInfo buf, const char *database)
 	}
 
 	/* Clean up */
-	destroyStringInfo(buf);
+	pfree(buf->data);
+	pfree(buf);
 }
 
 /*
@@ -1213,7 +1211,7 @@ spawn_process(const char *cmdline)
 	pid = fork();
 	if (pid == -1)
 	{
-		bail("could not fork: %m");
+		bail("could not fork: %s", strerror(errno));
 	}
 	if (pid == 0)
 	{
@@ -1229,7 +1227,7 @@ spawn_process(const char *cmdline)
 		cmdline2 = psprintf("exec %s", cmdline);
 		execl(shellprog, shellprog, "-c", cmdline2, (char *) NULL);
 		/* Not using the normal bail() here as we want _exit */
-		bail_noatexit("could not exec \"%s\": %m", shellprog);
+		bail_noatexit("could not exec \"%s\": %s", shellprog, strerror(errno));
 	}
 	/* in parent */
 	return pid;
@@ -1244,7 +1242,7 @@ spawn_process(const char *cmdline)
 		comspec = "CMD";
 
 	memset(&pi, 0, sizeof(pi));
-	cmdline2 = psprintf("\"%s\" /c \"%s\"", comspec, cmdline);
+	cmdline2 = psprintf("\"%s\" /d /c \"%s\"", comspec, cmdline);
 
 	if (!CreateRestrictedProcess(cmdline2, &pi))
 		exit(2);
@@ -1265,7 +1263,8 @@ file_size(const char *file)
 
 	if (!f)
 	{
-		diag("could not open file \"%s\" for reading: %m", file);
+		diag("could not open file \"%s\" for reading: %s",
+			 file, strerror(errno));
 		return -1;
 	}
 	fseek(f, 0, SEEK_END);
@@ -1286,7 +1285,8 @@ file_line_count(const char *file)
 
 	if (!f)
 	{
-		diag("could not open file \"%s\" for reading: %m", file);
+		diag("could not open file \"%s\" for reading: %s",
+			 file, strerror(errno));
 		return -1;
 	}
 	while ((c = fgetc(f)) != EOF)
@@ -1326,7 +1326,9 @@ static void
 make_directory(const char *dir)
 {
 	if (mkdir(dir, S_IRWXU | S_IRWXG | S_IRWXO) < 0)
-		bail("could not create directory \"%s\": %m", dir);
+	{
+		bail("could not create directory \"%s\": %s", dir, strerror(errno));
+	}
 }
 
 /*
@@ -1455,7 +1457,10 @@ results_differ(const char *testname, const char *resultsfile, const char *defaul
 
 		alt_expectfile = get_alternative_expectfile(expectfile, i);
 		if (!alt_expectfile)
-			bail("Unable to check secondary comparison files: %m");
+		{
+			bail("Unable to check secondary comparison files: %s",
+				 strerror(errno));
+		}
 
 		if (!file_exists(alt_expectfile))
 		{
@@ -1568,7 +1573,9 @@ wait_for_tests(PID_TYPE * pids, int *statuses, instr_time *stoptimes,
 		p = wait(&exit_status);
 
 		if (p == INVALID_PID)
-			bail("failed to wait for subprocesses: %m");
+		{
+			bail("failed to wait for subprocesses: %s", strerror(errno));
+		}
 #else
 		DWORD		exit_status;
 		int			r;
@@ -1658,7 +1665,10 @@ run_schedule(const char *schedule, test_start_function startfunc,
 
 	scf = fopen(schedule, "r");
 	if (!scf)
-		bail("could not open file \"%s\" for reading: %m", schedule);
+	{
+		bail("could not open file \"%s\" for reading: %s",
+			 schedule, strerror(errno));
+	}
 
 	while (fgets(scbuf, sizeof(scbuf), scf))
 	{
@@ -1922,15 +1932,20 @@ open_result_files(void)
 	logfilename = pg_strdup(file);
 	logfile = fopen(logfilename, "w");
 	if (!logfile)
-		bail("could not open file \"%s\" for writing: %m", logfilename);
+	{
+		bail("could not open file \"%s\" for writing: %s",
+			 logfilename, strerror(errno));
+	}
 
 	/* create the diffs file as empty */
 	snprintf(file, sizeof(file), "%s/regression.diffs", outputdir);
 	difffilename = pg_strdup(file);
 	difffile = fopen(difffilename, "w");
 	if (!difffile)
-		bail("could not open file \"%s\" for writing: %m", difffilename);
-
+	{
+		bail("could not open file \"%s\" for writing: %s",
+			 difffilename, strerror(errno));
+	}
 	/* we don't keep the diffs file open continuously */
 	fclose(difffile);
 
@@ -2392,8 +2407,10 @@ regression_main(int argc, char *argv[],
 		snprintf(buf, sizeof(buf), "%s/data/postgresql.conf", temp_instance);
 		pg_conf = fopen(buf, "a");
 		if (pg_conf == NULL)
-			bail("could not open \"%s\" for adding extra config: %m", buf);
-
+		{
+			bail("could not open \"%s\" for adding extra config: %s",
+				 buf, strerror(errno));
+		}
 		fputs("\n# Configuration added by pg_regress\n\n", pg_conf);
 		fputs("log_autovacuum_min_duration = 0\n", pg_conf);
 		fputs("log_checkpoints = on\n", pg_conf);
@@ -2411,8 +2428,8 @@ regression_main(int argc, char *argv[],
 			extra_conf = fopen(temp_config, "r");
 			if (extra_conf == NULL)
 			{
-				bail("could not open \"%s\" to read extra config: %m",
-					 temp_config);
+				bail("could not open \"%s\" to read extra config: %s",
+					 temp_config, strerror(errno));
 			}
 			while (fgets(line_buf, sizeof(line_buf), extra_conf) != NULL)
 				fputs(line_buf, pg_conf);
@@ -2487,7 +2504,7 @@ regression_main(int argc, char *argv[],
 				 outputdir);
 		postmaster_pid = spawn_process(buf);
 		if (postmaster_pid == INVALID_PID)
-			bail("could not spawn postmaster: %m");
+			bail("could not spawn postmaster: %s", strerror(errno));
 
 		/*
 		 * Wait till postmaster is able to accept connections; normally takes
@@ -2550,7 +2567,7 @@ regression_main(int argc, char *argv[],
 			 */
 #ifndef WIN32
 			if (kill(postmaster_pid, SIGKILL) != 0 && errno != ESRCH)
-				bail("could not kill failed postmaster: %m");
+				bail("could not kill failed postmaster: %s", strerror(errno));
 #else
 			if (TerminateProcess(postmaster_pid, 255) == 0)
 				bail("could not kill failed postmaster: error code %lu",

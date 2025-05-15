@@ -16,17 +16,20 @@
 #include "postgres.h"
 
 #include "access/sysattr.h"
+#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "parser/analyze.h"
-#include "parser/parse_clause.h"
 #include "parser/parse_collate.h"
+#include "parser/parsetree.h"
+#include "parser/parser.h"
+#include "parser/parse_clause.h"
 #include "parser/parse_cte.h"
 #include "parser/parse_expr.h"
 #include "parser/parse_merge.h"
 #include "parser/parse_relation.h"
 #include "parser/parse_target.h"
-#include "parser/parsetree.h"
 #include "utils/rel.h"
+#include "utils/relcache.h"
 
 static void setNamespaceForMergeWhen(ParseState *pstate,
 									 MergeWhenClause *mergeWhenClause,
@@ -40,9 +43,9 @@ static void setNamespaceVisibilityForRTE(List *namespace, RangeTblEntry *rte,
  * Make appropriate changes to the namespace visibility while transforming
  * individual action's quals and targetlist expressions. In particular, for
  * INSERT actions we must only see the source relation (since INSERT action is
- * invoked for NOT MATCHED [BY TARGET] tuples and hence there is no target
- * tuple to deal with). On the other hand, UPDATE and DELETE actions can see
- * both source and target relations, unless invoked for NOT MATCHED BY SOURCE.
+ * invoked for NOT MATCHED tuples and hence there is no target tuple to deal
+ * with). On the other hand, UPDATE and DELETE actions can see both source and
+ * target relations.
  *
  * Also, since the internal join node can hide the source and target
  * relations, we must explicitly make the respective relation as visible so
@@ -58,7 +61,7 @@ setNamespaceForMergeWhen(ParseState *pstate, MergeWhenClause *mergeWhenClause,
 	targetRelRTE = rt_fetch(targetRTI, pstate->p_rtable);
 	sourceRelRTE = rt_fetch(sourceRTI, pstate->p_rtable);
 
-	if (mergeWhenClause->matchKind == MERGE_WHEN_MATCHED)
+	if (mergeWhenClause->matched)
 	{
 		Assert(mergeWhenClause->commandType == CMD_UPDATE ||
 			   mergeWhenClause->commandType == CMD_DELETE ||
@@ -70,25 +73,11 @@ setNamespaceForMergeWhen(ParseState *pstate, MergeWhenClause *mergeWhenClause,
 		setNamespaceVisibilityForRTE(pstate->p_namespace,
 									 sourceRelRTE, true, true);
 	}
-	else if (mergeWhenClause->matchKind == MERGE_WHEN_NOT_MATCHED_BY_SOURCE)
+	else
 	{
 		/*
-		 * NOT MATCHED BY SOURCE actions can see the target relation, but they
-		 * can't see the source relation.
-		 */
-		Assert(mergeWhenClause->commandType == CMD_UPDATE ||
-			   mergeWhenClause->commandType == CMD_DELETE ||
-			   mergeWhenClause->commandType == CMD_NOTHING);
-		setNamespaceVisibilityForRTE(pstate->p_namespace,
-									 targetRelRTE, true, true);
-		setNamespaceVisibilityForRTE(pstate->p_namespace,
-									 sourceRelRTE, false, false);
-	}
-	else						/* MERGE_WHEN_NOT_MATCHED_BY_TARGET */
-	{
-		/*
-		 * NOT MATCHED [BY TARGET] actions can't see target relation, but they
-		 * can see source relation.
+		 * NOT MATCHED actions can't see target relation, but they can see
+		 * source relation.
 		 */
 		Assert(mergeWhenClause->commandType == CMD_INSERT ||
 			   mergeWhenClause->commandType == CMD_NOTHING);
@@ -109,9 +98,10 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	Query	   *qry = makeNode(Query);
 	ListCell   *l;
 	AclMode		targetPerms = ACL_NO_RIGHTS;
-	bool		is_terminal[NUM_MERGE_MATCH_KINDS];
+	bool		is_terminal[2];
 	Index		sourceRTI;
 	List	   *mergeActionList;
+	Node	   *joinExpr;
 	ParseNamespaceItem *nsitem;
 
 	/* There can't be any outer WITH to worry about */
@@ -135,12 +125,12 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	/*
 	 * Check WHEN clauses for permissions and sanity
 	 */
-	is_terminal[MERGE_WHEN_MATCHED] = false;
-	is_terminal[MERGE_WHEN_NOT_MATCHED_BY_SOURCE] = false;
-	is_terminal[MERGE_WHEN_NOT_MATCHED_BY_TARGET] = false;
+	is_terminal[0] = false;
+	is_terminal[1] = false;
 	foreach(l, stmt->mergeWhenClauses)
 	{
 		MergeWhenClause *mergeWhenClause = (MergeWhenClause *) lfirst(l);
+		int			when_type = (mergeWhenClause->matched ? 0 : 1);
 
 		/*
 		 * Collect permissions to check, according to action types. We require
@@ -170,12 +160,12 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 		/*
 		 * Check for unreachable WHEN clauses
 		 */
-		if (is_terminal[mergeWhenClause->matchKind])
+		if (is_terminal[when_type])
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("unreachable WHEN clause specified after unconditional WHEN clause")));
 		if (mergeWhenClause->condition == NULL)
-			is_terminal[mergeWhenClause->matchKind] = true;
+			is_terminal[when_type] = true;
 	}
 
 	/*
@@ -236,19 +226,16 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	 * side, so add that to the namespace.
 	 */
 	addNSItemToQuery(pstate, pstate->p_target_nsitem, false, true, true);
-	qry->mergeJoinCondition = transformExpr(pstate, stmt->joinCondition,
-											EXPR_KIND_JOIN_ON);
+	joinExpr = transformExpr(pstate, stmt->joinCondition,
+							 EXPR_KIND_JOIN_ON);
 
 	/*
 	 * Create the temporary query's jointree using the joinlist we built using
-	 * just the source relation; the target relation is not included. The join
+	 * just the source relation; the target relation is not included.  The
+	 * quals we use are the join conditions to the merge target.  The join
 	 * will be constructed fully by transform_MERGE_to_join.
 	 */
-	qry->jointree = makeFromExpr(pstate->p_joinlist, NULL);
-
-	/* Transform the RETURNING list, if any */
-	qry->returningList = transformReturningList(pstate, stmt->returningList,
-												EXPR_KIND_MERGE_RETURNING);
+	qry->jointree = makeFromExpr(pstate->p_joinlist, joinExpr);
 
 	/*
 	 * We now have a good query shape, so now look at the WHEN conditions and
@@ -272,7 +259,11 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 
 		action = makeNode(MergeAction);
 		action->commandType = mergeWhenClause->commandType;
-		action->matchKind = mergeWhenClause->matchKind;
+		action->matched = mergeWhenClause->matched;
+
+		/* Use an outer join if any INSERT actions exist in the command. */
+		if (action->commandType == CMD_INSERT)
+			qry->mergeUseOuterJoin = true;
 
 		/*
 		 * Set namespace for the specific action. This must be done before
@@ -402,6 +393,9 @@ transformMergeStmt(ParseState *pstate, MergeStmt *stmt)
 	}
 
 	qry->mergeActionList = mergeActionList;
+
+	/* RETURNING could potentially be added in the future, but not in SQL std */
+	qry->returningList = NULL;
 
 	qry->hasTargetSRFs = false;
 	qry->hasSubLinks = pstate->p_hasSubLinks;

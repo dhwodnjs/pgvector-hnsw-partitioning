@@ -14,6 +14,7 @@
 
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/table.h"
 #include "access/xact.h"
@@ -22,6 +23,7 @@
 #include "catalog/namespace.h"
 #include "catalog/objectaccess.h"
 #include "catalog/objectaddress.h"
+#include "catalog/partition.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace.h"
@@ -29,10 +31,12 @@
 #include "catalog/pg_publication.h"
 #include "catalog/pg_publication_namespace.h"
 #include "catalog/pg_publication_rel.h"
+#include "catalog/pg_type.h"
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
 #include "commands/publicationcmds.h"
+#include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parse_clause.h"
@@ -40,7 +44,10 @@
 #include "parser/parse_relation.h"
 #include "storage/lmgr.h"
 #include "utils/acl.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/catcache.h"
+#include "utils/fmgroids.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -858,8 +865,8 @@ CreatePublication(ParseState *pstate, CreatePublicationStmt *stmt)
 	if (wal_level != WAL_LEVEL_LOGICAL)
 		ereport(WARNING,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("\"wal_level\" is insufficient to publish logical changes"),
-				 errhint("Set \"wal_level\" to \"logical\" before creating subscriptions.")));
+				 errmsg("wal_level is insufficient to publish logical changes"),
+				 errhint("Set wal_level to \"logical\" before creating subscriptions.")));
 
 	return myself;
 }

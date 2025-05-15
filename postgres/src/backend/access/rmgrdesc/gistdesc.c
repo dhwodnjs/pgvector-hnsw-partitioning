@@ -16,6 +16,7 @@
 
 #include "access/gistxlog.h"
 #include "lib/stringinfo.h"
+#include "storage/relfilelocator.h"
 
 static void
 out_gistxlogPageUpdate(StringInfo buf, gistxlogPageUpdate *xlrec)

@@ -19,6 +19,8 @@
 #include "access/hash_xlog.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
+#include "storage/buf_internals.h"
+#include "storage/lwlock.h"
 #include "storage/predicate.h"
 #include "utils/rel.h"
 

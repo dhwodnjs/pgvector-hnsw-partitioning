@@ -33,9 +33,11 @@
 #include "parser/parse_collate.h"
 #include "parser/parse_expr.h"
 #include "parser/parse_relation.h"
+#include "rewrite/rewriteHandler.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/rls.h"
 
@@ -281,6 +283,12 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 	{
 		Assert(stmt->query);
 
+		/* MERGE is allowed by parser, but unimplemented. Reject for now */
+		if (IsA(stmt->query, MergeStmt))
+			ereport(ERROR,
+					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("MERGE not supported in COPY"));
+
 		query = makeNode(RawStmt);
 		query->stmt = stmt->query;
 		query->stmt_location = stmt_location;
@@ -392,19 +400,24 @@ defGetCopyHeaderChoice(DefElem *def, bool is_from)
 static CopyOnErrorChoice
 defGetCopyOnErrorChoice(DefElem *def, ParseState *pstate, bool is_from)
 {
-	char	   *sval = defGetString(def);
+	char	   *sval;
 
 	if (!is_from)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-		/*- translator: first %s is the name of a COPY option, e.g. ON_ERROR,
-		 second %s is a COPY with direction, e.g. COPY TO */
-				 errmsg("COPY %s cannot be used with %s", "ON_ERROR", "COPY TO"),
+				 errmsg("COPY ON_ERROR cannot be used with COPY TO"),
 				 parser_errposition(pstate, def->location)));
+
+	/*
+	 * If no parameter value given, assume the default value.
+	 */
+	if (def->arg == NULL)
+		return COPY_ON_ERROR_STOP;
 
 	/*
 	 * Allow "stop", or "ignore" values.
 	 */
+	sval = defGetString(def);
 	if (pg_strcasecmp(sval, "stop") == 0)
 		return COPY_ON_ERROR_STOP;
 	if (pg_strcasecmp(sval, "ignore") == 0)
@@ -412,35 +425,9 @@ defGetCopyOnErrorChoice(DefElem *def, ParseState *pstate, bool is_from)
 
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-	/*- translator: first %s is the name of a COPY option, e.g. ON_ERROR */
-			 errmsg("COPY %s \"%s\" not recognized", "ON_ERROR", sval),
+			 errmsg("COPY ON_ERROR \"%s\" not recognized", sval),
 			 parser_errposition(pstate, def->location)));
 	return COPY_ON_ERROR_STOP;	/* keep compiler quiet */
-}
-
-/*
- * Extract a CopyLogVerbosityChoice value from a DefElem.
- */
-static CopyLogVerbosityChoice
-defGetCopyLogVerbosityChoice(DefElem *def, ParseState *pstate)
-{
-	char	   *sval;
-
-	/*
-	 * Allow "default", or "verbose" values.
-	 */
-	sval = defGetString(def);
-	if (pg_strcasecmp(sval, "default") == 0)
-		return COPY_LOG_VERBOSITY_DEFAULT;
-	if (pg_strcasecmp(sval, "verbose") == 0)
-		return COPY_LOG_VERBOSITY_VERBOSE;
-
-	ereport(ERROR,
-			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-	/*- translator: first %s is the name of a COPY option, e.g. ON_ERROR */
-			 errmsg("COPY %s \"%s\" not recognized", "LOG_VERBOSITY", sval),
-			 parser_errposition(pstate, def->location)));
-	return COPY_LOG_VERBOSITY_DEFAULT;	/* keep compiler quiet */
 }
 
 /*
@@ -469,7 +456,6 @@ ProcessCopyOptions(ParseState *pstate,
 	bool		freeze_specified = false;
 	bool		header_specified = false;
 	bool		on_error_specified = false;
-	bool		log_verbosity_specified = false;
 	ListCell   *option;
 
 	/* Support external use for option sanity checking */
@@ -629,13 +615,6 @@ ProcessCopyOptions(ParseState *pstate,
 			on_error_specified = true;
 			opts_out->on_error = defGetCopyOnErrorChoice(defel, pstate, is_from);
 		}
-		else if (strcmp(defel->defname, "log_verbosity") == 0)
-		{
-			if (log_verbosity_specified)
-				errorConflictingDefElem(defel, pstate);
-			log_verbosity_specified = true;
-			opts_out->log_verbosity = defGetCopyLogVerbosityChoice(defel, pstate);
-		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -651,18 +630,17 @@ ProcessCopyOptions(ParseState *pstate,
 	if (opts_out->binary && opts_out->delim)
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-		/*- translator: %s is the name of a COPY option, e.g. ON_ERROR */
-				 errmsg("cannot specify %s in BINARY mode", "DELIMITER")));
+				 errmsg("cannot specify DELIMITER in BINARY mode")));
 
 	if (opts_out->binary && opts_out->null_print)
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("cannot specify %s in BINARY mode", "NULL")));
+				 errmsg("cannot specify NULL in BINARY mode")));
 
 	if (opts_out->binary && opts_out->default_print)
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("cannot specify %s in BINARY mode", "DEFAULT")));
+				 errmsg("cannot specify DEFAULT in BINARY mode")));
 
 	if (opts_out->binary && opts_out->on_error != COPY_ON_ERROR_STOP)
 		ereport(ERROR,
@@ -736,15 +714,13 @@ ProcessCopyOptions(ParseState *pstate,
 	if (opts_out->binary && opts_out->header_line)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-		/*- translator: %s is the name of a COPY option, e.g. ON_ERROR */
-				 errmsg("cannot specify %s in BINARY mode", "HEADER")));
+				 errmsg("cannot specify HEADER in BINARY mode")));
 
 	/* Check quote */
 	if (!opts_out->csv_mode && opts_out->quote != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-		/*- translator: %s is the name of a COPY option, e.g. ON_ERROR */
-				 errmsg("COPY %s requires CSV mode", "QUOTE")));
+				 errmsg("COPY QUOTE requires CSV mode")));
 
 	if (opts_out->csv_mode && strlen(opts_out->quote) != 1)
 		ereport(ERROR,
@@ -760,8 +736,7 @@ ProcessCopyOptions(ParseState *pstate,
 	if (!opts_out->csv_mode && opts_out->escape != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-		/*- translator: %s is the name of a COPY option, e.g. ON_ERROR */
-				 errmsg("COPY %s requires CSV mode", "ESCAPE")));
+				 errmsg("COPY ESCAPE requires CSV mode")));
 
 	if (opts_out->csv_mode && strlen(opts_out->escape) != 1)
 		ereport(ERROR,
@@ -772,101 +747,71 @@ ProcessCopyOptions(ParseState *pstate,
 	if (!opts_out->csv_mode && (opts_out->force_quote || opts_out->force_quote_all))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-		/*- translator: %s is the name of a COPY option, e.g. ON_ERROR */
-				 errmsg("COPY %s requires CSV mode", "FORCE_QUOTE")));
+				 errmsg("COPY FORCE_QUOTE requires CSV mode")));
 	if ((opts_out->force_quote || opts_out->force_quote_all) && is_from)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-		/*- translator: first %s is the name of a COPY option, e.g. ON_ERROR,
-		 second %s is a COPY with direction, e.g. COPY TO */
-				 errmsg("COPY %s cannot be used with %s", "FORCE_QUOTE",
-						"COPY FROM")));
+				 errmsg("COPY FORCE_QUOTE cannot be used with COPY FROM")));
 
 	/* Check force_notnull */
-	if (!opts_out->csv_mode && (opts_out->force_notnull != NIL ||
-								opts_out->force_notnull_all))
+	if (!opts_out->csv_mode && opts_out->force_notnull != NIL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-		/*- translator: %s is the name of a COPY option, e.g. ON_ERROR */
-				 errmsg("COPY %s requires CSV mode", "FORCE_NOT_NULL")));
-	if ((opts_out->force_notnull != NIL || opts_out->force_notnull_all) &&
-		!is_from)
+				 errmsg("COPY FORCE_NOT_NULL requires CSV mode")));
+	if (opts_out->force_notnull != NIL && !is_from)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-		/*- translator: first %s is the name of a COPY option, e.g. ON_ERROR,
-		 second %s is a COPY with direction, e.g. COPY TO */
-				 errmsg("COPY %s cannot be used with %s", "FORCE_NOT_NULL",
-						"COPY TO")));
+				 errmsg("COPY FORCE_NOT_NULL cannot be used with COPY TO")));
 
 	/* Check force_null */
-	if (!opts_out->csv_mode && (opts_out->force_null != NIL ||
-								opts_out->force_null_all))
+	if (!opts_out->csv_mode && opts_out->force_null != NIL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-		/*- translator: %s is the name of a COPY option, e.g. ON_ERROR */
-				 errmsg("COPY %s requires CSV mode", "FORCE_NULL")));
+				 errmsg("COPY FORCE_NULL requires CSV mode")));
 
-	if ((opts_out->force_null != NIL || opts_out->force_null_all) &&
-		!is_from)
+	if (opts_out->force_null != NIL && !is_from)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-		/*- translator: first %s is the name of a COPY option, e.g. ON_ERROR,
-		 second %s is a COPY with direction, e.g. COPY TO */
-				 errmsg("COPY %s cannot be used with %s", "FORCE_NULL",
-						"COPY TO")));
+				 errmsg("COPY FORCE_NULL cannot be used with COPY TO")));
 
 	/* Don't allow the delimiter to appear in the null string. */
 	if (strchr(opts_out->null_print, opts_out->delim[0]) != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-		/*- translator: %s is the name of a COPY option, e.g. NULL */
-				 errmsg("COPY delimiter character must not appear in the %s specification",
-						"NULL")));
+				 errmsg("COPY delimiter character must not appear in the NULL specification")));
 
 	/* Don't allow the CSV quote char to appear in the null string. */
 	if (opts_out->csv_mode &&
 		strchr(opts_out->null_print, opts_out->quote[0]) != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-		/*- translator: %s is the name of a COPY option, e.g. NULL */
-				 errmsg("CSV quote character must not appear in the %s specification",
-						"NULL")));
+				 errmsg("CSV quote character must not appear in the NULL specification")));
 
 	/* Check freeze */
 	if (opts_out->freeze && !is_from)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-		/*- translator: first %s is the name of a COPY option, e.g. ON_ERROR,
-		 second %s is a COPY with direction, e.g. COPY TO */
-				 errmsg("COPY %s cannot be used with %s", "FREEZE",
-						"COPY TO")));
+				 errmsg("COPY FREEZE cannot be used with COPY TO")));
 
 	if (opts_out->default_print)
 	{
 		if (!is_from)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			/*- translator: first %s is the name of a COPY option, e.g. ON_ERROR,
-			 second %s is a COPY with direction, e.g. COPY TO */
-					 errmsg("COPY %s cannot be used with %s", "DEFAULT",
-							"COPY TO")));
+					 errmsg("COPY DEFAULT only available using COPY FROM")));
 
 		/* Don't allow the delimiter to appear in the default string. */
 		if (strchr(opts_out->default_print, opts_out->delim[0]) != NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			/*- translator: %s is the name of a COPY option, e.g. NULL */
-					 errmsg("COPY delimiter character must not appear in the %s specification",
-							"DEFAULT")));
+					 errmsg("COPY delimiter must not appear in the DEFAULT specification")));
 
 		/* Don't allow the CSV quote char to appear in the default string. */
 		if (opts_out->csv_mode &&
 			strchr(opts_out->default_print, opts_out->quote[0]) != NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			/*- translator: %s is the name of a COPY option, e.g. NULL */
-					 errmsg("CSV quote character must not appear in the %s specification",
-							"DEFAULT")));
+					 errmsg("CSV quote character must not appear in the DEFAULT specification")));
 
 		/* Don't allow the NULL and DEFAULT string to be the same */
 		if (opts_out->null_print_len == opts_out->default_print_len &&

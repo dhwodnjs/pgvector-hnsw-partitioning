@@ -41,7 +41,6 @@
  */
 #ifndef FRONTEND
 #ifdef HAVE_HMAC_CTX_NEW
-#define USE_RESOWNER_FOR_HMAC
 #define ALLOC(size) MemoryContextAlloc(TopMemoryContext, size)
 #else
 #define ALLOC(size) palloc(size)
@@ -68,13 +67,13 @@ struct pg_hmac_ctx
 	pg_hmac_errno error;
 	const char *errreason;
 
-#ifdef USE_RESOWNER_FOR_HMAC
+#ifndef FRONTEND
 	ResourceOwner resowner;
 #endif
 };
 
 /* ResourceOwner callbacks to hold HMAC contexts */
-#ifdef USE_RESOWNER_FOR_HMAC
+#ifndef FRONTEND
 static void ResOwnerReleaseHMAC(Datum res);
 
 static const ResourceOwnerDesc hmac_resowner_desc =
@@ -139,12 +138,10 @@ pg_hmac_create(pg_cryptohash_type type)
 	 * previous runs.
 	 */
 	ERR_clear_error();
-
-#ifdef USE_RESOWNER_FOR_HMAC
+#ifdef HAVE_HMAC_CTX_NEW
+#ifndef FRONTEND
 	ResourceOwnerEnlarge(CurrentResourceOwner);
 #endif
-
-#ifdef HAVE_HMAC_CTX_NEW
 	ctx->hmacctx = HMAC_CTX_new();
 #else
 	ctx->hmacctx = ALLOC(sizeof(HMAC_CTX));
@@ -162,14 +159,14 @@ pg_hmac_create(pg_cryptohash_type type)
 		return NULL;
 	}
 
-#ifndef HAVE_HMAC_CTX_NEW
-	memset(ctx->hmacctx, 0, sizeof(HMAC_CTX));
-#endif
-
-#ifdef USE_RESOWNER_FOR_HMAC
+#ifdef HAVE_HMAC_CTX_NEW
+#ifndef FRONTEND
 	ctx->resowner = CurrentResourceOwner;
 	ResourceOwnerRememberHMAC(CurrentResourceOwner, ctx);
 #endif
+#else
+	memset(ctx->hmacctx, 0, sizeof(HMAC_CTX));
+#endif							/* HAVE_HMAC_CTX_NEW */
 
 	return ctx;
 }
@@ -330,14 +327,13 @@ pg_hmac_free(pg_hmac_ctx *ctx)
 
 #ifdef HAVE_HMAC_CTX_FREE
 	HMAC_CTX_free(ctx->hmacctx);
+#ifndef FRONTEND
+	if (ctx->resowner)
+		ResourceOwnerForgetHMAC(ctx->resowner, ctx);
+#endif
 #else
 	explicit_bzero(ctx->hmacctx, sizeof(HMAC_CTX));
 	FREE(ctx->hmacctx);
-#endif
-
-#ifdef USE_RESOWNER_FOR_HMAC
-	if (ctx->resowner)
-		ResourceOwnerForgetHMAC(ctx->resowner, ctx);
 #endif
 
 	explicit_bzero(ctx, sizeof(pg_hmac_ctx));
@@ -379,7 +375,7 @@ pg_hmac_error(pg_hmac_ctx *ctx)
 
 /* ResourceOwner callbacks */
 
-#ifdef USE_RESOWNER_FOR_HMAC
+#ifndef FRONTEND
 static void
 ResOwnerReleaseHMAC(Datum res)
 {

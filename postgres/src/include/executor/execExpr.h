@@ -240,13 +240,9 @@ typedef enum ExprEvalOp
 	EEOP_XMLEXPR,
 	EEOP_JSON_CONSTRUCTOR,
 	EEOP_IS_JSON,
-	EEOP_JSONEXPR_PATH,
-	EEOP_JSONEXPR_COERCION,
-	EEOP_JSONEXPR_COERCION_FINISH,
 	EEOP_AGGREF,
 	EEOP_GROUPING_FUNC,
 	EEOP_WINDOW_FUNC,
-	EEOP_MERGE_SUPPORT_FUNC,
 	EEOP_SUBPLAN,
 
 	/* aggregation related nodes */
@@ -356,7 +352,6 @@ typedef struct ExprEvalStep
 			/* faster to access without additional indirection: */
 			PGFunction	fn_addr;	/* actual call address */
 			int			nargs;	/* number of arguments */
-			bool		make_ro;	/* make arg0 R/O (used only for NULLIF) */
 		}			func;
 
 		/* for EEOP_BOOL_*_STEP */
@@ -697,25 +692,6 @@ typedef struct ExprEvalStep
 			JsonIsPredicate *pred;	/* original expression node */
 		}			is_json;
 
-		/* for EEOP_JSONEXPR_PATH */
-		struct
-		{
-			struct JsonExprState *jsestate;
-		}			jsonexpr;
-
-		/* for EEOP_JSONEXPR_COERCION */
-		struct
-		{
-			Oid			targettype;
-			int32		targettypmod;
-			bool		omit_quotes;
-			/* exists_* fields only relevant for JSON_EXISTS_OP. */
-			bool		exists_coerce;
-			bool		exists_cast_to_int;
-			bool		exists_check_domain;
-			void	   *json_coercion_cache;
-			ErrorSaveContext *escontext;
-		}			jsonexpr_coercion;
 	}			d;
 } ExprEvalStep;
 
@@ -833,14 +809,7 @@ extern void ExecEvalXmlExpr(ExprState *state, ExprEvalStep *op);
 extern void ExecEvalJsonConstructor(ExprState *state, ExprEvalStep *op,
 									ExprContext *econtext);
 extern void ExecEvalJsonIsPredicate(ExprState *state, ExprEvalStep *op);
-extern int	ExecEvalJsonExprPath(ExprState *state, ExprEvalStep *op,
-								 ExprContext *econtext);
-extern void ExecEvalJsonCoercion(ExprState *state, ExprEvalStep *op,
-								 ExprContext *econtext);
-extern void ExecEvalJsonCoercionFinish(ExprState *state, ExprEvalStep *op);
 extern void ExecEvalGroupingFunc(ExprState *state, ExprEvalStep *op);
-extern void ExecEvalMergeSupportFunc(ExprState *state, ExprEvalStep *op,
-									 ExprContext *econtext);
 extern void ExecEvalSubPlan(ExprState *state, ExprEvalStep *op,
 							ExprContext *econtext);
 extern void ExecEvalWholeRowVar(ExprState *state, ExprEvalStep *op,

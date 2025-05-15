@@ -16,6 +16,7 @@
 #include "postgres.h"
 
 #include "access/parallel.h"
+#include "catalog/catalog.h"
 #include "executor/instrument.h"
 #include "pgstat.h"
 #include "storage/buf_internals.h"
@@ -108,9 +109,10 @@ PrefetchLocalBuffer(SMgrRelation smgr, ForkNumber forkNum,
  * LocalBufferAlloc -
  *	  Find or create a local buffer for the given page of the given relation.
  *
- * API is similar to bufmgr.c's BufferAlloc, except that we do not need to do
- * any locking since this is all local.  We support only default access
- * strategy (hence, usage_count is always advanced).
+ * API is similar to bufmgr.c's BufferAlloc, except that we do not need
+ * to do any locking since this is all local.   Also, IO_IN_PROGRESS
+ * does not get set.  Lastly, we support only default access strategy
+ * (hence, usage_count is always advanced).
  */
 BufferDesc *
 LocalBufferAlloc(SMgrRelation smgr, ForkNumber forkNum, BlockNumber blockNum,
@@ -286,7 +288,7 @@ GetLocalVictimBuffer(void)
 }
 
 /* see LimitAdditionalPins() */
-void
+static void
 LimitAdditionalLocalPins(uint32 *additional_pins)
 {
 	uint32		max_pins;
@@ -296,10 +298,9 @@ LimitAdditionalLocalPins(uint32 *additional_pins)
 
 	/*
 	 * In contrast to LimitAdditionalPins() other backends don't play a role
-	 * here. We can allow up to NLocBuffer pins in total, but it might not be
-	 * initialized yet so read num_temp_buffers.
+	 * here. We can allow up to NLocBuffer pins in total.
 	 */
-	max_pins = (num_temp_buffers - NLocalPinnedBuffers);
+	max_pins = (NLocBuffer - NLocalPinnedBuffers);
 
 	if (*additional_pins >= max_pins)
 		*additional_pins = max_pins;
@@ -709,7 +710,7 @@ check_temp_buffers(int *newval, void **extra, GucSource source)
 	 */
 	if (source != PGC_S_TEST && NLocBuffer && NLocBuffer != *newval)
 	{
-		GUC_check_errdetail("\"temp_buffers\" cannot be changed after any temporary tables have been accessed in the session.");
+		GUC_check_errdetail("temp_buffers cannot be changed after any temporary tables have been accessed in the session.");
 		return false;
 	}
 	return true;

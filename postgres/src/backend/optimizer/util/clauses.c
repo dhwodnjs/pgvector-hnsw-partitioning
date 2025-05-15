@@ -20,6 +20,8 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
+#include "catalog/pg_aggregate.h"
+#include "catalog/pg_class.h"
 #include "catalog/pg_language.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_proc.h"
@@ -39,6 +41,7 @@
 #include "optimizer/plancat.h"
 #include "optimizer/planmain.h"
 #include "parser/analyze.h"
+#include "parser/parse_agg.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_func.h"
 #include "rewrite/rewriteHandler.h"
@@ -50,7 +53,6 @@
 #include "utils/fmgroids.h"
 #include "utils/json.h"
 #include "utils/jsonb.h"
-#include "utils/jsonpath.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
@@ -413,25 +415,6 @@ contain_mutable_functions_walker(Node *node, void *context)
 		}
 
 		/* Check all subnodes */
-	}
-
-	if (IsA(node, JsonExpr))
-	{
-		JsonExpr   *jexpr = castNode(JsonExpr, node);
-		Const	   *cnst;
-
-		if (!IsA(jexpr->path_spec, Const))
-			return true;
-
-		cnst = castNode(Const, jexpr->path_spec);
-
-		Assert(cnst->consttype == JSONPATHOID);
-		if (cnst->constisnull)
-			return false;
-
-		if (jspIsMutable(DatumGetJsonPathP(cnst->constvalue),
-						 jexpr->passing_names, jexpr->passing_values))
-			return true;
 	}
 
 	if (IsA(node, SQLValueFunction))
@@ -2566,7 +2549,6 @@ eval_const_expressions_mutator(Node *node,
 				newexpr->inputcollid = expr->inputcollid;
 				newexpr->args = args;
 				newexpr->aggfilter = aggfilter;
-				newexpr->runCondition = expr->runCondition;
 				newexpr->winref = expr->winref;
 				newexpr->winstar = expr->winstar;
 				newexpr->winagg = expr->winagg;
@@ -2915,25 +2897,13 @@ eval_const_expressions_mutator(Node *node,
 		case T_JsonValueExpr:
 			{
 				JsonValueExpr *jve = (JsonValueExpr *) node;
-				Node	   *raw_expr = (Node *) jve->raw_expr;
-				Node	   *formatted_expr = (Node *) jve->formatted_expr;
+				Node	   *formatted;
 
-				/*
-				 * If we can fold formatted_expr to a constant, we can elide
-				 * the JsonValueExpr altogether.  Otherwise we must process
-				 * raw_expr too.  But JsonFormat is a flat node and requires
-				 * no simplification, only copying.
-				 */
-				formatted_expr = eval_const_expressions_mutator(formatted_expr,
-																context);
-				if (formatted_expr && IsA(formatted_expr, Const))
-					return formatted_expr;
-
-				raw_expr = eval_const_expressions_mutator(raw_expr, context);
-
-				return (Node *) makeJsonValueExpr((Expr *) raw_expr,
-												  (Expr *) formatted_expr,
-												  copyObject(jve->format));
+				formatted = eval_const_expressions_mutator((Node *) jve->formatted_expr,
+														   context);
+				if (formatted && IsA(formatted, Const))
+					return formatted;
+				break;
 			}
 
 		case T_SubPlan:
@@ -4444,11 +4414,12 @@ evaluate_function(Oid funcid, Oid result_type, int32 result_typmod,
 	 * Can't simplify if it returns RECORD.  The immediate problem is that it
 	 * will be needing an expected tupdesc which we can't supply here.
 	 *
-	 * In the case where it has OUT parameters, we could build an expected
-	 * tupdesc from those, but there may be other gotchas lurking.  In
-	 * particular, if the function were to return NULL, we would produce a
-	 * null constant with no remaining indication of which concrete record
-	 * type it is.  For now, seems best to leave the function call unreduced.
+	 * In the case where it has OUT parameters, it could get by without an
+	 * expected tupdesc, but we still have issues: get_expr_result_type()
+	 * doesn't know how to extract type info from a RECORD constant, and in
+	 * the case of a NULL function result there doesn't seem to be any clean
+	 * way to fix that.  In view of the likelihood of there being still other
+	 * gotchas, seems best to leave the function call unreduced.
 	 */
 	if (funcform->prorettype == RECORDOID)
 		return NULL;
@@ -4739,7 +4710,6 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	querytree_list = list_make1(querytree);
 	if (check_sql_fn_retval(list_make1(querytree_list),
 							result_type, rettupdesc,
-							funcform->prokind,
 							false, NULL))
 		goto fail;				/* reject whole-tuple-result cases */
 
@@ -5249,20 +5219,16 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	}
 
 	/*
-	 * Also resolve the actual function result tupdesc, if composite.  If we
-	 * have a coldeflist, believe that; otherwise use get_expr_result_type.
-	 * (This logic should match ExecInitFunctionScan.)
+	 * Also resolve the actual function result tupdesc, if composite.  If the
+	 * function is just declared to return RECORD, dig the info out of the AS
+	 * clause.
 	 */
-	if (rtfunc->funccolnames != NIL)
-	{
-		functypclass = TYPEFUNC_RECORD;
+	functypclass = get_expr_result_type((Node *) fexpr, NULL, &rettupdesc);
+	if (functypclass == TYPEFUNC_RECORD)
 		rettupdesc = BuildDescFromLists(rtfunc->funccolnames,
 										rtfunc->funccoltypes,
 										rtfunc->funccoltypmods,
 										rtfunc->funccolcollations);
-	}
-	else
-		functypclass = get_expr_result_type((Node *) fexpr, NULL, &rettupdesc);
 
 	/*
 	 * The single command must be a plain SELECT.
@@ -5286,7 +5252,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	 */
 	if (!check_sql_fn_retval(list_make1(querytree_list),
 							 fexpr->funcresulttype, rettupdesc,
-							 funcform->prokind,
 							 true, NULL) &&
 		(functypclass == TYPEFUNC_COMPOSITE ||
 		 functypclass == TYPEFUNC_COMPOSITE_DOMAIN ||

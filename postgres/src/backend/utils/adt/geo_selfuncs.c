@@ -18,7 +18,8 @@
  */
 #include "postgres.h"
 
-#include "utils/fmgrprotos.h"
+#include "utils/builtins.h"
+#include "utils/geo_decls.h"
 
 
 /*

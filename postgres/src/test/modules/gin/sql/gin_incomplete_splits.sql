@@ -14,9 +14,6 @@
 -- splits in "incomplete" state
 create extension injection_points;
 
--- Make all injection points local to this process, for concurrency.
-SELECT injection_points_set_local();
-
 -- Use the index for all the queries
 set enable_seqscan=off;
 
@@ -51,7 +48,6 @@ declare
   i integer;
 begin
   -- Insert arrays with 'step' elements each, until an error occurs.
-  i := 0;
   loop
     begin
       select insert_n(next_i, step) into next_i;
@@ -60,12 +56,12 @@ begin
       exit;
     end;
 
-    -- The caller is expected to set an injection point that eventually
+    -- The caller is expected to set an injection point that eventuall
     -- causes an error. But bail out if still no error after 10000
     -- attempts, so that we don't get stuck in an infinite loop.
     i := i + 1;
     if i = 10000 then
-      raise 'no error on inserts after % iterations', i;
+      raise 'no error on inserts after ';
     end if;
   end loop;
 
@@ -146,5 +142,3 @@ select insert_n(:next_i, 10) as next_i
 \gset
 -- Verify that a scan still works
 select verify(:next_i);
-
-SELECT injection_points_detach('gin-finish-incomplete-split');

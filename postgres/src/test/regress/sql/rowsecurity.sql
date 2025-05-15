@@ -992,27 +992,6 @@ WHEN MATCHED THEN
 	UPDATE SET dnotes = dnotes || ' notes added by merge8 '
 WHEN NOT MATCHED THEN
 	INSERT VALUES (13, 44, 1, 'regress_rls_bob', 'new manga');
-SELECT * FROM document WHERE did = 13;
-
--- but not OK if RETURNING is used
-MERGE INTO document d
-USING (SELECT 14 as sdid) s
-ON did = s.sdid
-WHEN MATCHED THEN
-	UPDATE SET dnotes = dnotes || ' notes added by merge9 '
-WHEN NOT MATCHED THEN
-	INSERT VALUES (14, 44, 1, 'regress_rls_bob', 'new manga')
-RETURNING *;
-
--- but OK if new row is visible
-MERGE INTO document d
-USING (SELECT 14 as sdid) s
-ON did = s.sdid
-WHEN MATCHED THEN
-	UPDATE SET dnotes = dnotes || ' notes added by merge10 '
-WHEN NOT MATCHED THEN
-	INSERT VALUES (14, 11, 1, 'regress_rls_bob', 'new novel')
-RETURNING *;
 
 RESET SESSION AUTHORIZATION;
 -- drop the restrictive SELECT policy so that we can look at the
@@ -1726,25 +1705,6 @@ SELECT * FROM current_check;
 
 COMMIT;
 
--- Check that RLS filters that are tidquals don't override WHERE CURRENT OF
-BEGIN;
-CREATE TABLE current_check_2 (a int, b text);
-INSERT INTO current_check_2 VALUES (1, 'Apple');
-ALTER TABLE current_check_2 ENABLE ROW LEVEL SECURITY;
-ALTER TABLE current_check_2 FORCE ROW LEVEL SECURITY;
--- policy must accept ctid = (InvalidBlockNumber,0) since updates check it
--- before assigning a ctid to the new row
-CREATE POLICY p1 ON current_check_2 AS PERMISSIVE
-  USING (ctid IN ('(0,1)', '(0,2)', '(4294967295,0)'));
-SELECT ctid, * FROM current_check_2;
-DECLARE current_check_cursor CURSOR FOR SELECT * FROM current_check_2;
-FETCH FROM current_check_cursor;
-EXPLAIN (COSTS OFF)
-UPDATE current_check_2 SET b = 'Manzana' WHERE CURRENT OF current_check_cursor;
-UPDATE current_check_2 SET b = 'Manzana' WHERE CURRENT OF current_check_cursor;
-SELECT ctid, * FROM current_check_2;
-ROLLBACK;
-
 --
 -- check pg_stats view filtering
 --
@@ -2217,66 +2177,8 @@ execute q;
 set role regress_rls_bob;
 execute q;
 
--- make sure RLS dependencies in CTEs are handled
-reset role;
-create or replace function rls_f() returns setof rls_t
-  stable language sql
-  as $$ with cte as (select * from rls_t) select * from cte $$;
-prepare r as select current_user, * from rls_f();
-set role regress_rls_alice;
-execute r;
-set role regress_rls_bob;
-execute r;
-
--- make sure RLS dependencies in subqueries are handled
-reset role;
-create or replace function rls_f() returns setof rls_t
-  stable language sql
-  as $$ select * from (select * from rls_t) _ $$;
-prepare s as select current_user, * from rls_f();
-set role regress_rls_alice;
-execute s;
-set role regress_rls_bob;
-execute s;
-
--- make sure RLS dependencies in sublinks are handled
-reset role;
-create or replace function rls_f() returns setof rls_t
-  stable language sql
-  as $$ select exists(select * from rls_t)::text $$;
-prepare t as select current_user, * from rls_f();
-set role regress_rls_alice;
-execute t;
-set role regress_rls_bob;
-execute t;
-
--- make sure RLS dependencies are handled when coercion projections are inserted
-reset role;
-create or replace function rls_f() returns setof rls_t
-  stable language sql
-  as $$ select * from (select array_agg(c) as cs from rls_t) _ group by cs $$;
-prepare u as select current_user, * from rls_f();
-set role regress_rls_alice;
-execute u;
-set role regress_rls_bob;
-execute u;
-
--- make sure RLS dependencies in security invoker views are handled
-reset role;
-create view rls_v with (security_invoker) as select * from rls_t;
-grant select on rls_v to regress_rls_alice, regress_rls_bob;
-create or replace function rls_f() returns setof rls_t
-  stable language sql
-  as $$ select * from rls_v $$;
-prepare v as select current_user, * from rls_f();
-set role regress_rls_alice;
-execute v;
-set role regress_rls_bob;
-execute v;
-
 RESET ROLE;
 DROP FUNCTION rls_f();
-DROP VIEW rls_v;
 DROP TABLE rls_t;
 
 --

@@ -22,17 +22,23 @@
 #include "access/xlog_internal.h"
 #include "access/xlogbackup.h"
 #include "access/xlogrecovery.h"
+#include "access/xlogutils.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "replication/walreceiver.h"
 #include "storage/fd.h"
+#include "storage/ipc.h"
+#include "storage/smgr.h"
 #include "storage/standby.h"
 #include "utils/builtins.h"
+#include "utils/guc.h"
 #include "utils/memutils.h"
+#include "utils/numeric.h"
 #include "utils/pg_lsn.h"
 #include "utils/timestamp.h"
+#include "utils/tuplestore.h"
 
 /*
  * Backup-related variables.
@@ -212,7 +218,7 @@ pg_log_standby_snapshot(PG_FUNCTION_ARGS)
 	if (!XLogStandbyInfoActive())
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("pg_log_standby_snapshot() can only be used if \"wal_level\" >= \"replica\"")));
+				 errmsg("pg_log_standby_snapshot() can only be used if wal_level >= replica")));
 
 	recptr = LogStandbySnapshot();
 
@@ -245,7 +251,7 @@ pg_create_restore_point(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("WAL level not sufficient for creating a restore point"),
-				 errhint("\"wal_level\" must be set to \"replica\" or \"logical\" at server start.")));
+				 errhint("wal_level must be set to \"replica\" or \"logical\" at server start.")));
 
 	restore_name_str = text_to_cstring(restore_name);
 

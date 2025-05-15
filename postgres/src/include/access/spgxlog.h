@@ -35,7 +35,7 @@
  */
 typedef struct spgxlogState
 {
-	TransactionId redirectXid;
+	TransactionId myXid;
 	bool		isBuild;
 } spgxlogState;
 

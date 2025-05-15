@@ -26,15 +26,10 @@
 
 #include <math.h>
 
-#include "optimizer/geqo.h"
-
 #include "optimizer/geqo_misc.h"
-#if defined(CX)
 #include "optimizer/geqo_mutation.h"
-#endif
 #include "optimizer/geqo_pool.h"
 #include "optimizer/geqo_random.h"
-#include "optimizer/geqo_recombination.h"
 #include "optimizer/geqo_selection.h"
 
 

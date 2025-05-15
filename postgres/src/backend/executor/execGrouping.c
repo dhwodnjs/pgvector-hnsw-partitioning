@@ -19,6 +19,7 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 
 static int	TupleHashTableMatch(struct tuplehash_hash *tb, const MinimalTuple tuple1, const MinimalTuple tuple2);
 static inline uint32 TupleHashTableHash_internal(struct tuplehash_hash *tb,
@@ -224,8 +225,9 @@ BuildTupleHashTableExt(PlanState *parent,
 	allow_jit = metacxt != tablecxt;
 
 	/* build comparator for all columns */
+	/* XXX: should we support non-minimal tuples for the inputslot? */
 	hashtable->tab_eq_func = ExecBuildGroupingEqual(inputDesc, inputDesc,
-													NULL, &TTSOpsMinimalTuple,
+													&TTSOpsMinimalTuple, &TTSOpsMinimalTuple,
 													numCols,
 													keyColIdx, eqfuncoids, collations,
 													allow_jit ? parent : NULL);

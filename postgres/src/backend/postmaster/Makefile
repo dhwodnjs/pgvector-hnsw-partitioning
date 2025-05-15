@@ -20,7 +20,6 @@ OBJS = \
 	checkpointer.o \
 	fork_process.o \
 	interrupt.o \
-	launch_backend.o \
 	pgarch.o \
 	postmaster.o \
 	startup.o \

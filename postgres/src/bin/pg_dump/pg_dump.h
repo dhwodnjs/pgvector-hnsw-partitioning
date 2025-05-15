@@ -89,16 +89,8 @@ typedef enum
 /*
  * DumpComponents is a bitmask of the potentially dumpable components of
  * a database object: its core definition, plus optional attributes such
- * as ACL, comments, etc.
- *
- * The NONE and ALL symbols are convenient shorthands for assigning values,
- * but be careful about using them in tests.  For example, a test like
- * "if (dobj->dump == DUMP_COMPONENT_NONE)" is probably wrong; you likely want
- * "if (!(dobj->dump & DUMP_COMPONENT_DEFINITION))" instead.  This is because
- * we aren't too careful about the values of irrelevant bits, as indeed can be
- * seen in the definition of DUMP_COMPONENT_ALL.  It's also possible that an
- * object has only subsidiary bits such as DUMP_COMPONENT_ACL set, leading to
- * unexpected behavior of a test against NONE.
+ * as ACL, comments, etc.  The NONE and ALL symbols are convenient
+ * shorthands.
  */
 typedef uint32 DumpComponents;
 #define DUMP_COMPONENT_NONE			(0)
@@ -354,8 +346,13 @@ typedef struct _tableInfo
 	char	   *attcompression; /* per-attribute compression method */
 	char	  **attfdwoptions;	/* per-attribute fdw options */
 	char	  **attmissingval;	/* per attribute missing value */
-	bool	   *notnull;		/* not-null constraints on attributes */
-	bool	   *inhNotNull;		/* true if NOT NULL is inherited */
+	char	  **notnull_constrs;	/* NOT NULL constraint names. If null,
+									 * there isn't one on this column. If
+									 * empty string, unnamed constraint
+									 * (pre-v17) */
+	bool	   *notnull_noinh;	/* NOT NULL is NO INHERIT */
+	bool	   *notnull_throwaway;	/* drop the NOT NULL constraint later */
+	bool	   *notnull_inh;	/* true if NOT NULL has no local definition */
 	struct _attrDefInfo **attrdefs; /* DEFAULT expressions */
 	struct _constraintInfo *checkexprs; /* CHECK constraints */
 	bool		needs_override; /* has GENERATED ALWAYS AS IDENTITY */
@@ -482,6 +479,8 @@ typedef struct _constraintInfo
 	DumpId		conindex;		/* identifies associated index if any */
 	bool		condeferrable;	/* true if constraint is DEFERRABLE */
 	bool		condeferred;	/* true if constraint is INITIALLY DEFERRED */
+	bool		conwithoutoverlaps; /* true if the constraint is WITHOUT
+									 * OVERLAPS */
 	bool		conislocal;		/* true if constraint has local definition */
 	bool		separate;		/* true if must dump as separate item */
 } ConstraintInfo;
@@ -584,21 +583,11 @@ typedef struct _defaultACLInfo
 	char		defaclobjtype;
 } DefaultACLInfo;
 
-/*
- * LoInfo represents a group of large objects (blobs) that share the same
- * owner and ACL setting.  dobj.components has the DUMP_COMPONENT_COMMENT bit
- * set if any blob in the group has a comment; similarly for sec labels.
- * If there are many blobs with the same owner/ACL, we can divide them into
- * multiple LoInfo groups, which will each spawn a BLOB METADATA and a BLOBS
- * (data) TOC entry.  This allows more parallelism during restore.
- */
 typedef struct _loInfo
 {
 	DumpableObject dobj;
 	DumpableAcl dacl;
 	const char *rolname;
-	int			numlos;
-	Oid			looids[FLEXIBLE_ARRAY_MEMBER];
 } LoInfo;
 
 /*
@@ -707,7 +696,6 @@ typedef struct _SubRelInfo
 extern TableInfo *getSchemaData(Archive *fout, int *numTablesPtr);
 
 extern void AssignDumpId(DumpableObject *dobj);
-extern void recordAdditionalCatalogID(CatalogId catId, DumpableObject *dobj);
 extern DumpId createDumpId(void);
 extern DumpId getMaxDumpId(void);
 extern DumpableObject *findObjectByDumpId(DumpId dumpId);

@@ -78,6 +78,7 @@
 
 #include "postgres.h"
 
+#include "access/htup_details.h"
 #include "executor/execdebug.h"
 #include "executor/nodeIncrementalSort.h"
 #include "miscadmin.h"

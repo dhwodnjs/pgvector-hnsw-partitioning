@@ -60,7 +60,7 @@ static pthread_once_t sqlca_key_once = PTHREAD_ONCE_INIT;
 
 static pthread_mutex_t debug_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t debug_init_mutex = PTHREAD_MUTEX_INITIALIZER;
-static volatile int simple_debug = 0;
+static int	simple_debug = 0;
 static FILE *debugstream = NULL;
 
 void
@@ -203,11 +203,7 @@ ECPGtrans(int lineno, const char *connection_name, const char *transaction)
 void
 ECPGdebug(int n, FILE *dbgs)
 {
-	/* Interlock against concurrent executions of ECPGdebug() */
 	pthread_mutex_lock(&debug_init_mutex);
-
-	/* Prevent ecpg_log() from printing while we change settings */
-	pthread_mutex_lock(&debug_mutex);
 
 	if (n > 100)
 	{
@@ -219,10 +215,6 @@ ECPGdebug(int n, FILE *dbgs)
 
 	debugstream = dbgs;
 
-	/* We must release debug_mutex before invoking ecpg_log() ... */
-	pthread_mutex_unlock(&debug_mutex);
-
-	/* ... but keep holding debug_init_mutex to avoid racy printout */
 	ecpg_log("ECPGdebug: set to %d\n", simple_debug);
 
 	pthread_mutex_unlock(&debug_init_mutex);
@@ -237,11 +229,6 @@ ecpg_log(const char *format,...)
 	int			bufsize;
 	char	   *fmt;
 
-	/*
-	 * For performance reasons, inspect simple_debug without taking the mutex.
-	 * This could be problematic if fetching an int isn't atomic, but we
-	 * assume that it is in many other places too.
-	 */
 	if (!simple_debug)
 		return;
 
@@ -264,22 +251,18 @@ ecpg_log(const char *format,...)
 
 	pthread_mutex_lock(&debug_mutex);
 
-	/* Now that we hold the mutex, recheck simple_debug */
-	if (simple_debug)
+	va_start(ap, format);
+	vfprintf(debugstream, fmt, ap);
+	va_end(ap);
+
+	/* dump out internal sqlca variables */
+	if (ecpg_internal_regression_mode && sqlca != NULL)
 	{
-		va_start(ap, format);
-		vfprintf(debugstream, fmt, ap);
-		va_end(ap);
-
-		/* dump out internal sqlca variables */
-		if (ecpg_internal_regression_mode && sqlca != NULL)
-		{
-			fprintf(debugstream, "[NO_PID]: sqlca: code: %ld, state: %s\n",
-					sqlca->sqlcode, sqlca->sqlstate);
-		}
-
-		fflush(debugstream);
+		fprintf(debugstream, "[NO_PID]: sqlca: code: %ld, state: %s\n",
+				sqlca->sqlcode, sqlca->sqlstate);
 	}
+
+	fflush(debugstream);
 
 	pthread_mutex_unlock(&debug_mutex);
 

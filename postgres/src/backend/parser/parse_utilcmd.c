@@ -81,9 +81,11 @@ typedef struct
 	bool		isalter;		/* true if altering existing table */
 	List	   *columns;		/* ColumnDef items */
 	List	   *ckconstraints;	/* CHECK constraints */
+	List	   *nnconstraints;	/* NOT NULL constraints */
 	List	   *fkconstraints;	/* FOREIGN KEY constraints */
 	List	   *ixconstraints;	/* index-creating constraints */
 	List	   *likeclauses;	/* LIKE clauses that need post-processing */
+	List	   *extstats;		/* cloned extended statistics */
 	List	   *blist;			/* "before list" of things to do before
 								 * creating the table */
 	List	   *alist;			/* "after list" of things to do after creating
@@ -116,14 +118,13 @@ static void transformTableLikeClause(CreateStmtContext *cxt,
 static void transformOfType(CreateStmtContext *cxt,
 							TypeName *ofTypename);
 static CreateStatsStmt *generateClonedExtStatsStmt(RangeVar *heapRel,
-												   Oid heapRelid,
-												   Oid source_statsid,
-												   const AttrMap *attmap);
+												   Oid heapRelid, Oid source_statsid);
 static List *get_collation(Oid collation, Oid actual_datatype);
 static List *get_opclass(Oid opclass, Oid actual_datatype);
 static void transformIndexConstraints(CreateStmtContext *cxt);
 static IndexStmt *transformIndexConstraint(Constraint *constraint,
 										   CreateStmtContext *cxt);
+static void transformExtendedStatistics(CreateStmtContext *cxt);
 static void transformFKConstraints(CreateStmtContext *cxt,
 								   bool skipValidation,
 								   bool isAddConstraint);
@@ -240,9 +241,11 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	cxt.isalter = false;
 	cxt.columns = NIL;
 	cxt.ckconstraints = NIL;
+	cxt.nnconstraints = NIL;
 	cxt.fkconstraints = NIL;
 	cxt.ixconstraints = NIL;
 	cxt.likeclauses = NIL;
+	cxt.extstats = NIL;
 	cxt.blist = NIL;
 	cxt.alist = NIL;
 	cxt.pkey = NULL;
@@ -336,10 +339,16 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString)
 	transformCheckConstraints(&cxt, !cxt.isforeign);
 
 	/*
+	 * Postprocess extended statistics.
+	 */
+	transformExtendedStatistics(&cxt);
+
+	/*
 	 * Output results.
 	 */
 	stmt->tableElts = cxt.columns;
 	stmt->constraints = cxt.ckconstraints;
+	stmt->nnconstraints = cxt.nnconstraints;
 
 	result = lappend(cxt.blist, stmt);
 	result = list_concat(result, cxt.alist);
@@ -365,22 +374,30 @@ generateSerialExtraStmts(CreateStmtContext *cxt, ColumnDef *column,
 {
 	ListCell   *option;
 	DefElem    *nameEl = NULL;
-	DefElem    *loggedEl = NULL;
 	Oid			snamespaceid;
 	char	   *snamespace;
 	char	   *sname;
-	char		seqpersistence;
 	CreateSeqStmt *seqstmt;
 	AlterSeqStmt *altseqstmt;
 	List	   *attnamelist;
+	int			nameEl_idx = -1;
 
 	/* Make a copy of this as we may end up modifying it in the code below */
 	seqoptions = list_copy(seqoptions);
 
 	/*
-	 * Check for non-SQL-standard options (not supported within CREATE
-	 * SEQUENCE, because they'd be redundant), and remove them from the
-	 * seqoptions list if found.
+	 * Determine namespace and name to use for the sequence.
+	 *
+	 * First, check if a sequence name was passed in as an option.  This is
+	 * used by pg_dump.  Else, generate a name.
+	 *
+	 * Although we use ChooseRelationName, it's not guaranteed that the
+	 * selected sequence name won't conflict; given sufficiently long field
+	 * names, two different serial columns in the same table could be assigned
+	 * the same sequence name, and we'd not notice since we aren't creating
+	 * the sequence quite yet.  In practice this seems quite unlikely to be a
+	 * problem, especially since few people would need two serial columns in
+	 * one table.
 	 */
 	foreach(option, seqoptions)
 	{
@@ -391,24 +408,12 @@ generateSerialExtraStmts(CreateStmtContext *cxt, ColumnDef *column,
 			if (nameEl)
 				errorConflictingDefElem(defel, cxt->pstate);
 			nameEl = defel;
-			seqoptions = foreach_delete_current(seqoptions, option);
-		}
-		else if (strcmp(defel->defname, "logged") == 0 ||
-				 strcmp(defel->defname, "unlogged") == 0)
-		{
-			if (loggedEl)
-				errorConflictingDefElem(defel, cxt->pstate);
-			loggedEl = defel;
-			seqoptions = foreach_delete_current(seqoptions, option);
+			nameEl_idx = foreach_current_index(option);
 		}
 	}
 
-	/*
-	 * Determine namespace and name to use for the sequence.
-	 */
 	if (nameEl)
 	{
-		/* Use specified name */
 		RangeVar   *rv = makeRangeVarFromNameList(castNode(List, nameEl->arg));
 
 		snamespace = rv->schemaname;
@@ -422,20 +427,11 @@ generateSerialExtraStmts(CreateStmtContext *cxt, ColumnDef *column,
 			snamespace = get_namespace_name(snamespaceid);
 		}
 		sname = rv->relname;
+		/* Remove the SEQUENCE NAME item from seqoptions */
+		seqoptions = list_delete_nth_cell(seqoptions, nameEl_idx);
 	}
 	else
 	{
-		/*
-		 * Generate a name.
-		 *
-		 * Although we use ChooseRelationName, it's not guaranteed that the
-		 * selected sequence name won't conflict; given sufficiently long
-		 * field names, two different serial columns in the same table could
-		 * be assigned the same sequence name, and we'd not notice since we
-		 * aren't creating the sequence quite yet.  In practice this seems
-		 * quite unlikely to be a problem, especially since few people would
-		 * need two serial columns in one table.
-		 */
 		if (cxt->rel)
 			snamespaceid = RelationGetNamespace(cxt->rel);
 		else
@@ -457,37 +453,22 @@ generateSerialExtraStmts(CreateStmtContext *cxt, ColumnDef *column,
 							 cxt->relation->relname, column->colname)));
 
 	/*
-	 * Determine the persistence of the sequence.  By default we copy the
-	 * persistence of the table, but if LOGGED or UNLOGGED was specified, use
-	 * that (as long as the table isn't TEMP).
-	 *
-	 * For CREATE TABLE, we get the persistence from cxt->relation, which
-	 * comes from the CreateStmt in progress.  For ALTER TABLE, the parser
-	 * won't set cxt->relation->relpersistence, but we have cxt->rel as the
-	 * existing table, so we copy the persistence from there.
-	 */
-	seqpersistence = cxt->rel ? cxt->rel->rd_rel->relpersistence : cxt->relation->relpersistence;
-	if (loggedEl)
-	{
-		if (seqpersistence == RELPERSISTENCE_TEMP)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-					 errmsg("cannot set logged status of a temporary sequence"),
-					 parser_errposition(cxt->pstate, loggedEl->location)));
-		else if (strcmp(loggedEl->defname, "logged") == 0)
-			seqpersistence = RELPERSISTENCE_PERMANENT;
-		else
-			seqpersistence = RELPERSISTENCE_UNLOGGED;
-	}
-
-	/*
 	 * Build a CREATE SEQUENCE command to create the sequence object, and add
 	 * it to the list of things to be done before this CREATE/ALTER TABLE.
 	 */
 	seqstmt = makeNode(CreateSeqStmt);
 	seqstmt->for_identity = for_identity;
 	seqstmt->sequence = makeRangeVar(snamespace, sname, -1);
-	seqstmt->sequence->relpersistence = seqpersistence;
+
+	/*
+	 * Copy the persistence of the table.  For CREATE TABLE, we get the
+	 * persistence from cxt->relation, which comes from the CreateStmt in
+	 * progress.  For ALTER TABLE, the parser won't set
+	 * cxt->relation->relpersistence, but we have cxt->rel as the existing
+	 * table, so we copy the persistence from there.
+	 */
+	seqstmt->sequence->relpersistence = cxt->rel ? cxt->rel->rd_rel->relpersistence : cxt->relation->relpersistence;
+
 	seqstmt->options = seqoptions;
 
 	/*
@@ -566,6 +547,7 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 	bool		saw_default;
 	bool		saw_identity;
 	bool		saw_generated;
+	bool		need_notnull = false;
 	ListCell   *clist;
 
 	cxt->columns = lappend(cxt->columns, column);
@@ -663,10 +645,8 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 		constraint->cooked_expr = NULL;
 		column->constraints = lappend(column->constraints, constraint);
 
-		constraint = makeNode(Constraint);
-		constraint->contype = CONSTR_NOTNULL;
-		constraint->location = -1;
-		column->constraints = lappend(column->constraints, constraint);
+		/* have a not-null constraint added later */
+		need_notnull = true;
 	}
 
 	/* Process column constraints, if any... */
@@ -684,7 +664,7 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 		switch (constraint->contype)
 		{
 			case CONSTR_NULL:
-				if (saw_nullable && column->is_not_null)
+				if ((saw_nullable && column->is_not_null) || need_notnull)
 					ereport(ERROR,
 							(errcode(ERRCODE_SYNTAX_ERROR),
 							 errmsg("conflicting NULL/NOT NULL declarations for column \"%s\" of table \"%s\"",
@@ -696,6 +676,10 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 				break;
 
 			case CONSTR_NOTNULL:
+
+				/*
+				 * Disallow conflicting [NOT] NULL markings
+				 */
 				if (saw_nullable && !column->is_not_null)
 					ereport(ERROR,
 							(errcode(ERRCODE_SYNTAX_ERROR),
@@ -703,8 +687,25 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 									column->colname, cxt->relation->relname),
 							 parser_errposition(cxt->pstate,
 												constraint->location)));
-				column->is_not_null = true;
-				saw_nullable = true;
+				/* Ignore redundant NOT NULL markings */
+
+				/*
+				 * If this is the first time we see this column being marked
+				 * not null, add the constraint entry; and get rid of any
+				 * previous markings to mark the column NOT NULL.
+				 */
+				if (!column->is_not_null)
+				{
+					column->is_not_null = true;
+					saw_nullable = true;
+
+					constraint->keys = list_make1(makeString(column->colname));
+					cxt->nnconstraints = lappend(cxt->nnconstraints, constraint);
+
+					/* Don't need this anymore, if we had it */
+					need_notnull = false;
+				}
+
 				break;
 
 			case CONSTR_DEFAULT:
@@ -754,16 +755,19 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 					column->identity = constraint->generated_when;
 					saw_identity = true;
 
-					/* An identity column is implicitly NOT NULL */
-					if (saw_nullable && !column->is_not_null)
+					/*
+					 * Identity columns are always NOT NULL, but we may have a
+					 * constraint already.
+					 */
+					if (!saw_nullable)
+						need_notnull = true;
+					else if (!column->is_not_null)
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
 								 errmsg("conflicting NULL/NOT NULL declarations for column \"%s\" of table \"%s\"",
 										column->colname, cxt->relation->relname),
 								 parser_errposition(cxt->pstate,
 													constraint->location)));
-					column->is_not_null = true;
-					saw_nullable = true;
 					break;
 				}
 
@@ -870,6 +874,29 @@ transformColumnDefinition(CreateStmtContext *cxt, ColumnDef *column)
 	}
 
 	/*
+	 * If we need a not-null constraint for SERIAL or IDENTITY, and one was
+	 * not explicitly specified, add one now.
+	 */
+	if (need_notnull && !(saw_nullable && column->is_not_null))
+	{
+		Constraint *notnull;
+
+		column->is_not_null = true;
+
+		notnull = makeNode(Constraint);
+		notnull->contype = CONSTR_NOTNULL;
+		notnull->conname = NULL;
+		notnull->deferrable = false;
+		notnull->initdeferred = false;
+		notnull->location = -1;
+		notnull->keys = list_make1(makeString(column->colname));
+		notnull->skip_validation = false;
+		notnull->initially_valid = true;
+
+		cxt->nnconstraints = lappend(cxt->nnconstraints, notnull);
+	}
+
+	/*
 	 * If needed, generate ALTER FOREIGN TABLE ALTER COLUMN statement to add
 	 * per-column foreign data wrapper options to this column after creation.
 	 */
@@ -938,6 +965,10 @@ transformTableConstraint(CreateStmtContext *cxt, Constraint *constraint)
 			cxt->ckconstraints = lappend(cxt->ckconstraints, constraint);
 			break;
 
+		case CONSTR_NOTNULL:
+			cxt->nnconstraints = lappend(cxt->nnconstraints, constraint);
+			break;
+
 		case CONSTR_FOREIGN:
 			if (cxt->isforeign)
 				ereport(ERROR,
@@ -949,7 +980,6 @@ transformTableConstraint(CreateStmtContext *cxt, Constraint *constraint)
 			break;
 
 		case CONSTR_NULL:
-		case CONSTR_NOTNULL:
 		case CONSTR_DEFAULT:
 		case CONSTR_ATTR_DEFERRABLE:
 		case CONSTR_ATTR_NOT_DEFERRABLE:
@@ -985,6 +1015,7 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 	AclResult	aclresult;
 	char	   *comment;
 	ParseCallbackState pcbstate;
+	bool		process_notnull_constraints = false;
 
 	setup_parser_errposition_callback(&pcbstate, cxt->pstate,
 									  table_like_clause->relation->location);
@@ -1053,14 +1084,18 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 			continue;
 
 		/*
-		 * Create a new column, which is marked as NOT inherited.
-		 *
-		 * For constraints, ONLY the not-null constraint is inherited by the
-		 * new column definition per SQL99.
+		 * Create a new column definition
 		 */
 		def = makeColumnDef(NameStr(attribute->attname), attribute->atttypid,
 							attribute->atttypmod, attribute->attcollation);
-		def->is_not_null = attribute->attnotnull;
+
+		/*
+		 * For constraints, ONLY the not-null constraint is inherited by the
+		 * new column definition per SQL99; however we cannot do that
+		 * correctly here, so we leave it for expandTableLikeClause to handle.
+		 */
+		if (attribute->attnotnull)
+			process_notnull_constraints = true;
 
 		/*
 		 * Add to column list
@@ -1088,7 +1123,7 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 			 * find sequence owned by old column; extract sequence parameters;
 			 * build new create sequence command
 			 */
-			seq_relid = getIdentitySequence(relation, attribute->attnum, false);
+			seq_relid = getIdentitySequence(RelationGetRelid(relation), attribute->attnum, false);
 			seq_options = sequence_options(seq_relid);
 			generateSerialExtraStmts(cxt, def,
 									 InvalidOid, seq_options,
@@ -1130,23 +1165,117 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 	}
 
 	/*
-	 * We cannot yet deal with defaults, CHECK constraints, indexes, or
-	 * statistics, since we don't yet know what column numbers the copied
-	 * columns will have in the finished table.  If any of those options are
-	 * specified, add the LIKE clause to cxt->likeclauses so that
-	 * expandTableLikeClause will be called after we do know that.  Also,
-	 * remember the relation OID so that expandTableLikeClause is certain to
-	 * open the same table.
+	 * We cannot yet deal with defaults, CHECK constraints, or indexes, since
+	 * we don't yet know what column numbers the copied columns will have in
+	 * the finished table.  If any of those options are specified, add the
+	 * LIKE clause to cxt->likeclauses so that expandTableLikeClause will be
+	 * called after we do know that; in addition, do that if there are any NOT
+	 * NULL constraints, because those must be propagated even if not
+	 * explicitly requested.
+	 *
+	 * In order for this to work, we remember the relation OID so that
+	 * expandTableLikeClause is certain to open the same table.
 	 */
-	if (table_like_clause->options &
-		(CREATE_TABLE_LIKE_DEFAULTS |
-		 CREATE_TABLE_LIKE_GENERATED |
-		 CREATE_TABLE_LIKE_CONSTRAINTS |
-		 CREATE_TABLE_LIKE_INDEXES |
-		 CREATE_TABLE_LIKE_STATISTICS))
+	if ((table_like_clause->options &
+		 (CREATE_TABLE_LIKE_DEFAULTS |
+		  CREATE_TABLE_LIKE_GENERATED |
+		  CREATE_TABLE_LIKE_CONSTRAINTS |
+		  CREATE_TABLE_LIKE_INDEXES)) ||
+		process_notnull_constraints)
 	{
 		table_like_clause->relationOid = RelationGetRelid(relation);
 		cxt->likeclauses = lappend(cxt->likeclauses, table_like_clause);
+	}
+
+	/*
+	 * If INCLUDING INDEXES is not given and a primary key exists, we need to
+	 * add not-null constraints to the columns covered by the PK (except those
+	 * that already have one.)  This is required for backwards compatibility.
+	 */
+	if ((table_like_clause->options & CREATE_TABLE_LIKE_INDEXES) == 0)
+	{
+		Bitmapset  *pkcols;
+		int			x = -1;
+		Bitmapset  *donecols = NULL;
+		ListCell   *lc;
+
+		/*
+		 * Obtain a bitmapset of columns on which we'll add not-null
+		 * constraints in expandTableLikeClause, so that we skip this for
+		 * those.
+		 */
+		foreach(lc, RelationGetNotNullConstraints(RelationGetRelid(relation), true))
+		{
+			CookedConstraint *cooked = (CookedConstraint *) lfirst(lc);
+
+			donecols = bms_add_member(donecols, cooked->attnum);
+		}
+
+		pkcols = RelationGetIndexAttrBitmap(relation,
+											INDEX_ATTR_BITMAP_PRIMARY_KEY);
+		while ((x = bms_next_member(pkcols, x)) >= 0)
+		{
+			Constraint *notnull;
+			AttrNumber	attnum = x + FirstLowInvalidHeapAttributeNumber;
+			Form_pg_attribute attForm;
+
+			/* ignore if we already have one for this column */
+			if (bms_is_member(attnum, donecols))
+				continue;
+
+			attForm = TupleDescAttr(tupleDesc, attnum - 1);
+
+			notnull = makeNode(Constraint);
+			notnull->contype = CONSTR_NOTNULL;
+			notnull->conname = NULL;
+			notnull->is_no_inherit = false;
+			notnull->deferrable = false;
+			notnull->initdeferred = false;
+			notnull->location = -1;
+			notnull->keys = list_make1(makeString(pstrdup(NameStr(attForm->attname))));
+			notnull->skip_validation = false;
+			notnull->initially_valid = true;
+
+			cxt->nnconstraints = lappend(cxt->nnconstraints, notnull);
+		}
+	}
+
+	/*
+	 * We may copy extended statistics if requested, since the representation
+	 * of CreateStatsStmt doesn't depend on column numbers.
+	 */
+	if (table_like_clause->options & CREATE_TABLE_LIKE_STATISTICS)
+	{
+		List	   *parent_extstats;
+		ListCell   *l;
+
+		parent_extstats = RelationGetStatExtList(relation);
+
+		foreach(l, parent_extstats)
+		{
+			Oid			parent_stat_oid = lfirst_oid(l);
+			CreateStatsStmt *stats_stmt;
+
+			stats_stmt = generateClonedExtStatsStmt(cxt->relation,
+													RelationGetRelid(relation),
+													parent_stat_oid);
+
+			/* Copy comment on statistics object, if requested */
+			if (table_like_clause->options & CREATE_TABLE_LIKE_COMMENTS)
+			{
+				comment = GetComment(parent_stat_oid, StatisticExtRelationId, 0);
+
+				/*
+				 * We make use of CreateStatsStmt's stxcomment option, so as
+				 * not to need to know now what name the statistics will have.
+				 */
+				stats_stmt->stxcomment = comment;
+			}
+
+			cxt->extstats = lappend(cxt->extstats, stats_stmt);
+		}
+
+		list_free(parent_extstats);
 	}
 
 	/*
@@ -1177,6 +1306,8 @@ expandTableLikeClause(RangeVar *heapRel, TableLikeClause *table_like_clause)
 	TupleConstr *constr;
 	AttrMap    *attmap;
 	char	   *comment;
+	bool		at_pushed = false;
+	ListCell   *lc;
 
 	/*
 	 * Open the relation referenced by the LIKE clause.  We should still have
@@ -1348,6 +1479,20 @@ expandTableLikeClause(RangeVar *heapRel, TableLikeClause *table_like_clause)
 	}
 
 	/*
+	 * Copy not-null constraints, too (these do not require any option to have
+	 * been given).
+	 */
+	foreach(lc, RelationGetNotNullConstraints(RelationGetRelid(relation), false))
+	{
+		AlterTableCmd *atsubcmd;
+
+		atsubcmd = makeNode(AlterTableCmd);
+		atsubcmd->subtype = AT_AddConstraint;
+		atsubcmd->def = (Node *) lfirst_node(Constraint, lc);
+		atsubcmds = lappend(atsubcmds, atsubcmd);
+	}
+
+	/*
 	 * If we generated any ALTER TABLE actions above, wrap them into a single
 	 * ALTER TABLE command.  Stick it at the front of the result, so it runs
 	 * before any CommentStmts we made above.
@@ -1361,6 +1506,8 @@ expandTableLikeClause(RangeVar *heapRel, TableLikeClause *table_like_clause)
 		atcmd->objtype = OBJECT_TABLE;
 		atcmd->missing_ok = false;
 		result = lcons(atcmd, result);
+
+		at_pushed = true;
 	}
 
 	/*
@@ -1388,6 +1535,39 @@ expandTableLikeClause(RangeVar *heapRel, TableLikeClause *table_like_clause)
 												 attmap,
 												 NULL);
 
+			/*
+			 * The PK columns might not yet non-nullable, so make sure they
+			 * become so.
+			 */
+			if (index_stmt->primary)
+			{
+				foreach(lc, index_stmt->indexParams)
+				{
+					IndexElem  *col = lfirst_node(IndexElem, lc);
+					AlterTableCmd *notnullcmd = makeNode(AlterTableCmd);
+
+					notnullcmd->subtype = AT_SetAttNotNull;
+					notnullcmd->name = pstrdup(col->name);
+					/* Luckily we can still add more AT-subcmds here */
+					atsubcmds = lappend(atsubcmds, notnullcmd);
+				}
+
+				/*
+				 * If we had already put the AlterTableStmt into the output
+				 * list, we don't need to do so again; otherwise do it.
+				 */
+				if (!at_pushed)
+				{
+					AlterTableStmt *atcmd = makeNode(AlterTableStmt);
+
+					atcmd->relation = copyObject(heapRel);
+					atcmd->cmds = atsubcmds;
+					atcmd->objtype = OBJECT_TABLE;
+					atcmd->missing_ok = false;
+					result = lcons(atcmd, result);
+				}
+			}
+
 			/* Copy comment on index, if requested */
 			if (table_like_clause->options & CREATE_TABLE_LIKE_COMMENTS)
 			{
@@ -1404,44 +1584,6 @@ expandTableLikeClause(RangeVar *heapRel, TableLikeClause *table_like_clause)
 
 			index_close(parent_index, AccessShareLock);
 		}
-	}
-
-	/*
-	 * Process extended statistics if required.
-	 */
-	if (table_like_clause->options & CREATE_TABLE_LIKE_STATISTICS)
-	{
-		List	   *parent_extstats;
-		ListCell   *l;
-
-		parent_extstats = RelationGetStatExtList(relation);
-
-		foreach(l, parent_extstats)
-		{
-			Oid			parent_stat_oid = lfirst_oid(l);
-			CreateStatsStmt *stats_stmt;
-
-			stats_stmt = generateClonedExtStatsStmt(heapRel,
-													RelationGetRelid(childrel),
-													parent_stat_oid,
-													attmap);
-
-			/* Copy comment on statistics object, if requested */
-			if (table_like_clause->options & CREATE_TABLE_LIKE_COMMENTS)
-			{
-				comment = GetComment(parent_stat_oid, StatisticExtRelationId, 0);
-
-				/*
-				 * We make use of CreateStatsStmt's stxcomment option, so as
-				 * not to need to know now what name the statistics will have.
-				 */
-				stats_stmt->stxcomment = comment;
-			}
-
-			result = lappend(result, stats_stmt);
-		}
-
-		list_free(parent_extstats);
 	}
 
 	/* Done with child rel */
@@ -1506,8 +1648,8 @@ transformOfType(CreateStmtContext *cxt, TypeName *ofTypename)
  * with the index there.
  *
  * Unlike transformIndexConstraint, we don't make any effort to force primary
- * key columns to be NOT NULL.  The larger cloning process this is part of
- * should have cloned their NOT NULL status separately (and DefineIndex will
+ * key columns to be not-null.  The larger cloning process this is part of
+ * should have cloned their not-null status separately (and DefineIndex will
  * complain if that fails to happen).
  */
 IndexStmt *
@@ -1583,6 +1725,7 @@ generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
 	index->unique = idxrec->indisunique;
 	index->nulls_not_distinct = idxrec->indnullsnotdistinct;
 	index->primary = idxrec->indisprimary;
+	index->iswithoutoverlaps = (idxrec->indisprimary || idxrec->indisunique) && idxrec->indisexclusion;
 	index->transformed = true;	/* don't need transformIndexStmt */
 	index->concurrent = false;
 	index->if_not_exists = false;
@@ -1632,7 +1775,9 @@ generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
 				int			nElems;
 				int			i;
 
-				Assert(conrec->contype == CONSTRAINT_EXCLUSION);
+				Assert(conrec->contype == CONSTRAINT_EXCLUSION ||
+					   (index->iswithoutoverlaps &&
+						(conrec->contype == CONSTRAINT_PRIMARY || conrec->contype == CONSTRAINT_UNIQUE)));
 				/* Extract operator OIDs from the pg_constraint tuple */
 				datum = SysCacheGetAttrNotNull(CONSTROID, ht_constr,
 											   Anum_pg_constraint_conexclop);
@@ -1858,12 +2003,10 @@ generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
  * Generate a CreateStatsStmt node using information from an already existing
  * extended statistic "source_statsid", for the rel identified by heapRel and
  * heapRelid.
- *
- * Attribute numbers in expression Vars are adjusted according to attmap.
  */
 static CreateStatsStmt *
 generateClonedExtStatsStmt(RangeVar *heapRel, Oid heapRelid,
-						   Oid source_statsid, const AttrMap *attmap)
+						   Oid source_statsid)
 {
 	HeapTuple	ht_stats;
 	Form_pg_statistic_ext statsrec;
@@ -1946,19 +2089,10 @@ generateClonedExtStatsStmt(RangeVar *heapRel, Oid heapRelid,
 
 		foreach(lc, exprs)
 		{
-			Node	   *expr = (Node *) lfirst(lc);
 			StatsElem  *selem = makeNode(StatsElem);
-			bool		found_whole_row;
-
-			/* Adjust Vars to match new table's column numbering */
-			expr = map_variable_attnos(expr,
-									   1, 0,
-									   attmap,
-									   InvalidOid,
-									   &found_whole_row);
 
 			selem->name = NULL;
-			selem->expr = expr;
+			selem->expr = (Node *) lfirst(lc);
 
 			def_names = lappend(def_names, selem);
 		}
@@ -2063,10 +2197,12 @@ transformIndexConstraints(CreateStmtContext *cxt)
 	ListCell   *lc;
 
 	/*
-	 * Run through the constraints that need to generate an index. For PRIMARY
-	 * KEY, mark each column as NOT NULL and create an index. For UNIQUE or
-	 * EXCLUDE, create an index as for PRIMARY KEY, but do not insist on NOT
-	 * NULL.
+	 * Run through the constraints that need to generate an index, and do so.
+	 *
+	 * For PRIMARY KEY, in addition we set each column's attnotnull flag true.
+	 * We do not create a separate not-null constraint, as that would be
+	 * redundant: the PRIMARY KEY constraint itself fulfills that role.  Other
+	 * constraint types don't need any not-null markings.
 	 */
 	foreach(lc, cxt->ixconstraints)
 	{
@@ -2140,9 +2276,7 @@ transformIndexConstraints(CreateStmtContext *cxt)
 	}
 
 	/*
-	 * Now append all the IndexStmts to cxt->alist.  If we generated an ALTER
-	 * TABLE SET NOT NULL statement to support a primary key, it's already in
-	 * cxt->alist.
+	 * Now append all the IndexStmts to cxt->alist.
 	 */
 	cxt->alist = list_concat(cxt->alist, finalindexlist);
 }
@@ -2150,12 +2284,10 @@ transformIndexConstraints(CreateStmtContext *cxt)
 /*
  * transformIndexConstraint
  *		Transform one UNIQUE, PRIMARY KEY, or EXCLUDE constraint for
- *		transformIndexConstraints.
+ *		transformIndexConstraints. An IndexStmt is returned.
  *
- * We return an IndexStmt.  For a PRIMARY KEY constraint, we additionally
- * produce not-null constraints, either by marking ColumnDefs in cxt->columns
- * as is_not_null or by adding an ALTER TABLE SET NOT NULL command to
- * cxt->alist.
+ * For a PRIMARY KEY constraint, we additionally force the columns to be
+ * marked as not-null, without producing a not-null constraint.
  */
 static IndexStmt *
 transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
@@ -2185,6 +2317,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 	}
 	index->nulls_not_distinct = constraint->nulls_not_distinct;
 	index->isconstraint = true;
+	index->iswithoutoverlaps = constraint->without_overlaps;
 	index->deferrable = constraint->deferrable;
 	index->initdeferred = constraint->initdeferred;
 
@@ -2277,6 +2410,11 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 					 errmsg("index \"%s\" is not valid", index_name),
 					 parser_errposition(cxt->pstate, constraint->location)));
 
+		/*
+		 * Today we forbid non-unique indexes, but we could permit GiST
+		 * indexes whose last entry is a range type and use that to create a
+		 * WITHOUT OVERLAPS constraint (i.e. a temporal constraint).
+		 */
 		if (!index_form->indisunique)
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
@@ -2413,7 +2551,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 	 * For UNIQUE and PRIMARY KEY, we just have a list of column names.
 	 *
 	 * Make sure referenced keys exist.  If we are making a PRIMARY KEY index,
-	 * also make sure they are NOT NULL.
+	 * also make sure they are not-null.
 	 */
 	else
 	{
@@ -2421,7 +2559,6 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 		{
 			char	   *key = strVal(lfirst(lc));
 			bool		found = false;
-			bool		forced_not_null = false;
 			ColumnDef  *column = NULL;
 			ListCell   *columns;
 			IndexElem  *iparam;
@@ -2442,13 +2579,14 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 				 * column is defined in the new table.  For PRIMARY KEY, we
 				 * can apply the not-null constraint cheaply here ... unless
 				 * the column is marked is_from_type, in which case marking it
-				 * here would be ineffective (see MergeAttributes).
+				 * here would be ineffective (see MergeAttributes).  Note that
+				 * this isn't effective in ALTER TABLE either, unless the
+				 * column is being added in the same command.
 				 */
 				if (constraint->contype == CONSTR_PRIMARY &&
 					!column->is_from_type)
 				{
 					column->is_not_null = true;
-					forced_not_null = true;
 				}
 			}
 			else if (SystemAttributeByName(key) != NULL)
@@ -2456,7 +2594,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 				/*
 				 * column will be a system column in the new table, so accept
 				 * it. System columns can't ever be null, so no need to worry
-				 * about PRIMARY/not-null constraint.
+				 * about PRIMARY/NOT NULL constraint.
 				 */
 				found = true;
 			}
@@ -2491,14 +2629,6 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 						if (strcmp(key, inhname) == 0)
 						{
 							found = true;
-
-							/*
-							 * It's tempting to set forced_not_null if the
-							 * parent column is already NOT NULL, but that
-							 * seems unsafe because the column's NOT NULL
-							 * marking might disappear between now and
-							 * execution.  Do the runtime check to be safe.
-							 */
 							break;
 						}
 					}
@@ -2552,19 +2682,32 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 			iparam->nulls_ordering = SORTBY_NULLS_DEFAULT;
 			index->indexParams = lappend(index->indexParams, iparam);
 
-			/*
-			 * For a primary-key column, also create an item for ALTER TABLE
-			 * SET NOT NULL if we couldn't ensure it via is_not_null above.
-			 */
-			if (constraint->contype == CONSTR_PRIMARY && !forced_not_null)
+			if (constraint->contype == CONSTR_PRIMARY)
 			{
 				AlterTableCmd *notnullcmd = makeNode(AlterTableCmd);
 
-				notnullcmd->subtype = AT_SetNotNull;
+				notnullcmd->subtype = AT_SetAttNotNull;
 				notnullcmd->name = pstrdup(key);
 				notnullcmds = lappend(notnullcmds, notnullcmd);
 			}
 		}
+
+		if (constraint->without_overlaps)
+		{
+			/*
+			 * This enforces that there is at least one equality column
+			 * besides the WITHOUT OVERLAPS columns.  This is per SQL
+			 * standard.  XXX Do we need this?
+			 */
+			if (list_length(constraint->keys) < 2)
+				ereport(ERROR,
+						errcode(ERRCODE_SYNTAX_ERROR),
+						errmsg("constraint using WITHOUT OVERLAPS needs at least two columns"));
+
+			/* WITHOUT OVERLAPS requires a GiST index */
+			index->accessMethod = "gist";
+		}
+
 	}
 
 	/*
@@ -2682,6 +2825,19 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 	}
 
 	return index;
+}
+
+/*
+ * transformExtendedStatistics
+ *     Handle extended statistic objects
+ *
+ * Right now, there's nothing to do here, so we just append the list to
+ * the existing "after" list.
+ */
+static void
+transformExtendedStatistics(CreateStmtContext *cxt)
+{
+	cxt->alist = list_concat(cxt->alist, cxt->extstats);
 }
 
 /*
@@ -3319,9 +3475,11 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 	cxt.isalter = true;
 	cxt.columns = NIL;
 	cxt.ckconstraints = NIL;
+	cxt.nnconstraints = NIL;
 	cxt.fkconstraints = NIL;
 	cxt.ixconstraints = NIL;
 	cxt.likeclauses = NIL;
+	cxt.extstats = NIL;
 	cxt.blist = NIL;
 	cxt.alist = NIL;
 	cxt.pkey = NULL;
@@ -3396,36 +3554,28 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 
 					/*
 					 * For identity column, create ALTER SEQUENCE command to
-					 * change the data type of the sequence. Identity sequence
-					 * is associated with the top level partitioned table.
-					 * Hence ignore partitions.
+					 * change the data type of the sequence.
 					 */
-					if (!RelationGetForm(rel)->relispartition)
+					attnum = get_attnum(relid, cmd->name);
+					if (attnum == InvalidAttrNumber)
+						ereport(ERROR,
+								(errcode(ERRCODE_UNDEFINED_COLUMN),
+								 errmsg("column \"%s\" of relation \"%s\" does not exist",
+										cmd->name, RelationGetRelationName(rel))));
+
+					if (attnum > 0 &&
+						TupleDescAttr(tupdesc, attnum - 1)->attidentity)
 					{
-						attnum = get_attnum(relid, cmd->name);
-						if (attnum == InvalidAttrNumber)
-							ereport(ERROR,
-									(errcode(ERRCODE_UNDEFINED_COLUMN),
-									 errmsg("column \"%s\" of relation \"%s\" does not exist",
-											cmd->name, RelationGetRelationName(rel))));
+						Oid			seq_relid = getIdentitySequence(relid, attnum, false);
+						Oid			typeOid = typenameTypeId(pstate, def->typeName);
+						AlterSeqStmt *altseqstmt = makeNode(AlterSeqStmt);
 
-						if (attnum > 0 &&
-							TupleDescAttr(tupdesc, attnum - 1)->attidentity)
-						{
-							Oid			seq_relid = getIdentitySequence(rel, attnum, false);
-							Oid			typeOid = typenameTypeId(pstate, def->typeName);
-							AlterSeqStmt *altseqstmt = makeNode(AlterSeqStmt);
-
-							altseqstmt->sequence
-								= makeRangeVar(get_namespace_name(get_rel_namespace(seq_relid)),
-											   get_rel_name(seq_relid),
-											   -1);
-							altseqstmt->options = list_make1(makeDefElem("as",
-																		 (Node *) makeTypeNameFromOid(typeOid, -1),
-																		 -1));
-							altseqstmt->for_identity = true;
-							cxt.blist = lappend(cxt.blist, altseqstmt);
-						}
+						altseqstmt->sequence = makeRangeVar(get_namespace_name(get_rel_namespace(seq_relid)),
+															get_rel_name(seq_relid),
+															-1);
+						altseqstmt->options = list_make1(makeDefElem("as", (Node *) makeTypeNameFromOid(typeOid, -1), -1));
+						altseqstmt->for_identity = true;
+						cxt.blist = lappend(cxt.blist, altseqstmt);
 					}
 
 					newcmds = lappend(newcmds, cmd);
@@ -3491,7 +3641,7 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 								 errmsg("column \"%s\" of relation \"%s\" does not exist",
 										cmd->name, RelationGetRelationName(rel))));
 
-					seq_relid = getIdentitySequence(rel, attnum, true);
+					seq_relid = getIdentitySequence(relid, attnum, true);
 
 					if (seq_relid)
 					{
@@ -3569,8 +3719,8 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 
 		/*
 		 * We assume here that cxt.alist contains only IndexStmts and possibly
-		 * ALTER TABLE SET NOT NULL statements generated from primary key
-		 * constraints.  We absorb the subcommands of the latter directly.
+		 * AT_SetAttNotNull statements generated from primary key constraints.
+		 * We absorb the subcommands of the latter directly.
 		 */
 		if (IsA(istmt, IndexStmt))
 		{
@@ -3593,8 +3743,15 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 	}
 	cxt.alist = NIL;
 
-	/* Append any CHECK or FK constraints to the commands list */
+	/* Append any CHECK, NOT NULL or FK constraints to the commands list */
 	foreach(l, cxt.ckconstraints)
+	{
+		newcmd = makeNode(AlterTableCmd);
+		newcmd->subtype = AT_AddConstraint;
+		newcmd->def = (Node *) lfirst_node(Constraint, l);
+		newcmds = lappend(newcmds, newcmd);
+	}
+	foreach(l, cxt.nnconstraints)
 	{
 		newcmd = makeNode(AlterTableCmd);
 		newcmd->subtype = AT_AddConstraint;
@@ -3608,6 +3765,9 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 		newcmd->def = (Node *) lfirst_node(Constraint, l);
 		newcmds = lappend(newcmds, newcmd);
 	}
+
+	/* Append extended statistics objects */
+	transformExtendedStatistics(&cxt);
 
 	/* Close rel */
 	relation_close(rel, NoLock);

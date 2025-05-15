@@ -871,7 +871,7 @@ try_complete_step(TestSpec *testspec, PermutationStep *pstep, int flags)
 		{
 			if (errno == EINTR)
 				continue;
-			fprintf(stderr, "select failed: %m\n");
+			fprintf(stderr, "select failed: %s\n", strerror(errno));
 			exit(1);
 		}
 		else if (ret == 0)		/* select() timeout: check for lock wait */
@@ -946,21 +946,26 @@ try_complete_step(TestSpec *testspec, PermutationStep *pstep, int flags)
 			 */
 			if (td > max_step_wait && !canceled)
 			{
-				PGcancelConn *cancel_conn = PQcancelCreate(conn);
+				PGcancel   *cancel = PQgetCancel(conn);
 
-				if (PQcancelBlocking(cancel_conn))
+				if (cancel != NULL)
 				{
-					/*
-					 * print to stdout not stderr, as this should appear in
-					 * the test case's results
-					 */
-					printf("isolationtester: canceling step %s after %d seconds\n",
-						   step->name, (int) (td / USECS_PER_SEC));
-					canceled = true;
+					char		buf[256];
+
+					if (PQcancel(cancel, buf, sizeof(buf)))
+					{
+						/*
+						 * print to stdout not stderr, as this should appear
+						 * in the test case's results
+						 */
+						printf("isolationtester: canceling step %s after %d seconds\n",
+							   step->name, (int) (td / USECS_PER_SEC));
+						canceled = true;
+					}
+					else
+						fprintf(stderr, "PQcancel failed: %s\n", buf);
+					PQfreeCancel(cancel);
 				}
-				else
-					fprintf(stderr, "PQcancel failed: %s\n", PQcancelErrorMessage(cancel_conn));
-				PQcancelFinish(cancel_conn);
 			}
 
 			/*

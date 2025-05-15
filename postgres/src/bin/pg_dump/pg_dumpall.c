@@ -21,7 +21,7 @@
 #include "catalog/pg_authid_d.h"
 #include "common/connect.h"
 #include "common/file_utils.h"
-#include "common/hashfn_unstable.h"
+#include "common/hashfn.h"
 #include "common/logging.h"
 #include "common/string.h"
 #include "dumputils.h"
@@ -32,6 +32,8 @@
 
 /* version string we expect back from pg_dump */
 #define PGDUMP_VERSIONSTR "pg_dump (PostgreSQL) " PG_VERSION "\n"
+
+static uint32 hash_string_pointer(char *s);
 
 typedef struct
 {
@@ -44,7 +46,7 @@ typedef struct
 #define SH_ELEMENT_TYPE	RoleNameEntry
 #define SH_KEY_TYPE	char *
 #define SH_KEY		rolename
-#define SH_HASH_KEY(tb, key)	hash_string(key)
+#define SH_HASH_KEY(tb, key)	hash_string_pointer(key)
 #define SH_EQUAL(tb, a, b)		(strcmp(a, b) == 0)
 #define SH_STORE_HASH
 #define SH_GET_HASH(tb, a)		(a)->hashval
@@ -80,7 +82,7 @@ static PGresult *executeQuery(PGconn *conn, const char *query);
 static void executeCommand(PGconn *conn, const char *query);
 static void expand_dbname_patterns(PGconn *conn, SimpleStringList *patterns,
 								   SimpleStringList *names);
-static void read_dumpall_filters(const char *filename, SimpleStringList *pattern);
+static void read_dumpall_filters(const char *filename, SimpleStringList *patterns);
 
 static char pg_dump_bin[MAXPGPATH];
 static const char *progname;
@@ -658,7 +660,7 @@ help(void)
 	printf(_("  --disable-triggers           disable triggers during data-only restore\n"));
 	printf(_("  --exclude-database=PATTERN   exclude databases whose name matches PATTERN\n"));
 	printf(_("  --extra-float-digits=NUM     override default setting for extra_float_digits\n"));
-	printf(_("  --filter=FILENAME            exclude databases based on expressions in FILENAME\n"));
+	printf(_("  --filter=FILENAME            exclude databases specified in FILENAME\n"));
 	printf(_("  --if-exists                  use IF EXISTS when dropping objects\n"));
 	printf(_("  --inserts                    dump data as INSERT commands, rather than COPY\n"));
 	printf(_("  --load-via-partition-root    load partitions via the root table\n"));
@@ -767,31 +769,28 @@ dumpRoles(PGconn *conn)
 				i_is_current_user;
 	int			i;
 
-	/*
-	 * Notes: rolconfig is dumped later, and pg_authid must be used for
-	 * extracting rolcomment regardless of role_catalog.
-	 */
+	/* note: rolconfig is dumped later */
 	if (server_version >= 90600)
 		printfPQExpBuffer(buf,
 						  "SELECT oid, rolname, rolsuper, rolinherit, "
 						  "rolcreaterole, rolcreatedb, "
 						  "rolcanlogin, rolconnlimit, rolpassword, "
 						  "rolvaliduntil, rolreplication, rolbypassrls, "
-						  "pg_catalog.shobj_description(oid, 'pg_authid') as rolcomment, "
+						  "pg_catalog.shobj_description(oid, '%s') as rolcomment, "
 						  "rolname = current_user AS is_current_user "
 						  "FROM %s "
 						  "WHERE rolname !~ '^pg_' "
-						  "ORDER BY 2", role_catalog);
+						  "ORDER BY 2", role_catalog, role_catalog);
 	else if (server_version >= 90500)
 		printfPQExpBuffer(buf,
 						  "SELECT oid, rolname, rolsuper, rolinherit, "
 						  "rolcreaterole, rolcreatedb, "
 						  "rolcanlogin, rolconnlimit, rolpassword, "
 						  "rolvaliduntil, rolreplication, rolbypassrls, "
-						  "pg_catalog.shobj_description(oid, 'pg_authid') as rolcomment, "
+						  "pg_catalog.shobj_description(oid, '%s') as rolcomment, "
 						  "rolname = current_user AS is_current_user "
 						  "FROM %s "
-						  "ORDER BY 2", role_catalog);
+						  "ORDER BY 2", role_catalog, role_catalog);
 	else
 		printfPQExpBuffer(buf,
 						  "SELECT oid, rolname, rolsuper, rolinherit, "
@@ -799,10 +798,10 @@ dumpRoles(PGconn *conn)
 						  "rolcanlogin, rolconnlimit, rolpassword, "
 						  "rolvaliduntil, rolreplication, "
 						  "false as rolbypassrls, "
-						  "pg_catalog.shobj_description(oid, 'pg_authid') as rolcomment, "
+						  "pg_catalog.shobj_description(oid, '%s') as rolcomment, "
 						  "rolname = current_user AS is_current_user "
 						  "FROM %s "
-						  "ORDER BY 2", role_catalog);
+						  "ORDER BY 2", role_catalog, role_catalog);
 
 	res = executeQuery(conn, buf->data);
 
@@ -1934,6 +1933,17 @@ dumpTimestamp(const char *msg)
 
 	if (strftime(buf, sizeof(buf), PGDUMP_STRFTIME_FMT, localtime(&now)) != 0)
 		fprintf(OPF, "-- %s %s\n\n", msg, buf);
+}
+
+/*
+ * Helper function for rolename_hash hash table.
+ */
+static uint32
+hash_string_pointer(char *s)
+{
+	unsigned char *ss = (unsigned char *) s;
+
+	return hash_bytes(ss, strlen(s));
 }
 
 /*

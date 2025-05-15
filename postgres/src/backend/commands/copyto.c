@@ -18,7 +18,11 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#include "access/heapam.h"
+#include "access/htup_details.h"
 #include "access/tableam.h"
+#include "access/xact.h"
+#include "access/xlog.h"
 #include "commands/copy.h"
 #include "commands/progress.h"
 #include "executor/execdesc.h"
@@ -28,11 +32,14 @@
 #include "libpq/pqformat.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "optimizer/optimizer.h"
 #include "pgstat.h"
+#include "rewrite/rewriteHandler.h"
 #include "storage/fd.h"
 #include "tcop/tcopprot.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/partcache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
@@ -475,7 +482,7 @@ BeginCopyTo(ParseState *pstate,
 				if (q->querySource == QSRC_NON_INSTEAD_RULE)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("DO ALSO rules are not supported for COPY")));
+							 errmsg("DO ALSO rules are not supported for the COPY")));
 			}
 
 			ereport(ERROR,
@@ -492,11 +499,7 @@ BeginCopyTo(ParseState *pstate,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("COPY (SELECT INTO) is not supported")));
 
-		/* The only other utility command we could see is NOTIFY */
-		if (query->utilityStmt != NULL)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("COPY query must not be a utility command")));
+		Assert(query->utilityStmt == NULL);
 
 		/*
 		 * Similarly the grammar doesn't enforce the presence of a RETURNING
@@ -507,8 +510,7 @@ BeginCopyTo(ParseState *pstate,
 		{
 			Assert(query->commandType == CMD_INSERT ||
 				   query->commandType == CMD_UPDATE ||
-				   query->commandType == CMD_DELETE ||
-				   query->commandType == CMD_MERGE);
+				   query->commandType == CMD_DELETE);
 
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -597,9 +599,8 @@ BeginCopyTo(ParseState *pstate,
 			if (!list_member_int(cstate->attnumlist, attnum))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-				/*- translator: %s is the name of a COPY option, e.g. FORCE_NOT_NULL */
-						 errmsg("%s column \"%s\" not referenced by COPY",
-								"FORCE_QUOTE", NameStr(attr->attname))));
+						 errmsg("FORCE_QUOTE column \"%s\" not referenced by COPY",
+								NameStr(attr->attname))));
 			cstate->opts.force_quote_flags[attnum - 1] = true;
 		}
 	}

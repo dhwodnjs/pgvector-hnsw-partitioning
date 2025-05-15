@@ -25,6 +25,7 @@
 #include "executor/executor.h"
 #include "executor/nodeGroup.h"
 #include "miscadmin.h"
+#include "utils/memutils.h"
 
 
 /*

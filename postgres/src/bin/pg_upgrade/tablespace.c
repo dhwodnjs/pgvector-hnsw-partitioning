@@ -84,8 +84,8 @@ get_tablespace_paths(void)
 							  os_info.old_tablespaces[tblnum]);
 			else
 				report_status(PG_FATAL,
-							  "could not stat tablespace directory \"%s\": %m",
-							  os_info.old_tablespaces[tblnum]);
+							  "could not stat tablespace directory \"%s\": %s",
+							  os_info.old_tablespaces[tblnum], strerror(errno));
 		}
 		if (!S_ISDIR(statBuf.st_mode))
 			report_status(PG_FATAL,

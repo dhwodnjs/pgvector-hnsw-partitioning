@@ -24,7 +24,6 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/dependency.h"
-#include "catalog/namespace.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_collation.h"
@@ -47,6 +46,7 @@
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "parser/parse_func.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "storage/procarray.h"
@@ -108,7 +108,7 @@
  * (if one exists).
  *
  * activeSearchPath is always the actually active path; it points to
- * baseSearchPath which is the list derived from namespace_search_path.
+ * to baseSearchPath which is the list derived from namespace_search_path.
  *
  * If baseSearchPathValid is false, then baseSearchPath (and other derived
  * variables) need to be recomputed from namespace_search_path, or retrieved
@@ -230,7 +230,7 @@ static void AccessTempTableNamespace(bool force);
 static void InitTempTableNamespace(void);
 static void RemoveTempRelations(Oid tempNamespaceId);
 static void RemoveTempRelationsCallback(int code, Datum arg);
-static void InvalidationCallback(Datum arg, int cacheid, uint32 hashvalue);
+static void NamespaceCallback(Datum arg, int cacheid, uint32 hashvalue);
 static bool MatchNamedCall(HeapTuple proctup, int nargs, List *argnames,
 						   bool include_out_arguments, int pronargs,
 						   int **argnumbers);
@@ -305,32 +305,17 @@ static SearchPathCacheEntry *LastSearchPathCacheEntry = NULL;
 static void
 spcache_init(void)
 {
+	Assert(SearchPathCacheContext);
+
 	if (SearchPathCache && searchPathCacheValid &&
 		SearchPathCache->members < SPCACHE_RESET_THRESHOLD)
 		return;
 
-	searchPathCacheValid = false;
-	baseSearchPathValid = false;
-
-	/*
-	 * Make sure we don't leave dangling pointers if a failure happens during
-	 * initialization.
-	 */
+	/* make sure we don't leave dangling pointers if nsphash_create fails */
 	SearchPathCache = NULL;
 	LastSearchPathCacheEntry = NULL;
 
-	if (SearchPathCacheContext == NULL)
-	{
-		/* Make the context we'll keep search path cache hashtable in */
-		SearchPathCacheContext = AllocSetContextCreate(TopMemoryContext,
-													   "search_path processing cache",
-													   ALLOCSET_DEFAULT_SIZES);
-	}
-	else
-	{
-		MemoryContextReset(SearchPathCacheContext);
-	}
-
+	MemoryContextReset(SearchPathCacheContext);
 	/* arbitrary initial starting size of 16 elements */
 	SearchPathCache = nsphash_create(SearchPathCacheContext, 16, NULL);
 	searchPathCacheValid = true;
@@ -4712,9 +4697,6 @@ check_search_path(char **newval, void **extra, GucSource source)
 void
 assign_search_path(const char *newval, void *extra)
 {
-	/* don't access search_path during bootstrap */
-	Assert(!IsBootstrapProcessingMode());
-
 	/*
 	 * We mark the path as needing recomputation, but don't do anything until
 	 * it's needed.  This avoids trying to do database access during GUC
@@ -4757,31 +4739,22 @@ InitializeSearchPath(void)
 	}
 	else
 	{
+		/* Make the context we'll keep search path cache hashtable in */
+		SearchPathCacheContext = AllocSetContextCreate(TopMemoryContext,
+													   "search_path processing cache",
+													   ALLOCSET_DEFAULT_SIZES);
+
 		/*
 		 * In normal mode, arrange for a callback on any syscache invalidation
-		 * that will affect the search_path cache.
+		 * of pg_namespace or pg_authid rows. (Changing a role name may affect
+		 * the meaning of the special string $user.)
 		 */
-
-		/* namespace name or ACLs may have changed */
 		CacheRegisterSyscacheCallback(NAMESPACEOID,
-									  InvalidationCallback,
+									  NamespaceCallback,
 									  (Datum) 0);
-
-		/* role name may affect the meaning of "$user" */
 		CacheRegisterSyscacheCallback(AUTHOID,
-									  InvalidationCallback,
+									  NamespaceCallback,
 									  (Datum) 0);
-
-		/* role membership may affect ACLs */
-		CacheRegisterSyscacheCallback(AUTHMEMROLEMEM,
-									  InvalidationCallback,
-									  (Datum) 0);
-
-		/* database owner may affect ACLs */
-		CacheRegisterSyscacheCallback(DATABASEOID,
-									  InvalidationCallback,
-									  (Datum) 0);
-
 		/* Force search path to be recomputed on next use */
 		baseSearchPathValid = false;
 		searchPathCacheValid = false;
@@ -4789,11 +4762,11 @@ InitializeSearchPath(void)
 }
 
 /*
- * InvalidationCallback
+ * NamespaceCallback
  *		Syscache inval callback function
  */
 static void
-InvalidationCallback(Datum arg, int cacheid, uint32 hashvalue)
+NamespaceCallback(Datum arg, int cacheid, uint32 hashvalue)
 {
 	/*
 	 * Force search path to be recomputed on next use, also invalidating the

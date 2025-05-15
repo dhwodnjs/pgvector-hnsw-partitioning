@@ -15,6 +15,7 @@
 
 #include "access/generic_xlog.h"
 #include "lib/stringinfo.h"
+#include "storage/relfilelocator.h"
 
 /*
  * Description of generic xlog record: write page regions that this record

@@ -22,6 +22,8 @@
 #include <unistd.h>
 #include <sys/time.h>
 
+#include "access/xlog.h"
+#include "catalog/pg_type.h"
 #include "common/connect.h"
 #include "funcapi.h"
 #include "libpq-fe.h"
@@ -59,7 +61,7 @@ static void libpqrcv_get_senderinfo(WalReceiverConn *conn,
 									char **sender_host, int *sender_port);
 static char *libpqrcv_identify_system(WalReceiverConn *conn,
 									  TimeLineID *primary_tli);
-static char *libpqrcv_get_dbname_from_conninfo(const char *connInfo);
+static char *libpqrcv_get_dbname_from_conninfo(const char *conninfo);
 static int	libpqrcv_server_version(WalReceiverConn *conn);
 static void libpqrcv_readtimelinehistoryfile(WalReceiverConn *conn,
 											 TimeLineID tli, char **filename,
@@ -1248,9 +1250,8 @@ libpqrcv_exec(WalReceiverConn *conn, const char *query,
 
 	switch (PQresultStatus(pgres))
 	{
-		case PGRES_TUPLES_OK:
 		case PGRES_SINGLE_TUPLE:
-		case PGRES_TUPLES_CHUNK:
+		case PGRES_TUPLES_OK:
 			walres->status = WALRCV_OK_TUPLES;
 			libpqrcv_processTuples(pgres, walres, nRetTypes, retTypes);
 			break;

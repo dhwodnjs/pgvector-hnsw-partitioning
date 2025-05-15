@@ -18,6 +18,7 @@
  *		ExecValuesScan			scans a values list.
  *		ExecValuesNext			retrieve next tuple in sequential order.
  *		ExecInitValuesScan		creates and initializes a valuesscan node.
+ *		ExecEndValuesScan		releases any storage allocated.
  *		ExecReScanValuesScan	rescans the values list
  */
 #include "postgres.h"

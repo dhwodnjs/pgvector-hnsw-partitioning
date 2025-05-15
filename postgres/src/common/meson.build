@@ -32,7 +32,6 @@ common_sources = files(
   'scram-common.c',
   'string.c',
   'stringinfo.c',
-  'unicode_case.c',
   'unicode_category.c',
   'unicode_norm.c',
   'username.c',
@@ -169,7 +168,6 @@ foreach name, opts : pgcommon_variants
 
   lib = static_library('libpgcommon@0@'.format(name),
       link_with: cflag_libs,
-      link_whole: cflag_libs,
       c_pch: pch_c_h,
       include_directories: include_directories('.'),
       kwargs: opts + {

@@ -136,19 +136,6 @@
 #endif
 
 /*
- * This macro will disable address safety instrumentation for a function
- * when running with "-fsanitize=address". Think twice before using this!
- */
-#if defined(__clang__) || __GNUC__ >= 8
-#define pg_attribute_no_sanitize_address() __attribute__((no_sanitize("address")))
-#elif __has_attribute(no_sanitize_address)
-/* This would work for clang, but it's deprecated. */
-#define pg_attribute_no_sanitize_address() __attribute__((no_sanitize_address))
-#else
-#define pg_attribute_no_sanitize_address()
-#endif
-
-/*
  * Place this macro before functions that should be allowed to make misaligned
  * accesses.  Think twice before using it on non-x86-specific code!
  * Testing can be done with "-fsanitize=alignment -fsanitize-trap=alignment"
@@ -435,7 +422,7 @@ typedef void (*pg_funcptr_t) (void);
  * bool
  *		Boolean value, either true or false.
  *
- * We use stdbool.h if bool has size 1 after including it.  That's useful for
+ * We use stdbool.h if available and its bool has size 1.  That's useful for
  * better compiler and debugger output and for compatibility with third-party
  * libraries.  But PostgreSQL currently cannot deal with bool of other sizes;
  * there are static assertions around the code to prevent that.

@@ -65,10 +65,6 @@
 #define PqMsg_CopyData				'd'
 
 
-/* These are the codes sent by parallel workers to leader processes. */
-#define PqMsg_Progress              'P'
-
-
 /* These are the authentication request codes sent by the backend. */
 
 #define AUTH_REQ_OK			0	/* User is authenticated  */

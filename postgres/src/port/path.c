@@ -772,7 +772,8 @@ make_absolute_path(const char *path)
 #ifndef FRONTEND
 				elog(ERROR, "could not get current working directory: %m");
 #else
-				fprintf(stderr, _("could not get current working directory: %m\n"));
+				fprintf(stderr, _("could not get current working directory: %s\n"),
+						strerror(errno));
 				return NULL;
 #endif
 			}

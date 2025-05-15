@@ -275,7 +275,7 @@ alter_replication_slot:
 			;
 
 /*
- * START_REPLICATION [SLOT slot] [PHYSICAL] %X/%X [TIMELINE %u]
+ * START_REPLICATION [SLOT slot] [PHYSICAL] %X/%X [TIMELINE %d]
  */
 start_replication:
 			K_START_REPLICATION opt_slot opt_physical RECPTR opt_timeline
@@ -305,7 +305,7 @@ start_logical_replication:
 				}
 			;
 /*
- * TIMELINE_HISTORY %u
+ * TIMELINE_HISTORY %d
  */
 timeline_history:
 			K_TIMELINE_HISTORY UCONST

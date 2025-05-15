@@ -223,7 +223,6 @@ typedef enum
 #define GUC_DISALLOW_IN_AUTO_FILE \
 							   0x002000 /* can't set in PG_AUTOCONF_FILENAME */
 #define GUC_RUNTIME_COMPUTED   0x004000 /* delay processing in 'postgres -C' */
-#define GUC_ALLOW_IN_PARALLEL  0x008000 /* allow setting in parallel mode */
 
 #define GUC_UNIT_KB			 0x01000000 /* value is in kilobytes */
 #define GUC_UNIT_BLOCKS		 0x02000000 /* value is in blocks */
@@ -255,7 +254,6 @@ extern PGDLLIMPORT bool log_btree_build_stats;
 extern PGDLLIMPORT bool check_function_bodies;
 extern PGDLLIMPORT bool current_role_is_superuser;
 
-extern PGDLLIMPORT bool AllowAlterSystem;
 extern PGDLLIMPORT bool log_duration;
 extern PGDLLIMPORT int log_parameter_max_length;
 extern PGDLLIMPORT int log_parameter_max_length_on_error;
@@ -268,6 +266,7 @@ extern PGDLLIMPORT int log_temp_files;
 extern PGDLLIMPORT double log_statement_sample_rate;
 extern PGDLLIMPORT double log_xact_sample_rate;
 extern PGDLLIMPORT char *backtrace_functions;
+extern PGDLLIMPORT bool backtrace_on_internal_error;
 
 extern PGDLLIMPORT int temp_file_limit;
 
@@ -373,7 +372,6 @@ extern bool SelectConfigFiles(const char *userDoption, const char *progname);
 extern void ResetAllOptions(void);
 extern void AtStart_GUC(void);
 extern int	NewGUCNestLevel(void);
-extern void RestrictSearchPath(void);
 extern void AtEOXact_GUC(bool isCommit, int nestLevel);
 extern void BeginReportingGUCOptions(void);
 extern void ReportChangedGUCOptions(void);
@@ -403,8 +401,8 @@ extern void AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt);
 extern char *GetConfigOptionByName(const char *name, const char **varname,
 								   bool missing_ok);
 
-extern void TransformGUCArray(ArrayType *array, List **names,
-							  List **values);
+extern void TransformGUCArray(ArrayType *array, List **configNames,
+							  List **configValues);
 extern void ProcessGUCArray(ArrayType *array,
 							GucContext context, GucSource source, GucAction action);
 extern ArrayType *GUCArrayAdd(ArrayType *array, const char *name, const char *value);

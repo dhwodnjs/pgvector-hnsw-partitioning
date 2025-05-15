@@ -16,6 +16,7 @@
 #include "postgres.h"
 
 #include "funcapi.h"
+#include "miscadmin.h"
 #include "mb/pg_wchar.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"

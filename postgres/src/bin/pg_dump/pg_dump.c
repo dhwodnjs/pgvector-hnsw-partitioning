@@ -136,9 +136,6 @@ static SimpleOidList foreign_servers_include_oids = {NULL, NULL};
 static SimpleStringList extension_include_patterns = {NULL, NULL};
 static SimpleOidList extension_include_oids = {NULL, NULL};
 
-static SimpleStringList extension_exclude_patterns = {NULL, NULL};
-static SimpleOidList extension_exclude_oids = {NULL, NULL};
-
 static const CatalogId nilCatalogId = {0, 0};
 
 /* override for standard extra_float_digits setting */
@@ -162,13 +159,6 @@ static int	nseclabels = 0;
  * --inserts is specified without --rows-per-insert
  */
 #define DUMP_DEFAULT_ROWS_PER_INSERT 1
-
-/*
- * Maximum number of large objects to group into a single ArchiveEntry.
- * At some point we might want to make this user-controllable, but for now
- * a hard-wired setting will suffice.
- */
-#define MAX_BLOBS_PER_ARCHIVE_ENTRY 1000
 
 /*
  * Macro for producing quoted, schema-qualified name of a dumpable object.
@@ -274,7 +264,7 @@ static void dumpDefaultACL(Archive *fout, const DefaultACLInfo *daclinfo);
 
 static DumpId dumpACL(Archive *fout, DumpId objDumpId, DumpId altDumpId,
 					  const char *type, const char *name, const char *subname,
-					  const char *nspname, const char *tag, const char *owner,
+					  const char *nspname, const char *owner,
 					  const DumpableAcl *dacl);
 
 static void getDependencies(Archive *fout);
@@ -336,7 +326,6 @@ static bool nonemptyReloptions(const char *reloptions);
 static void appendReloptionsArrayAH(PQExpBuffer buffer, const char *reloptions,
 									const char *prefix, Archive *fout);
 static char *get_synchronized_snapshot(Archive *fout);
-static void set_restrict_relation_kind(Archive *AH, const char *value);
 static void setupDumpWorker(Archive *AH);
 static TableInfo *getRootTableInfo(const TableInfo *tbinfo);
 static bool forcePartitionRootLoad(const TableInfo *tbinfo);
@@ -448,7 +437,6 @@ main(int argc, char **argv)
 		{"exclude-table-data-and-children", required_argument, NULL, 14},
 		{"sync-method", required_argument, NULL, 15},
 		{"filter", required_argument, NULL, 16},
-		{"exclude-extension", required_argument, NULL, 17},
 
 		{NULL, 0, NULL, 0}
 	};
@@ -684,11 +672,6 @@ main(int argc, char **argv)
 				read_dump_filters(optarg, &dopt);
 				break;
 
-			case 17:			/* exclude extension(s) */
-				simple_string_list_append(&extension_exclude_patterns,
-										  optarg);
-				break;
-
 			default:
 				/* getopt_long already emitted a complaint */
 				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
@@ -907,10 +890,6 @@ main(int argc, char **argv)
 		if (extension_include_oids.head == NULL)
 			pg_fatal("no matching extensions were found");
 	}
-	expand_extension_name_patterns(fout, &extension_exclude_patterns,
-								   &extension_exclude_oids,
-								   false);
-	/* non-matching exclusion patterns aren't an error */
 
 	/*
 	 * Dumping LOs is the default for dumps where an inclusion switch is not
@@ -1132,7 +1111,6 @@ help(const char *progname)
 	printf(_("  --disable-triggers           disable triggers during data-only restore\n"));
 	printf(_("  --enable-row-security        enable row security (dump only content user has\n"
 			 "                               access to)\n"));
-	printf(_("  --exclude-extension=PATTERN  do NOT dump the specified extension(s)\n"));
 	printf(_("  --exclude-table-and-children=PATTERN\n"
 			 "                               do NOT dump the specified table(s), including\n"
 			 "                               child and partition tables\n"));
@@ -1293,13 +1271,6 @@ setup_connection(Archive *AH, const char *dumpencoding,
 		else
 			ExecuteSqlStatement(AH, "SET row_security = off");
 	}
-
-	/*
-	 * For security reasons, we restrict the expansion of non-system views and
-	 * access to foreign tables during the pg_dump process. This restriction
-	 * is adjusted when dumping foreign table data.
-	 */
-	set_restrict_relation_kind(AH, "view, foreign-table");
 
 	/*
 	 * Initialize prepared-query state to "nothing prepared".  We do this here
@@ -2057,12 +2028,6 @@ selectDumpableExtension(ExtensionInfo *extinfo, DumpOptions *dopt)
 			extinfo->dobj.dump = extinfo->dobj.dump_contains =
 				dopt->include_everything ?
 				DUMP_COMPONENT_ALL : DUMP_COMPONENT_NONE;
-
-		/* check that the extension is not explicitly excluded */
-		if (extinfo->dobj.dump &&
-			simple_oid_list_member(&extension_exclude_oids,
-								   extinfo->dobj.catId.oid))
-			extinfo->dobj.dump = extinfo->dobj.dump_contains = DUMP_COMPONENT_NONE;
 	}
 }
 
@@ -2169,10 +2134,6 @@ dumpTableData_copy(Archive *fout, const void *dcontext)
 	 */
 	if (tdinfo->filtercond || tbinfo->relkind == RELKIND_FOREIGN_TABLE)
 	{
-		/* Temporary allows to access to foreign tables to dump data */
-		if (tbinfo->relkind == RELKIND_FOREIGN_TABLE)
-			set_restrict_relation_kind(fout, "view");
-
 		appendPQExpBufferStr(q, "COPY (SELECT ");
 		/* klugery to get rid of parens in column list */
 		if (strlen(column_list) > 2)
@@ -2284,11 +2245,6 @@ dumpTableData_copy(Archive *fout, const void *dcontext)
 					   classname);
 
 	destroyPQExpBuffer(q);
-
-	/* Revert back the setting */
-	if (tbinfo->relkind == RELKIND_FOREIGN_TABLE)
-		set_restrict_relation_kind(fout, "view, foreign-table");
-
 	return 1;
 }
 
@@ -2314,10 +2270,6 @@ dumpTableData_insert(Archive *fout, const void *dcontext)
 				i;
 	int			rows_per_statement = dopt->dump_inserts;
 	int			rows_this_statement = 0;
-
-	/* Temporary allows to access to foreign tables to dump data */
-	if (tbinfo->relkind == RELKIND_FOREIGN_TABLE)
-		set_restrict_relation_kind(fout, "view");
 
 	/*
 	 * If we're going to emit INSERTs with column names, the most efficient
@@ -2557,10 +2509,6 @@ dumpTableData_insert(Archive *fout, const void *dcontext)
 	if (insertStmt != NULL)
 		destroyPQExpBuffer(insertStmt);
 	free(attgenerated);
-
-	/* Revert back the setting */
-	if (tbinfo->relkind == RELKIND_FOREIGN_TABLE)
-		set_restrict_relation_kind(fout, "view, foreign-table");
 
 	return 1;
 }
@@ -3036,7 +2984,7 @@ dumpDatabase(Archive *fout)
 				i_datlocprovider,
 				i_collate,
 				i_ctype,
-				i_datlocale,
+				i_daticulocale,
 				i_daticurules,
 				i_frozenxid,
 				i_minmxid,
@@ -3055,7 +3003,7 @@ dumpDatabase(Archive *fout)
 			   *datlocprovider,
 			   *collate,
 			   *ctype,
-			   *locale,
+			   *iculocale,
 			   *icurules,
 			   *datistemplate,
 			   *datconnlimit,
@@ -3079,12 +3027,10 @@ dumpDatabase(Archive *fout)
 		appendPQExpBufferStr(dbQry, "datminmxid, ");
 	else
 		appendPQExpBufferStr(dbQry, "0 AS datminmxid, ");
-	if (fout->remoteVersion >= 170000)
-		appendPQExpBufferStr(dbQry, "datlocprovider, datlocale, datcollversion, ");
-	else if (fout->remoteVersion >= 150000)
-		appendPQExpBufferStr(dbQry, "datlocprovider, daticulocale AS datlocale, datcollversion, ");
+	if (fout->remoteVersion >= 150000)
+		appendPQExpBufferStr(dbQry, "datlocprovider, daticulocale, datcollversion, ");
 	else
-		appendPQExpBufferStr(dbQry, "'c' AS datlocprovider, NULL AS datlocale, NULL AS datcollversion, ");
+		appendPQExpBufferStr(dbQry, "'c' AS datlocprovider, NULL AS daticulocale, NULL AS datcollversion, ");
 	if (fout->remoteVersion >= 160000)
 		appendPQExpBufferStr(dbQry, "daticurules, ");
 	else
@@ -3105,7 +3051,7 @@ dumpDatabase(Archive *fout)
 	i_datlocprovider = PQfnumber(res, "datlocprovider");
 	i_collate = PQfnumber(res, "datcollate");
 	i_ctype = PQfnumber(res, "datctype");
-	i_datlocale = PQfnumber(res, "datlocale");
+	i_daticulocale = PQfnumber(res, "daticulocale");
 	i_daticurules = PQfnumber(res, "daticurules");
 	i_frozenxid = PQfnumber(res, "datfrozenxid");
 	i_minmxid = PQfnumber(res, "datminmxid");
@@ -3124,10 +3070,10 @@ dumpDatabase(Archive *fout)
 	datlocprovider = PQgetvalue(res, 0, i_datlocprovider);
 	collate = PQgetvalue(res, 0, i_collate);
 	ctype = PQgetvalue(res, 0, i_ctype);
-	if (!PQgetisnull(res, 0, i_datlocale))
-		locale = PQgetvalue(res, 0, i_datlocale);
+	if (!PQgetisnull(res, 0, i_daticulocale))
+		iculocale = PQgetvalue(res, 0, i_daticulocale);
 	else
-		locale = NULL;
+		iculocale = NULL;
 	if (!PQgetisnull(res, 0, i_daticurules))
 		icurules = PQgetvalue(res, 0, i_daticurules);
 	else
@@ -3166,9 +3112,7 @@ dumpDatabase(Archive *fout)
 	}
 
 	appendPQExpBufferStr(creaQry, " LOCALE_PROVIDER = ");
-	if (datlocprovider[0] == 'b')
-		appendPQExpBufferStr(creaQry, "builtin");
-	else if (datlocprovider[0] == 'c')
+	if (datlocprovider[0] == 'c')
 		appendPQExpBufferStr(creaQry, "libc");
 	else if (datlocprovider[0] == 'i')
 		appendPQExpBufferStr(creaQry, "icu");
@@ -3194,16 +3138,11 @@ dumpDatabase(Archive *fout)
 			appendStringLiteralAH(creaQry, ctype, fout);
 		}
 	}
-	if (locale)
+	if (iculocale)
 	{
-		if (datlocprovider[0] == 'b')
-			appendPQExpBufferStr(creaQry, " BUILTIN_LOCALE = ");
-		else
-			appendPQExpBufferStr(creaQry, " ICU_LOCALE = ");
-
-		appendStringLiteralAH(creaQry, locale, fout);
+		appendPQExpBufferStr(creaQry, " ICU_LOCALE = ");
+		appendStringLiteralAH(creaQry, iculocale, fout);
 	}
-
 	if (icurules)
 	{
 		appendPQExpBufferStr(creaQry, " ICU_RULES = ");
@@ -3323,7 +3262,7 @@ dumpDatabase(Archive *fout)
 
 	dumpACL(fout, dbDumpId, InvalidDumpId, "DATABASE",
 			qdatname, NULL, NULL,
-			NULL, dba, &dbdacl);
+			dba, &dbdacl);
 
 	/*
 	 * Now construct a DATABASE PROPERTIES archive entry to restore any
@@ -3559,7 +3498,7 @@ dumpStdStrings(Archive *AH)
 	const char *stdstrings = AH->std_strings ? "on" : "off";
 	PQExpBuffer qry = createPQExpBuffer();
 
-	pg_log_info("saving \"standard_conforming_strings = %s\"",
+	pg_log_info("saving standard_conforming_strings = %s",
 				stdstrings);
 
 	appendPQExpBuffer(qry, "SET standard_conforming_strings = '%s';\n",
@@ -3617,7 +3556,7 @@ dumpSearchPath(Archive *AH)
 	appendStringLiteralAH(qry, path->data, AH);
 	appendPQExpBufferStr(qry, ", false);\n");
 
-	pg_log_info("saving \"search_path = %s\"", path->data);
+	pg_log_info("saving search_path = %s", path->data);
 
 	ArchiveEntry(AH, nilCatalogId, createDumpId(),
 				 ARCHIVE_OPTS(.tag = "SEARCHPATH",
@@ -3644,10 +3583,11 @@ getLOs(Archive *fout)
 {
 	DumpOptions *dopt = fout->dopt;
 	PQExpBuffer loQry = createPQExpBuffer();
+	LoInfo	   *loinfo;
+	DumpableObject *lodata;
 	PGresult   *res;
 	int			ntups;
 	int			i;
-	int			n;
 	int			i_oid;
 	int			i_lomowner;
 	int			i_lomacl;
@@ -3655,15 +3595,11 @@ getLOs(Archive *fout)
 
 	pg_log_info("reading large objects");
 
-	/*
-	 * Fetch LO OIDs and owner/ACL data.  Order the data so that all the blobs
-	 * with the same owner/ACL appear together.
-	 */
+	/* Fetch LO OIDs, and owner/ACL data */
 	appendPQExpBufferStr(loQry,
 						 "SELECT oid, lomowner, lomacl, "
 						 "acldefault('L', lomowner) AS acldefault "
-						 "FROM pg_largeobject_metadata "
-						 "ORDER BY lomowner, lomacl::pg_catalog.text, oid");
+						 "FROM pg_largeobject_metadata");
 
 	res = ExecuteSqlQuery(fout, loQry->data, PGRES_TUPLES_OK);
 
@@ -3675,72 +3611,30 @@ getLOs(Archive *fout)
 	ntups = PQntuples(res);
 
 	/*
-	 * Group the blobs into suitably-sized groups that have the same owner and
-	 * ACL setting, and build a metadata and a data DumpableObject for each
-	 * group.  (If we supported initprivs for blobs, we'd have to insist that
-	 * groups also share initprivs settings, since the DumpableObject only has
-	 * room for one.)  i is the index of the first tuple in the current group,
-	 * and n is the number of tuples we include in the group.
+	 * Each large object has its own "BLOB" archive entry.
 	 */
-	for (i = 0; i < ntups; i += n)
+	loinfo = (LoInfo *) pg_malloc(ntups * sizeof(LoInfo));
+
+	for (i = 0; i < ntups; i++)
 	{
-		Oid			thisoid = atooid(PQgetvalue(res, i, i_oid));
-		char	   *thisowner = PQgetvalue(res, i, i_lomowner);
-		char	   *thisacl = PQgetvalue(res, i, i_lomacl);
-		LoInfo	   *loinfo;
-		DumpableObject *lodata;
-		char		namebuf[64];
+		loinfo[i].dobj.objType = DO_LARGE_OBJECT;
+		loinfo[i].dobj.catId.tableoid = LargeObjectRelationId;
+		loinfo[i].dobj.catId.oid = atooid(PQgetvalue(res, i, i_oid));
+		AssignDumpId(&loinfo[i].dobj);
 
-		/* Scan to find first tuple not to be included in group */
-		n = 1;
-		while (n < MAX_BLOBS_PER_ARCHIVE_ENTRY && i + n < ntups)
-		{
-			if (strcmp(thisowner, PQgetvalue(res, i + n, i_lomowner)) != 0 ||
-				strcmp(thisacl, PQgetvalue(res, i + n, i_lomacl)) != 0)
-				break;
-			n++;
-		}
-
-		/* Build the metadata DumpableObject */
-		loinfo = (LoInfo *) pg_malloc(offsetof(LoInfo, looids) + n * sizeof(Oid));
-
-		loinfo->dobj.objType = DO_LARGE_OBJECT;
-		loinfo->dobj.catId.tableoid = LargeObjectRelationId;
-		loinfo->dobj.catId.oid = thisoid;
-		AssignDumpId(&loinfo->dobj);
-
-		if (n > 1)
-			snprintf(namebuf, sizeof(namebuf), "%u..%u", thisoid,
-					 atooid(PQgetvalue(res, i + n - 1, i_oid)));
-		else
-			snprintf(namebuf, sizeof(namebuf), "%u", thisoid);
-		loinfo->dobj.name = pg_strdup(namebuf);
-		loinfo->dacl.acl = pg_strdup(thisacl);
-		loinfo->dacl.acldefault = pg_strdup(PQgetvalue(res, i, i_acldefault));
-		loinfo->dacl.privtype = 0;
-		loinfo->dacl.initprivs = NULL;
-		loinfo->rolname = getRoleName(thisowner);
-		loinfo->numlos = n;
-		loinfo->looids[0] = thisoid;
-		/* Collect OIDs of the remaining blobs in this group */
-		for (int k = 1; k < n; k++)
-		{
-			CatalogId	extraID;
-
-			loinfo->looids[k] = atooid(PQgetvalue(res, i + k, i_oid));
-
-			/* Make sure we can look up loinfo by any of the blobs' OIDs */
-			extraID.tableoid = LargeObjectRelationId;
-			extraID.oid = loinfo->looids[k];
-			recordAdditionalCatalogID(extraID, &loinfo->dobj);
-		}
+		loinfo[i].dobj.name = pg_strdup(PQgetvalue(res, i, i_oid));
+		loinfo[i].dacl.acl = pg_strdup(PQgetvalue(res, i, i_lomacl));
+		loinfo[i].dacl.acldefault = pg_strdup(PQgetvalue(res, i, i_acldefault));
+		loinfo[i].dacl.privtype = 0;
+		loinfo[i].dacl.initprivs = NULL;
+		loinfo[i].rolname = getRoleName(PQgetvalue(res, i, i_lomowner));
 
 		/* LOs have data */
-		loinfo->dobj.components |= DUMP_COMPONENT_DATA;
+		loinfo[i].dobj.components |= DUMP_COMPONENT_DATA;
 
-		/* Mark whether LO group has a non-empty ACL */
+		/* Mark whether LO has an ACL */
 		if (!PQgetisnull(res, i, i_lomacl))
-			loinfo->dobj.components |= DUMP_COMPONENT_ACL;
+			loinfo[i].dobj.components |= DUMP_COMPONENT_ACL;
 
 		/*
 		 * In binary-upgrade mode for LOs, we do *not* dump out the LO data,
@@ -3750,22 +3644,21 @@ getLOs(Archive *fout)
 		 * pg_largeobject_metadata, after the dump is restored.
 		 */
 		if (dopt->binary_upgrade)
-			loinfo->dobj.dump &= ~DUMP_COMPONENT_DATA;
+			loinfo[i].dobj.dump &= ~DUMP_COMPONENT_DATA;
+	}
 
-		/*
-		 * Create a "BLOBS" data item for the group, too. This is just a
-		 * placeholder for sorting; it carries no data now.
-		 */
+	/*
+	 * If we have any large objects, a "BLOBS" archive entry is needed. This
+	 * is just a placeholder for sorting; it carries no data now.
+	 */
+	if (ntups > 0)
+	{
 		lodata = (DumpableObject *) pg_malloc(sizeof(DumpableObject));
 		lodata->objType = DO_LARGE_OBJECT_DATA;
 		lodata->catId = nilCatalogId;
 		AssignDumpId(lodata);
-		lodata->name = pg_strdup(namebuf);
+		lodata->name = pg_strdup("BLOBS");
 		lodata->components |= DUMP_COMPONENT_DATA;
-		/* Set up explicit dependency from data to metadata */
-		lodata->dependencies = (DumpId *) pg_malloc(sizeof(DumpId));
-		lodata->dependencies[0] = loinfo->dobj.dumpId;
-		lodata->nDeps = lodata->allocDeps = 1;
 	}
 
 	PQclear(res);
@@ -3775,136 +3668,123 @@ getLOs(Archive *fout)
 /*
  * dumpLO
  *
- * dump the definition (metadata) of the given large object group
+ * dump the definition (metadata) of the given large object
  */
 static void
 dumpLO(Archive *fout, const LoInfo *loinfo)
 {
 	PQExpBuffer cquery = createPQExpBuffer();
+	PQExpBuffer dquery = createPQExpBuffer();
 
-	/*
-	 * The "definition" is just a newline-separated list of OIDs.  We need to
-	 * put something into the dropStmt too, but it can just be a comment.
-	 */
-	for (int i = 0; i < loinfo->numlos; i++)
-		appendPQExpBuffer(cquery, "%u\n", loinfo->looids[i]);
+	appendPQExpBuffer(cquery,
+					  "SELECT pg_catalog.lo_create('%s');\n",
+					  loinfo->dobj.name);
+
+	appendPQExpBuffer(dquery,
+					  "SELECT pg_catalog.lo_unlink('%s');\n",
+					  loinfo->dobj.name);
 
 	if (loinfo->dobj.dump & DUMP_COMPONENT_DEFINITION)
 		ArchiveEntry(fout, loinfo->dobj.catId, loinfo->dobj.dumpId,
 					 ARCHIVE_OPTS(.tag = loinfo->dobj.name,
 								  .owner = loinfo->rolname,
-								  .description = "BLOB METADATA",
-								  .section = SECTION_DATA,
+								  .description = "BLOB",
+								  .section = SECTION_PRE_DATA,
 								  .createStmt = cquery->data,
-								  .dropStmt = "-- dummy"));
+								  .dropStmt = dquery->data));
 
-	/*
-	 * Dump per-blob comments and seclabels if any.  We assume these are rare
-	 * enough that it's okay to generate retail TOC entries for them.
-	 */
-	if (loinfo->dobj.dump & (DUMP_COMPONENT_COMMENT |
-							 DUMP_COMPONENT_SECLABEL))
-	{
-		for (int i = 0; i < loinfo->numlos; i++)
-		{
-			CatalogId	catId;
-			char		namebuf[32];
+	/* Dump comment if any */
+	if (loinfo->dobj.dump & DUMP_COMPONENT_COMMENT)
+		dumpComment(fout, "LARGE OBJECT", loinfo->dobj.name,
+					NULL, loinfo->rolname,
+					loinfo->dobj.catId, 0, loinfo->dobj.dumpId);
 
-			/* Build identifying info for this blob */
-			catId.tableoid = loinfo->dobj.catId.tableoid;
-			catId.oid = loinfo->looids[i];
-			snprintf(namebuf, sizeof(namebuf), "%u", loinfo->looids[i]);
+	/* Dump security label if any */
+	if (loinfo->dobj.dump & DUMP_COMPONENT_SECLABEL)
+		dumpSecLabel(fout, "LARGE OBJECT", loinfo->dobj.name,
+					 NULL, loinfo->rolname,
+					 loinfo->dobj.catId, 0, loinfo->dobj.dumpId);
 
-			if (loinfo->dobj.dump & DUMP_COMPONENT_COMMENT)
-				dumpComment(fout, "LARGE OBJECT", namebuf,
-							NULL, loinfo->rolname,
-							catId, 0, loinfo->dobj.dumpId);
-
-			if (loinfo->dobj.dump & DUMP_COMPONENT_SECLABEL)
-				dumpSecLabel(fout, "LARGE OBJECT", namebuf,
-							 NULL, loinfo->rolname,
-							 catId, 0, loinfo->dobj.dumpId);
-		}
-	}
-
-	/*
-	 * Dump the ACLs if any (remember that all blobs in the group will have
-	 * the same ACL).  If there's just one blob, dump a simple ACL entry; if
-	 * there's more, make a "LARGE OBJECTS" entry that really contains only
-	 * the ACL for the first blob.  _printTocEntry() will be cued by the tag
-	 * string to emit a mutated version for each blob.
-	 */
+	/* Dump ACL if any */
 	if (loinfo->dobj.dump & DUMP_COMPONENT_ACL)
-	{
-		char		namebuf[32];
-
-		/* Build identifying info for the first blob */
-		snprintf(namebuf, sizeof(namebuf), "%u", loinfo->looids[0]);
-
-		if (loinfo->numlos > 1)
-		{
-			char		tagbuf[64];
-
-			snprintf(tagbuf, sizeof(tagbuf), "LARGE OBJECTS %u..%u",
-					 loinfo->looids[0], loinfo->looids[loinfo->numlos - 1]);
-
-			dumpACL(fout, loinfo->dobj.dumpId, InvalidDumpId,
-					"LARGE OBJECT", namebuf, NULL, NULL,
-					tagbuf, loinfo->rolname, &loinfo->dacl);
-		}
-		else
-		{
-			dumpACL(fout, loinfo->dobj.dumpId, InvalidDumpId,
-					"LARGE OBJECT", namebuf, NULL, NULL,
-					NULL, loinfo->rolname, &loinfo->dacl);
-		}
-	}
+		dumpACL(fout, loinfo->dobj.dumpId, InvalidDumpId, "LARGE OBJECT",
+				loinfo->dobj.name, NULL,
+				NULL, loinfo->rolname, &loinfo->dacl);
 
 	destroyPQExpBuffer(cquery);
+	destroyPQExpBuffer(dquery);
 }
 
 /*
  * dumpLOs:
- *	dump the data contents of the large objects in the given group
+ *	dump the data contents of all large objects
  */
 static int
 dumpLOs(Archive *fout, const void *arg)
 {
-	const LoInfo *loinfo = (const LoInfo *) arg;
+	const char *loQry;
+	const char *loFetchQry;
 	PGconn	   *conn = GetConnection(fout);
+	PGresult   *res;
 	char		buf[LOBBUFSIZE];
+	int			ntups;
+	int			i;
+	int			cnt;
 
-	pg_log_info("saving large objects \"%s\"", loinfo->dobj.name);
+	pg_log_info("saving large objects");
 
-	for (int i = 0; i < loinfo->numlos; i++)
+	/*
+	 * Currently, we re-fetch all LO OIDs using a cursor.  Consider scanning
+	 * the already-in-memory dumpable objects instead...
+	 */
+	loQry =
+		"DECLARE looid CURSOR FOR "
+		"SELECT oid FROM pg_largeobject_metadata ORDER BY 1";
+
+	ExecuteSqlStatement(fout, loQry);
+
+	/* Command to fetch from cursor */
+	loFetchQry = "FETCH 1000 IN looid";
+
+	do
 	{
-		Oid			loOid = loinfo->looids[i];
-		int			loFd;
-		int			cnt;
+		/* Do a fetch */
+		res = ExecuteSqlQuery(fout, loFetchQry, PGRES_TUPLES_OK);
 
-		/* Open the LO */
-		loFd = lo_open(conn, loOid, INV_READ);
-		if (loFd == -1)
-			pg_fatal("could not open large object %u: %s",
-					 loOid, PQerrorMessage(conn));
-
-		StartLO(fout, loOid);
-
-		/* Now read it in chunks, sending data to archive */
-		do
+		/* Process the tuples, if any */
+		ntups = PQntuples(res);
+		for (i = 0; i < ntups; i++)
 		{
-			cnt = lo_read(conn, loFd, buf, LOBBUFSIZE);
-			if (cnt < 0)
-				pg_fatal("error reading large object %u: %s",
+			Oid			loOid;
+			int			loFd;
+
+			loOid = atooid(PQgetvalue(res, i, 0));
+			/* Open the LO */
+			loFd = lo_open(conn, loOid, INV_READ);
+			if (loFd == -1)
+				pg_fatal("could not open large object %u: %s",
 						 loOid, PQerrorMessage(conn));
 
-			WriteData(fout, buf, cnt);
-		} while (cnt > 0);
+			StartLO(fout, loOid);
 
-		lo_close(conn, loFd);
+			/* Now read it in chunks, sending data to archive */
+			do
+			{
+				cnt = lo_read(conn, loFd, buf, LOBBUFSIZE);
+				if (cnt < 0)
+					pg_fatal("error reading large object %u: %s",
+							 loOid, PQerrorMessage(conn));
 
-		EndLO(fout, loOid);
-	}
+				WriteData(fout, buf, cnt);
+			} while (cnt > 0);
+
+			lo_close(conn, loFd);
+
+			EndLO(fout, loOid);
+		}
+
+		PQclear(res);
+	} while (ntups > 0);
 
 	return 1;
 }
@@ -4736,28 +4616,6 @@ is_superuser(Archive *fout)
 }
 
 /*
- * Set the given value to restrict_nonsystem_relation_kind value. Since
- * restrict_nonsystem_relation_kind is introduced in minor version releases,
- * the setting query is effective only where available.
- */
-static void
-set_restrict_relation_kind(Archive *AH, const char *value)
-{
-	PQExpBuffer query = createPQExpBuffer();
-	PGresult   *res;
-
-	appendPQExpBuffer(query,
-					  "SELECT set_config(name, '%s', false) "
-					  "FROM pg_settings "
-					  "WHERE name = 'restrict_nonsystem_relation_kind'",
-					  value);
-	res = ExecuteSqlQuery(AH, query->data, PGRES_TUPLES_OK);
-
-	PQclear(res);
-	destroyPQExpBuffer(query);
-}
-
-/*
  * getSubscriptions
  *	  get information about subscriptions
  */
@@ -4851,17 +4709,12 @@ getSubscriptions(Archive *fout)
 
 	if (dopt->binary_upgrade && fout->remoteVersion >= 170000)
 		appendPQExpBufferStr(query, " o.remote_lsn AS suboriginremotelsn,\n"
-							 " s.subenabled,\n");
-	else
-		appendPQExpBufferStr(query, " NULL AS suboriginremotelsn,\n"
-							 " false AS subenabled,\n");
-
-	if (fout->remoteVersion >= 170000)
-		appendPQExpBufferStr(query,
+							 " s.subenabled,\n"
 							 " s.subfailover\n");
 	else
-		appendPQExpBuffer(query,
-						  " false AS subfailover\n");
+		appendPQExpBufferStr(query, " NULL AS suboriginremotelsn,\n"
+							 " false AS subenabled,\n"
+							 " false AS subfailover\n");
 
 	appendPQExpBufferStr(query,
 						 "FROM pg_subscription s\n");
@@ -5184,9 +5037,6 @@ dumpSubscription(Archive *fout, const SubscriptionInfo *subinfo)
 	if (strcmp(subinfo->subrunasowner, "t") == 0)
 		appendPQExpBufferStr(query, ", run_as_owner = true");
 
-	if (strcmp(subinfo->subfailover, "t") == 0)
-		appendPQExpBufferStr(query, ", failover = true");
-
 	if (strcmp(subinfo->subsynccommit, "off") != 0)
 		appendPQExpBuffer(query, ", synchronous_commit = %s", fmtId(subinfo->subsynccommit));
 
@@ -5218,6 +5068,17 @@ dumpSubscription(Archive *fout, const SubscriptionInfo *subinfo)
 								 "SELECT pg_catalog.binary_upgrade_replorigin_advance(");
 			appendStringLiteralAH(query, subinfo->dobj.name, fout);
 			appendPQExpBuffer(query, ", '%s');\n", subinfo->suboriginremotelsn);
+		}
+
+		if (strcmp(subinfo->subfailover, "t") == 0)
+		{
+			/*
+			 * Enable the failover to allow the subscription's slot to be
+			 * synced to the standbys after the upgrade.
+			 */
+			appendPQExpBufferStr(query,
+								 "\n-- For binary upgrade, must preserve the subscriber's failover option.\n");
+			appendPQExpBuffer(query, "ALTER SUBSCRIPTION %s SET(failover = true);\n", qsubname);
 		}
 
 		if (strcmp(subinfo->subenabled, "t") == 0)
@@ -5526,6 +5387,8 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 							  "SELECT pg_catalog.binary_upgrade_set_next_index_relfilenode('%u'::pg_catalog.oid);\n",
 							  toast_index_relfilenumber);
 		}
+
+		PQclear(upgrade_res);
 	}
 	else
 	{
@@ -5537,8 +5400,6 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 						  "SELECT pg_catalog.binary_upgrade_set_next_index_relfilenode('%u'::pg_catalog.oid);\n",
 						  relfilenumber);
 	}
-
-	PQclear(upgrade_res);
 
 	appendPQExpBufferChar(upgrade_buffer, '\n');
 
@@ -7210,15 +7071,20 @@ getOwnedSeqs(Archive *fout, TableInfo tblinfo[], int numTables)
 					 seqinfo->owning_tab, seqinfo->dobj.catId.oid);
 
 		/*
-		 * For an identity sequence, dump exactly the same components for the
-		 * sequence as for the owning table.  This is important because we
-		 * treat the identity sequence as an integral part of the table.  For
-		 * example, there is not any DDL command that allows creation of such
-		 * a sequence independently of the table.
-		 *
-		 * For other owned sequences such as serial sequences, we need to dump
-		 * the components that are being dumped for the table and any
-		 * components that the sequence is explicitly marked with.
+		 * Only dump identity sequences if we're going to dump the table that
+		 * it belongs to.
+		 */
+		if (owning_tab->dobj.dump == DUMP_COMPONENT_NONE &&
+			seqinfo->is_identity_sequence)
+		{
+			seqinfo->dobj.dump = DUMP_COMPONENT_NONE;
+			continue;
+		}
+
+		/*
+		 * Otherwise we need to dump the components that are being dumped for
+		 * the table and any components which the sequence is explicitly
+		 * marked with.
 		 *
 		 * We can't simply use the set of components which are being dumped
 		 * for the table as the table might be in an extension (and only the
@@ -7231,17 +7097,10 @@ getOwnedSeqs(Archive *fout, TableInfo tblinfo[], int numTables)
 		 * marked by checkExtensionMembership() and this will be a no-op as
 		 * the table will be equivalently marked.
 		 */
-		if (seqinfo->is_identity_sequence)
-			seqinfo->dobj.dump = owning_tab->dobj.dump;
-		else
-			seqinfo->dobj.dump |= owning_tab->dobj.dump;
+		seqinfo->dobj.dump = seqinfo->dobj.dump | owning_tab->dobj.dump;
 
-		/* Make sure that necessary data is available if we're dumping it */
 		if (seqinfo->dobj.dump != DUMP_COMPONENT_NONE)
-		{
 			seqinfo->interesting = true;
-			owning_tab->interesting = true;
-		}
 	}
 }
 
@@ -7393,6 +7252,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 				i_conname,
 				i_condeferrable,
 				i_condeferred,
+				i_conwithoutoverlaps,
 				i_contableoid,
 				i_conoid,
 				i_condef,
@@ -7474,10 +7334,17 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 
 	if (fout->remoteVersion >= 150000)
 		appendPQExpBufferStr(query,
-							 "i.indnullsnotdistinct ");
+							 "i.indnullsnotdistinct, ");
 	else
 		appendPQExpBufferStr(query,
-							 "false AS indnullsnotdistinct ");
+							 "false AS indnullsnotdistinct, ");
+
+	if (fout->remoteVersion >= 170000)
+		appendPQExpBufferStr(query,
+							 "c.conwithoutoverlaps ");
+	else
+		appendPQExpBufferStr(query,
+							 "NULL AS conwithoutoverlaps ");
 
 	/*
 	 * The point of the messy-looking outer join is to find a constraint that
@@ -7545,6 +7412,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 	i_conname = PQfnumber(res, "conname");
 	i_condeferrable = PQfnumber(res, "condeferrable");
 	i_condeferred = PQfnumber(res, "condeferred");
+	i_conwithoutoverlaps = PQfnumber(res, "conwithoutoverlaps");
 	i_contableoid = PQfnumber(res, "contableoid");
 	i_conoid = PQfnumber(res, "conoid");
 	i_condef = PQfnumber(res, "condef");
@@ -7652,6 +7520,7 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 				constrinfo->conindex = indxinfo[j].dobj.dumpId;
 				constrinfo->condeferrable = *(PQgetvalue(res, j, i_condeferrable)) == 't';
 				constrinfo->condeferred = *(PQgetvalue(res, j, i_condeferred)) == 't';
+				constrinfo->conwithoutoverlaps = *(PQgetvalue(res, j, i_conwithoutoverlaps)) == 't';
 				constrinfo->conislocal = true;
 				constrinfo->separate = true;
 
@@ -7702,7 +7571,7 @@ getExtendedStatistics(Archive *fout)
 
 	if (fout->remoteVersion < 130000)
 		appendPQExpBufferStr(query, "SELECT tableoid, oid, stxname, "
-							 "stxnamespace, stxowner, stxrelid, NULL AS stxstattarget "
+							 "stxnamespace, stxowner, stxrelid, (-1) AS stxstattarget "
 							 "FROM pg_catalog.pg_statistic_ext");
 	else
 		appendPQExpBufferStr(query, "SELECT tableoid, oid, stxname, "
@@ -7735,10 +7604,7 @@ getExtendedStatistics(Archive *fout)
 		statsextinfo[i].rolname = getRoleName(PQgetvalue(res, i, i_stxowner));
 		statsextinfo[i].stattable =
 			findTableByOid(atooid(PQgetvalue(res, i, i_stxrelid)));
-		if (PQgetisnull(res, i, i_stattarget))
-			statsextinfo[i].stattarget = -1;
-		else
-			statsextinfo[i].stattarget = atoi(PQgetvalue(res, i, i_stattarget));
+		statsextinfo[i].stattarget = atoi(PQgetvalue(res, i, i_stattarget));
 
 		/* Decide whether we want to dump it */
 		selectDumpableStatisticsObject(&(statsextinfo[i]), fout);
@@ -7967,7 +7833,7 @@ getDomainConstraints(Archive *fout, TypeInfo *tyinfo)
 							 "pg_catalog.pg_get_constraintdef(oid) AS consrc, "
 							 "convalidated "
 							 "FROM pg_catalog.pg_constraint "
-							 "WHERE contypid = $1 AND contype = 'c' "
+							 "WHERE contypid = $1 "
 							 "ORDER BY conname");
 
 		ExecuteSqlStatement(fout, query->data);
@@ -8741,7 +8607,10 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	int			i_attlen;
 	int			i_attalign;
 	int			i_attislocal;
-	int			i_attnotnull;
+	int			i_notnull_name;
+	int			i_notnull_noinherit;
+	int			i_notnull_is_pk;
+	int			i_notnull_inh;
 	int			i_attoptions;
 	int			i_attcollation;
 	int			i_attcompression;
@@ -8751,13 +8620,13 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 
 	/*
 	 * We want to perform just one query against pg_attribute, and then just
-	 * one against pg_attrdef (for DEFAULTs) and one against pg_constraint
-	 * (for CHECK constraints).  However, we mustn't try to select every row
-	 * of those catalogs and then sort it out on the client side, because some
-	 * of the server-side functions we need would be unsafe to apply to tables
-	 * we don't have lock on.  Hence, we build an array of the OIDs of tables
-	 * we care about (and now have lock on!), and use a WHERE clause to
-	 * constrain which rows are selected.
+	 * one against pg_attrdef (for DEFAULTs) and two against pg_constraint
+	 * (for CHECK constraints and for NOT NULL constraints).  However, we
+	 * mustn't try to select every row of those catalogs and then sort it out
+	 * on the client side, because some of the server-side functions we need
+	 * would be unsafe to apply to tables we don't have lock on.  Hence, we
+	 * build an array of the OIDs of tables we care about (and now have lock
+	 * on!), and use a WHERE clause to constrain which rows are selected.
 	 */
 	appendPQExpBufferChar(tbloids, '{');
 	appendPQExpBufferChar(checkoids, '{');
@@ -8804,7 +8673,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 						 "a.attstattarget,\n"
 						 "a.attstorage,\n"
 						 "t.typstorage,\n"
-						 "a.attnotnull,\n"
 						 "a.atthasdef,\n"
 						 "a.attisdropped,\n"
 						 "a.attlen,\n"
@@ -8820,6 +8688,34 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 						 "FROM pg_catalog.pg_options_to_table(attfdwoptions) "
 						 "ORDER BY option_name"
 						 "), E',\n    ') AS attfdwoptions,\n");
+
+	/*
+	 * Find out any NOT NULL markings for each column.  In 17 and up we have
+	 * to read pg_constraint, and keep track whether it's NO INHERIT; in older
+	 * versions we rely on pg_attribute.attnotnull.
+	 *
+	 * We also track whether the constraint was defined directly in this table
+	 * or via an ancestor, for binary upgrade.
+	 *
+	 * Lastly, we need to know if the PK for the table involves each column;
+	 * for columns that are there we need a NOT NULL marking even if there's
+	 * no explicit constraint, to avoid the table having to be scanned for
+	 * NULLs after the data is loaded when the PK is created, later in the
+	 * dump; for this case we add throwaway constraints that are dropped once
+	 * the PK is created.
+	 */
+	if (fout->remoteVersion >= 170000)
+		appendPQExpBufferStr(q,
+							 "co.conname AS notnull_name,\n"
+							 "co.connoinherit AS notnull_noinherit,\n"
+							 "copk.conname IS NOT NULL as notnull_is_pk,\n"
+							 "coalesce(NOT co.conislocal, true) AS notnull_inh,\n");
+	else
+		appendPQExpBufferStr(q,
+							 "CASE WHEN a.attnotnull THEN '' ELSE NULL END AS notnull_name,\n"
+							 "false AS notnull_noinherit,\n"
+							 "copk.conname IS NOT NULL AS notnull_is_pk,\n"
+							 "NOT a.attislocal AS notnull_inh,\n");
 
 	if (fout->remoteVersion >= 140000)
 		appendPQExpBufferStr(q,
@@ -8855,10 +8751,28 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 					  "FROM unnest('%s'::pg_catalog.oid[]) AS src(tbloid)\n"
 					  "JOIN pg_catalog.pg_attribute a ON (src.tbloid = a.attrelid) "
 					  "LEFT JOIN pg_catalog.pg_type t "
-					  "ON (a.atttypid = t.oid)\n"
-					  "WHERE a.attnum > 0::pg_catalog.int2\n"
-					  "ORDER BY a.attrelid, a.attnum",
+					  "ON (a.atttypid = t.oid)\n",
 					  tbloids->data);
+
+	/*
+	 * In versions 16 and up, we need pg_constraint for explicit NOT NULL
+	 * entries.  Also, we need to know if the NOT NULL for each column is
+	 * backing a primary key.
+	 */
+	if (fout->remoteVersion >= 170000)
+		appendPQExpBufferStr(q,
+							 " LEFT JOIN pg_catalog.pg_constraint co ON "
+							 "(a.attrelid = co.conrelid\n"
+							 "   AND co.contype = 'n' AND "
+							 "co.conkey = array[a.attnum])\n");
+
+	appendPQExpBufferStr(q,
+						 "LEFT JOIN pg_catalog.pg_constraint copk ON "
+						 "(copk.conrelid = src.tbloid\n"
+						 "   AND copk.contype = 'p' AND "
+						 "copk.conkey @> array[a.attnum])\n"
+						 "WHERE a.attnum > 0::pg_catalog.int2\n"
+						 "ORDER BY a.attrelid, a.attnum");
 
 	res = ExecuteSqlQuery(fout, q->data, PGRES_TUPLES_OK);
 
@@ -8877,7 +8791,10 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 	i_attlen = PQfnumber(res, "attlen");
 	i_attalign = PQfnumber(res, "attalign");
 	i_attislocal = PQfnumber(res, "attislocal");
-	i_attnotnull = PQfnumber(res, "attnotnull");
+	i_notnull_name = PQfnumber(res, "notnull_name");
+	i_notnull_noinherit = PQfnumber(res, "notnull_noinherit");
+	i_notnull_is_pk = PQfnumber(res, "notnull_is_pk");
+	i_notnull_inh = PQfnumber(res, "notnull_inh");
 	i_attoptions = PQfnumber(res, "attoptions");
 	i_attcollation = PQfnumber(res, "attcollation");
 	i_attcompression = PQfnumber(res, "attcompression");
@@ -8900,6 +8817,7 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 		TableInfo  *tbinfo = NULL;
 		int			numatts;
 		bool		hasdefaults;
+		int			notnullcount;
 
 		/* Count rows for this table */
 		for (numatts = 1; numatts < ntups - r; numatts++)
@@ -8924,6 +8842,8 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 			pg_fatal("unexpected column data for table \"%s\"",
 					 tbinfo->dobj.name);
 
+		notnullcount = 0;
+
 		/* Save data for this table */
 		tbinfo->numatts = numatts;
 		tbinfo->attnames = (char **) pg_malloc(numatts * sizeof(char *));
@@ -8942,13 +8862,19 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 		tbinfo->attcompression = (char *) pg_malloc(numatts * sizeof(char));
 		tbinfo->attfdwoptions = (char **) pg_malloc(numatts * sizeof(char *));
 		tbinfo->attmissingval = (char **) pg_malloc(numatts * sizeof(char *));
-		tbinfo->notnull = (bool *) pg_malloc(numatts * sizeof(bool));
-		tbinfo->inhNotNull = (bool *) pg_malloc(numatts * sizeof(bool));
+		tbinfo->notnull_constrs = (char **) pg_malloc(numatts * sizeof(char *));
+		tbinfo->notnull_noinh = (bool *) pg_malloc(numatts * sizeof(bool));
+		tbinfo->notnull_throwaway = (bool *) pg_malloc(numatts * sizeof(bool));
+		tbinfo->notnull_inh = (bool *) pg_malloc(numatts * sizeof(bool));
 		tbinfo->attrdefs = (AttrDefInfo **) pg_malloc(numatts * sizeof(AttrDefInfo *));
 		hasdefaults = false;
 
 		for (int j = 0; j < numatts; j++, r++)
 		{
+			bool		use_named_notnull = false;
+			bool		use_unnamed_notnull = false;
+			bool		use_throwaway_notnull = false;
+
 			if (j + 1 != atoi(PQgetvalue(res, r, i_attnum)))
 				pg_fatal("invalid column numbering in table \"%s\"",
 						 tbinfo->dobj.name);
@@ -8967,7 +8893,129 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 			tbinfo->attlen[j] = atoi(PQgetvalue(res, r, i_attlen));
 			tbinfo->attalign[j] = *(PQgetvalue(res, r, i_attalign));
 			tbinfo->attislocal[j] = (PQgetvalue(res, r, i_attislocal)[0] == 't');
-			tbinfo->notnull[j] = (PQgetvalue(res, r, i_attnotnull)[0] == 't');
+
+			/*
+			 * Not-null constraints require a jumping through a few hoops.
+			 * First, if the user has specified a constraint name that's not
+			 * the system-assigned default name, then we need to preserve
+			 * that. But if they haven't, then we don't want to use the
+			 * verbose syntax in the dump output. (Also, in versions prior to
+			 * 17, there was no constraint name at all.)
+			 *
+			 * (XXX Comparing the name this way to a supposed default name is
+			 * a bit of a hack, but it beats having to store a boolean flag in
+			 * pg_constraint just for this, or having to compute the knowledge
+			 * at pg_dump time from the server.)
+			 *
+			 * We also need to know if a column is part of the primary key. In
+			 * that case, we want to mark the column as not-null at table
+			 * creation time, so that the table doesn't have to be scanned to
+			 * check for nulls when the PK is created afterwards; this is
+			 * especially critical during pg_upgrade (where the data would not
+			 * be scanned at all otherwise.)  If the column is part of the PK
+			 * and does not have any other not-null constraint, then we
+			 * fabricate a throwaway constraint name that we later use to
+			 * remove the constraint after the PK has been created.
+			 *
+			 * For inheritance child tables, we don't want to print not-null
+			 * when the constraint was defined at the parent level instead of
+			 * locally.
+			 */
+
+			/*
+			 * We use notnull_inh to suppress unwanted not-null constraints in
+			 * inheritance children, when said constraints come from the
+			 * parent(s).
+			 */
+			tbinfo->notnull_inh[j] = PQgetvalue(res, r, i_notnull_inh)[0] == 't';
+
+			if (fout->remoteVersion < 170000)
+			{
+				if (!PQgetisnull(res, r, i_notnull_name) &&
+					dopt->binary_upgrade &&
+					!tbinfo->ispartition &&
+					tbinfo->notnull_inh[j])
+				{
+					use_named_notnull = true;
+					/* XXX should match ChooseConstraintName better */
+					tbinfo->notnull_constrs[j] =
+						psprintf("%s_%s_not_null", tbinfo->dobj.name,
+								 tbinfo->attnames[j]);
+				}
+				else if (PQgetvalue(res, r, i_notnull_is_pk)[0] == 't')
+					use_throwaway_notnull = true;
+				else if (!PQgetisnull(res, r, i_notnull_name))
+					use_unnamed_notnull = true;
+			}
+			else
+			{
+				if (!PQgetisnull(res, r, i_notnull_name))
+				{
+					/*
+					 * In binary upgrade of inheritance child tables, must
+					 * have a constraint name that we can UPDATE later.
+					 */
+					if (dopt->binary_upgrade &&
+						!tbinfo->ispartition &&
+						tbinfo->notnull_inh[j])
+					{
+						use_named_notnull = true;
+						tbinfo->notnull_constrs[j] =
+							pstrdup(PQgetvalue(res, r, i_notnull_name));
+
+					}
+					else
+					{
+						char	   *default_name;
+
+						/* XXX should match ChooseConstraintName better */
+						default_name = psprintf("%s_%s_not_null", tbinfo->dobj.name,
+												tbinfo->attnames[j]);
+						if (strcmp(default_name,
+								   PQgetvalue(res, r, i_notnull_name)) == 0)
+							use_unnamed_notnull = true;
+						else
+						{
+							use_named_notnull = true;
+							tbinfo->notnull_constrs[j] =
+								pstrdup(PQgetvalue(res, r, i_notnull_name));
+						}
+					}
+				}
+				else if (PQgetvalue(res, r, i_notnull_is_pk)[0] == 't')
+					use_throwaway_notnull = true;
+			}
+
+			if (use_unnamed_notnull)
+			{
+				tbinfo->notnull_constrs[j] = "";
+				tbinfo->notnull_throwaway[j] = false;
+			}
+			else if (use_named_notnull)
+			{
+				/* The name itself has already been determined */
+				tbinfo->notnull_throwaway[j] = false;
+			}
+			else if (use_throwaway_notnull)
+			{
+				tbinfo->notnull_constrs[j] =
+					psprintf("pgdump_throwaway_notnull_%d", notnullcount++);
+				tbinfo->notnull_throwaway[j] = true;
+				tbinfo->notnull_inh[j] = false;
+			}
+			else
+			{
+				tbinfo->notnull_constrs[j] = NULL;
+				tbinfo->notnull_throwaway[j] = false;
+			}
+
+			/*
+			 * Throwaway constraints must always be NO INHERIT; otherwise do
+			 * what the catalog says.
+			 */
+			tbinfo->notnull_noinh[j] = use_throwaway_notnull ||
+				PQgetvalue(res, r, i_notnull_noinherit)[0] == 't';
+
 			tbinfo->attoptions[j] = pg_strdup(PQgetvalue(res, r, i_attoptions));
 			tbinfo->attcollation[j] = atooid(PQgetvalue(res, r, i_attcollation));
 			tbinfo->attcompression[j] = *(PQgetvalue(res, r, i_attcompression));
@@ -8976,8 +9024,6 @@ getTableAttrs(Archive *fout, TableInfo *tblinfo, int numTables)
 			tbinfo->attrdefs[j] = NULL; /* fix below */
 			if (PQgetvalue(res, r, i_atthasdef)[0] == 't')
 				hasdefaults = true;
-			/* these flags will be set in flagInhAttrs() */
-			tbinfo->inhNotNull[j] = false;
 		}
 
 		if (hasdefaults)
@@ -10568,34 +10614,28 @@ dumpDumpableObject(Archive *fout, DumpableObject *dobj)
 		case DO_LARGE_OBJECT_DATA:
 			if (dobj->dump & DUMP_COMPONENT_DATA)
 			{
-				LoInfo	   *loinfo;
 				TocEntry   *te;
-
-				loinfo = (LoInfo *) findObjectByDumpId(dobj->dependencies[0]);
-				if (loinfo == NULL)
-					pg_fatal("missing metadata for large objects \"%s\"",
-							 dobj->name);
 
 				te = ArchiveEntry(fout, dobj->catId, dobj->dumpId,
 								  ARCHIVE_OPTS(.tag = dobj->name,
-											   .owner = loinfo->rolname,
 											   .description = "BLOBS",
 											   .section = SECTION_DATA,
-											   .deps = dobj->dependencies,
-											   .nDeps = dobj->nDeps,
-											   .dumpFn = dumpLOs,
-											   .dumpArg = loinfo));
+											   .dumpFn = dumpLOs));
 
 				/*
 				 * Set the TocEntry's dataLength in case we are doing a
 				 * parallel dump and want to order dump jobs by table size.
 				 * (We need some size estimate for every TocEntry with a
 				 * DataDumper function.)  We don't currently have any cheap
-				 * way to estimate the size of LOs, but fortunately it doesn't
-				 * matter too much as long as we get large batches of LOs
-				 * processed reasonably early.  Assume 8K per blob.
+				 * way to estimate the size of LOs, but it doesn't matter;
+				 * let's just set the size to a large value so parallel dumps
+				 * will launch this job first.  If there's lots of LOs, we
+				 * win, and if there aren't, we don't lose much.  (If you want
+				 * to improve on this, really what you should be thinking
+				 * about is allowing LO dumping to be parallelized, not just
+				 * getting a smarter estimate for the single TOC entry.)
 				 */
-				te->dataLength = loinfo->numlos * (pgoff_t) 8192;
+				te->dataLength = INT_MAX;
 			}
 			break;
 		case DO_POLICY:
@@ -10693,7 +10733,7 @@ dumpNamespace(Archive *fout, const NamespaceInfo *nspinfo)
 	if (nspinfo->dobj.dump & DUMP_COMPONENT_ACL)
 		dumpACL(fout, nspinfo->dobj.dumpId, InvalidDumpId, "SCHEMA",
 				qnspname, NULL, NULL,
-				NULL, nspinfo->rolname, &nspinfo->dacl);
+				nspinfo->rolname, &nspinfo->dacl);
 
 	free(qnspname);
 
@@ -10990,7 +11030,7 @@ dumpEnumType(Archive *fout, const TypeInfo *tyinfo)
 		dumpACL(fout, tyinfo->dobj.dumpId, InvalidDumpId, "TYPE",
 				qtypname, NULL,
 				tyinfo->dobj.namespace->dobj.name,
-				NULL, tyinfo->rolname, &tyinfo->dacl);
+				tyinfo->rolname, &tyinfo->dacl);
 
 	PQclear(res);
 	destroyPQExpBuffer(q);
@@ -11143,7 +11183,7 @@ dumpRangeType(Archive *fout, const TypeInfo *tyinfo)
 		dumpACL(fout, tyinfo->dobj.dumpId, InvalidDumpId, "TYPE",
 				qtypname, NULL,
 				tyinfo->dobj.namespace->dobj.name,
-				NULL, tyinfo->rolname, &tyinfo->dacl);
+				tyinfo->rolname, &tyinfo->dacl);
 
 	PQclear(res);
 	destroyPQExpBuffer(q);
@@ -11214,7 +11254,7 @@ dumpUndefinedType(Archive *fout, const TypeInfo *tyinfo)
 		dumpACL(fout, tyinfo->dobj.dumpId, InvalidDumpId, "TYPE",
 				qtypname, NULL,
 				tyinfo->dobj.namespace->dobj.name,
-				NULL, tyinfo->rolname, &tyinfo->dacl);
+				tyinfo->rolname, &tyinfo->dacl);
 
 	destroyPQExpBuffer(q);
 	destroyPQExpBuffer(delq);
@@ -11461,7 +11501,7 @@ dumpBaseType(Archive *fout, const TypeInfo *tyinfo)
 		dumpACL(fout, tyinfo->dobj.dumpId, InvalidDumpId, "TYPE",
 				qtypname, NULL,
 				tyinfo->dobj.namespace->dobj.name,
-				NULL, tyinfo->rolname, &tyinfo->dacl);
+				tyinfo->rolname, &tyinfo->dacl);
 
 	PQclear(res);
 	destroyPQExpBuffer(q);
@@ -11616,7 +11656,7 @@ dumpDomain(Archive *fout, const TypeInfo *tyinfo)
 		dumpACL(fout, tyinfo->dobj.dumpId, InvalidDumpId, "TYPE",
 				qtypname, NULL,
 				tyinfo->dobj.namespace->dobj.name,
-				NULL, tyinfo->rolname, &tyinfo->dacl);
+				tyinfo->rolname, &tyinfo->dacl);
 
 	/* Dump any per-constraint comments */
 	for (i = 0; i < tyinfo->nDomChecks; i++)
@@ -11830,7 +11870,7 @@ dumpCompositeType(Archive *fout, const TypeInfo *tyinfo)
 		dumpACL(fout, tyinfo->dobj.dumpId, InvalidDumpId, "TYPE",
 				qtypname, NULL,
 				tyinfo->dobj.namespace->dobj.name,
-				NULL, tyinfo->rolname, &tyinfo->dacl);
+				tyinfo->rolname, &tyinfo->dacl);
 
 	/* Dump any per-column comments */
 	if (tyinfo->dobj.dump & DUMP_COMPONENT_COMMENT)
@@ -12106,7 +12146,7 @@ dumpProcLang(Archive *fout, const ProcLangInfo *plang)
 	if (plang->lanpltrusted && plang->dobj.dump & DUMP_COMPONENT_ACL)
 		dumpACL(fout, plang->dobj.dumpId, InvalidDumpId, "LANGUAGE",
 				qlanname, NULL, NULL,
-				NULL, plang->lanowner, &plang->dacl);
+				plang->lanowner, &plang->dacl);
 
 	free(qlanname);
 
@@ -12570,7 +12610,7 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 		dumpACL(fout, finfo->dobj.dumpId, InvalidDumpId, keyword,
 				funcsig, NULL,
 				finfo->dobj.namespace->dobj.name,
-				NULL, finfo->rolname, &finfo->dacl);
+				finfo->rolname, &finfo->dacl);
 
 	PQclear(res);
 
@@ -13716,12 +13756,12 @@ dumpCollation(Archive *fout, const CollInfo *collinfo)
 	int			i_collisdeterministic;
 	int			i_collcollate;
 	int			i_collctype;
-	int			i_colllocale;
+	int			i_colliculocale;
 	int			i_collicurules;
 	const char *collprovider;
 	const char *collcollate;
 	const char *collctype;
-	const char *colllocale;
+	const char *colliculocale;
 	const char *collicurules;
 
 	/* Do nothing in data-only dump */
@@ -13753,15 +13793,12 @@ dumpCollation(Archive *fout, const CollInfo *collinfo)
 		appendPQExpBufferStr(query,
 							 "true AS collisdeterministic, ");
 
-	if (fout->remoteVersion >= 170000)
+	if (fout->remoteVersion >= 150000)
 		appendPQExpBufferStr(query,
-							 "colllocale, ");
-	else if (fout->remoteVersion >= 150000)
-		appendPQExpBufferStr(query,
-							 "colliculocale AS colllocale, ");
+							 "colliculocale, ");
 	else
 		appendPQExpBufferStr(query,
-							 "NULL AS colllocale, ");
+							 "NULL AS colliculocale, ");
 
 	if (fout->remoteVersion >= 160000)
 		appendPQExpBufferStr(query,
@@ -13783,7 +13820,7 @@ dumpCollation(Archive *fout, const CollInfo *collinfo)
 	i_collisdeterministic = PQfnumber(res, "collisdeterministic");
 	i_collcollate = PQfnumber(res, "collcollate");
 	i_collctype = PQfnumber(res, "collctype");
-	i_colllocale = PQfnumber(res, "colllocale");
+	i_colliculocale = PQfnumber(res, "colliculocale");
 	i_collicurules = PQfnumber(res, "collicurules");
 
 	collprovider = PQgetvalue(res, 0, i_collprovider);
@@ -13810,10 +13847,10 @@ dumpCollation(Archive *fout, const CollInfo *collinfo)
 			collctype = NULL;
 	}
 
-	if (!PQgetisnull(res, 0, i_colllocale))
-		colllocale = PQgetvalue(res, 0, i_colllocale);
+	if (!PQgetisnull(res, 0, i_colliculocale))
+		colliculocale = PQgetvalue(res, 0, i_colliculocale);
 	else
-		colllocale = NULL;
+		colliculocale = NULL;
 
 	if (!PQgetisnull(res, 0, i_collicurules))
 		collicurules = PQgetvalue(res, 0, i_collicurules);
@@ -13827,9 +13864,7 @@ dumpCollation(Archive *fout, const CollInfo *collinfo)
 					  fmtQualifiedDumpable(collinfo));
 
 	appendPQExpBufferStr(q, "provider = ");
-	if (collprovider[0] == 'b')
-		appendPQExpBufferStr(q, "builtin");
-	else if (collprovider[0] == 'c')
+	if (collprovider[0] == 'c')
 		appendPQExpBufferStr(q, "libc");
 	else if (collprovider[0] == 'i')
 		appendPQExpBufferStr(q, "icu");
@@ -13845,34 +13880,25 @@ dumpCollation(Archive *fout, const CollInfo *collinfo)
 
 	if (collprovider[0] == 'd')
 	{
-		if (collcollate || collctype || colllocale || collicurules)
+		if (collcollate || collctype || colliculocale || collicurules)
 			pg_log_warning("invalid collation \"%s\"", qcollname);
 
 		/* no locale -- the default collation cannot be reloaded anyway */
-	}
-	else if (collprovider[0] == 'b')
-	{
-		if (collcollate || collctype || !colllocale || collicurules)
-			pg_log_warning("invalid collation \"%s\"", qcollname);
-
-		appendPQExpBufferStr(q, ", locale = ");
-		appendStringLiteralAH(q, colllocale ? colllocale : "",
-							  fout);
 	}
 	else if (collprovider[0] == 'i')
 	{
 		if (fout->remoteVersion >= 150000)
 		{
-			if (collcollate || collctype || !colllocale)
+			if (collcollate || collctype || !colliculocale)
 				pg_log_warning("invalid collation \"%s\"", qcollname);
 
 			appendPQExpBufferStr(q, ", locale = ");
-			appendStringLiteralAH(q, colllocale ? colllocale : "",
+			appendStringLiteralAH(q, colliculocale ? colliculocale : "",
 								  fout);
 		}
 		else
 		{
-			if (!collcollate || !collctype || colllocale ||
+			if (!collcollate || !collctype || colliculocale ||
 				strcmp(collcollate, collctype) != 0)
 				pg_log_warning("invalid collation \"%s\"", qcollname);
 
@@ -13888,7 +13914,7 @@ dumpCollation(Archive *fout, const CollInfo *collinfo)
 	}
 	else if (collprovider[0] == 'c')
 	{
-		if (colllocale || collicurules || !collcollate || !collctype)
+		if (colliculocale || collicurules || !collcollate || !collctype)
 			pg_log_warning("invalid collation \"%s\"", qcollname);
 
 		if (collcollate && collctype && strcmp(collcollate, collctype) == 0)
@@ -14430,7 +14456,7 @@ dumpAgg(Archive *fout, const AggInfo *agginfo)
 		dumpACL(fout, agginfo->aggfn.dobj.dumpId, InvalidDumpId,
 				"FUNCTION", aggsig, NULL,
 				agginfo->aggfn.dobj.namespace->dobj.name,
-				NULL, agginfo->aggfn.rolname, &agginfo->aggfn.dacl);
+				agginfo->aggfn.rolname, &agginfo->aggfn.dacl);
 
 	free(aggsig);
 	free(aggfullsig);
@@ -14827,7 +14853,7 @@ dumpForeignDataWrapper(Archive *fout, const FdwInfo *fdwinfo)
 	/* Handle the ACL */
 	if (fdwinfo->dobj.dump & DUMP_COMPONENT_ACL)
 		dumpACL(fout, fdwinfo->dobj.dumpId, InvalidDumpId,
-				"FOREIGN DATA WRAPPER", qfdwname, NULL, NULL,
+				"FOREIGN DATA WRAPPER", qfdwname, NULL,
 				NULL, fdwinfo->rolname, &fdwinfo->dacl);
 
 	free(qfdwname);
@@ -14914,7 +14940,7 @@ dumpForeignServer(Archive *fout, const ForeignServerInfo *srvinfo)
 	/* Handle the ACL */
 	if (srvinfo->dobj.dump & DUMP_COMPONENT_ACL)
 		dumpACL(fout, srvinfo->dobj.dumpId, InvalidDumpId,
-				"FOREIGN SERVER", qsrvname, NULL, NULL,
+				"FOREIGN SERVER", qsrvname, NULL,
 				NULL, srvinfo->rolname, &srvinfo->dacl);
 
 	/* Dump user mappings */
@@ -15114,8 +15140,6 @@ dumpDefaultACL(Archive *fout, const DefaultACLInfo *daclinfo)
  * 'subname' is the formatted name of the sub-object, if any.  Must be quoted.
  *		(Currently we assume that subname is only provided for table columns.)
  * 'nspname' is the namespace the object is in (NULL if none).
- * 'tag' is the tag to use for the ACL TOC entry; typically, this is NULL
- *		to use the default for the object type.
  * 'owner' is the owner, NULL if there is no owner (for languages).
  * 'dacl' is the DumpableAcl struct for the object.
  *
@@ -15126,7 +15150,7 @@ dumpDefaultACL(Archive *fout, const DefaultACLInfo *daclinfo)
 static DumpId
 dumpACL(Archive *fout, DumpId objDumpId, DumpId altDumpId,
 		const char *type, const char *name, const char *subname,
-		const char *nspname, const char *tag, const char *owner,
+		const char *nspname, const char *owner,
 		const DumpableAcl *dacl)
 {
 	DumpId		aclDumpId = InvalidDumpId;
@@ -15198,16 +15222,14 @@ dumpACL(Archive *fout, DumpId objDumpId, DumpId altDumpId,
 
 	if (sql->len > 0)
 	{
-		PQExpBuffer tagbuf = createPQExpBuffer();
+		PQExpBuffer tag = createPQExpBuffer();
 		DumpId		aclDeps[2];
 		int			nDeps = 0;
 
-		if (tag)
-			appendPQExpBufferStr(tagbuf, tag);
-		else if (subname)
-			appendPQExpBuffer(tagbuf, "COLUMN %s.%s", name, subname);
+		if (subname)
+			appendPQExpBuffer(tag, "COLUMN %s.%s", name, subname);
 		else
-			appendPQExpBuffer(tagbuf, "%s %s", type, name);
+			appendPQExpBuffer(tag, "%s %s", type, name);
 
 		aclDeps[nDeps++] = objDumpId;
 		if (altDumpId != InvalidDumpId)
@@ -15216,7 +15238,7 @@ dumpACL(Archive *fout, DumpId objDumpId, DumpId altDumpId,
 		aclDumpId = createDumpId();
 
 		ArchiveEntry(fout, nilCatalogId, aclDumpId,
-					 ARCHIVE_OPTS(.tag = tagbuf->data,
+					 ARCHIVE_OPTS(.tag = tag->data,
 								  .namespace = nspname,
 								  .owner = owner,
 								  .description = "ACL",
@@ -15225,7 +15247,7 @@ dumpACL(Archive *fout, DumpId objDumpId, DumpId altDumpId,
 								  .deps = aclDeps,
 								  .nDeps = nDeps));
 
-		destroyPQExpBuffer(tagbuf);
+		destroyPQExpBuffer(tag);
 	}
 
 	destroyPQExpBuffer(sql);
@@ -15607,8 +15629,8 @@ dumpTable(Archive *fout, const TableInfo *tbinfo)
 		tableAclDumpId =
 			dumpACL(fout, tbinfo->dobj.dumpId, InvalidDumpId,
 					objtype, namecopy, NULL,
-					tbinfo->dobj.namespace->dobj.name,
-					NULL, tbinfo->rolname, &tbinfo->dacl);
+					tbinfo->dobj.namespace->dobj.name, tbinfo->rolname,
+					&tbinfo->dacl);
 	}
 
 	/*
@@ -15701,8 +15723,8 @@ dumpTable(Archive *fout, const TableInfo *tbinfo)
 			 */
 			dumpACL(fout, tbinfo->dobj.dumpId, tableAclDumpId,
 					"TABLE", namecopy, attnamecopy,
-					tbinfo->dobj.namespace->dobj.name,
-					NULL, tbinfo->rolname, &coldacl);
+					tbinfo->dobj.namespace->dobj.name, tbinfo->rolname,
+					&coldacl);
 			free(attnamecopy);
 		}
 		PQclear(res);
@@ -15813,7 +15835,6 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 	DumpOptions *dopt = fout->dopt;
 	PQExpBuffer q = createPQExpBuffer();
 	PQExpBuffer delq = createPQExpBuffer();
-	PQExpBuffer extra = createPQExpBuffer();
 	char	   *qrelname;
 	char	   *qualrelname;
 	int			numParents;
@@ -15880,7 +15901,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 		char	   *partkeydef = NULL;
 		char	   *ftoptions = NULL;
 		char	   *srvname = NULL;
-		const char *foreign = "";
+		char	   *foreign = "";
 
 		/*
 		 * Set reltypename, and collect any relkind-specific data that we
@@ -15997,13 +16018,14 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 									 !tbinfo->attrdefs[j]->separate);
 
 					/*
-					 * Not Null constraint --- suppress if inherited, except
-					 * if partition, or in binary-upgrade case where that
-					 * won't work.
+					 * Not Null constraint --- suppress unless it is locally
+					 * defined, except if partition, or in binary-upgrade case
+					 * where that won't work.
 					 */
-					print_notnull = (tbinfo->notnull[j] &&
-									 (!tbinfo->inhNotNull[j] ||
-									  tbinfo->ispartition || dopt->binary_upgrade));
+					print_notnull =
+						(tbinfo->notnull_constrs[j] != NULL &&
+						 (!tbinfo->notnull_inh[j] || tbinfo->ispartition ||
+						  dopt->binary_upgrade));
 
 					/*
 					 * Skip column if fully defined by reloftype, except in
@@ -16061,7 +16083,16 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 
 
 					if (print_notnull)
-						appendPQExpBufferStr(q, " NOT NULL");
+					{
+						if (tbinfo->notnull_constrs[j][0] == '\0')
+							appendPQExpBufferStr(q, " NOT NULL");
+						else
+							appendPQExpBuffer(q, " CONSTRAINT %s NOT NULL",
+											  fmtId(tbinfo->notnull_constrs[j]));
+
+						if (tbinfo->notnull_noinh[j])
+							appendPQExpBufferStr(q, " NO INHERIT");
+					}
 
 					/* Add collation if not default for the type */
 					if (OidIsValid(tbinfo->attcollation[j]))
@@ -16238,98 +16269,70 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			 tbinfo->relkind == RELKIND_FOREIGN_TABLE ||
 			 tbinfo->relkind == RELKIND_PARTITIONED_TABLE))
 		{
-			bool		firstitem;
-
-			/*
-			 * Drop any dropped columns.  Merge the pg_attribute manipulations
-			 * into a single SQL command, so that we don't cause repeated
-			 * relcache flushes on the target table.  Otherwise we risk O(N^2)
-			 * relcache bloat while dropping N columns.
-			 */
-			resetPQExpBuffer(extra);
-			firstitem = true;
 			for (j = 0; j < tbinfo->numatts; j++)
 			{
 				if (tbinfo->attisdropped[j])
 				{
-					if (firstitem)
-					{
-						appendPQExpBufferStr(q, "\n-- For binary upgrade, recreate dropped columns.\n"
-											 "UPDATE pg_catalog.pg_attribute\n"
-											 "SET attlen = v.dlen, "
-											 "attalign = v.dalign, "
-											 "attbyval = false\n"
-											 "FROM (VALUES ");
-						firstitem = false;
-					}
-					else
-						appendPQExpBufferStr(q, ",\n             ");
-					appendPQExpBufferChar(q, '(');
-					appendStringLiteralAH(q, tbinfo->attnames[j], fout);
-					appendPQExpBuffer(q, ", %d, '%c')",
+					appendPQExpBufferStr(q, "\n-- For binary upgrade, recreate dropped column.\n");
+					appendPQExpBuffer(q, "UPDATE pg_catalog.pg_attribute\n"
+									  "SET attlen = %d, "
+									  "attalign = '%c', attbyval = false\n"
+									  "WHERE attname = ",
 									  tbinfo->attlen[j],
 									  tbinfo->attalign[j]);
-					/* The ALTER ... DROP COLUMN commands must come after */
-					appendPQExpBuffer(extra, "ALTER %sTABLE ONLY %s ",
-									  foreign, qualrelname);
-					appendPQExpBuffer(extra, "DROP COLUMN %s;\n",
+					appendStringLiteralAH(q, tbinfo->attnames[j], fout);
+					appendPQExpBufferStr(q, "\n  AND attrelid = ");
+					appendStringLiteralAH(q, qualrelname, fout);
+					appendPQExpBufferStr(q, "::pg_catalog.regclass;\n");
+
+					if (tbinfo->relkind == RELKIND_RELATION ||
+						tbinfo->relkind == RELKIND_PARTITIONED_TABLE)
+						appendPQExpBuffer(q, "ALTER TABLE ONLY %s ",
+										  qualrelname);
+					else
+						appendPQExpBuffer(q, "ALTER FOREIGN TABLE ONLY %s ",
+										  qualrelname);
+					appendPQExpBuffer(q, "DROP COLUMN %s;\n",
 									  fmtId(tbinfo->attnames[j]));
 				}
-			}
-			if (!firstitem)
-			{
-				appendPQExpBufferStr(q, ") v(dname, dlen, dalign)\n"
-									 "WHERE attrelid = ");
-				appendStringLiteralAH(q, qualrelname, fout);
-				appendPQExpBufferStr(q, "::pg_catalog.regclass\n"
-									 "  AND attname = v.dname;\n");
-				/* Now we can issue the actual DROP COLUMN commands */
-				appendBinaryPQExpBuffer(q, extra->data, extra->len);
-			}
-
-			/*
-			 * Fix up inherited columns.  As above, do the pg_attribute
-			 * manipulations in a single SQL command.
-			 */
-			firstitem = true;
-			for (j = 0; j < tbinfo->numatts; j++)
-			{
-				if (!tbinfo->attisdropped[j] &&
-					!tbinfo->attislocal[j])
+				else if (!tbinfo->attislocal[j])
 				{
-					if (firstitem)
-					{
-						appendPQExpBufferStr(q, "\n-- For binary upgrade, recreate inherited columns.\n");
-						appendPQExpBufferStr(q, "UPDATE pg_catalog.pg_attribute\n"
-											 "SET attislocal = false\n"
-											 "WHERE attrelid = ");
-						appendStringLiteralAH(q, qualrelname, fout);
-						appendPQExpBufferStr(q, "::pg_catalog.regclass\n"
-											 "  AND attname IN (");
-						firstitem = false;
-					}
-					else
-						appendPQExpBufferStr(q, ", ");
+					appendPQExpBufferStr(q, "\n-- For binary upgrade, recreate inherited column.\n");
+					appendPQExpBufferStr(q, "UPDATE pg_catalog.pg_attribute\n"
+										 "SET attislocal = false\n"
+										 "WHERE attname = ");
 					appendStringLiteralAH(q, tbinfo->attnames[j], fout);
+					appendPQExpBufferStr(q, "\n  AND attrelid = ");
+					appendStringLiteralAH(q, qualrelname, fout);
+					appendPQExpBufferStr(q, "::pg_catalog.regclass;\n");
+
+					/*
+					 * If a not-null constraint comes from inheritance, reset
+					 * conislocal.  The inhcount is fixed later.
+					 */
+					if (tbinfo->notnull_constrs[j] != NULL &&
+						!tbinfo->notnull_throwaway[j] &&
+						tbinfo->notnull_inh[j] &&
+						!tbinfo->ispartition)
+					{
+						appendPQExpBufferStr(q, "UPDATE pg_catalog.pg_constraint\n"
+											 "SET conislocal = false\n"
+											 "WHERE contype = 'n' AND conrelid = ");
+						appendStringLiteralAH(q, qualrelname, fout);
+						appendPQExpBufferStr(q, "::pg_catalog.regclass AND\n"
+											 "conname = ");
+						appendStringLiteralAH(q, tbinfo->notnull_constrs[j], fout);
+						appendPQExpBufferStr(q, ";\n");
+					}
 				}
 			}
-			if (!firstitem)
-				appendPQExpBufferStr(q, ");\n");
 
 			/*
 			 * Add inherited CHECK constraints, if any.
 			 *
 			 * For partitions, they were already dumped, and conislocal
 			 * doesn't need fixing.
-			 *
-			 * As above, issue only one direct manipulation of pg_constraint.
-			 * Although it is tempting to merge the ALTER ADD CONSTRAINT
-			 * commands into one as well, refrain for now due to concern about
-			 * possible backend memory bloat if there are many such
-			 * constraints.
 			 */
-			resetPQExpBuffer(extra);
-			firstitem = true;
 			for (k = 0; k < tbinfo->ncheck; k++)
 			{
 				ConstraintInfo *constr = &(tbinfo->checkexprs[k]);
@@ -16337,31 +16340,18 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 				if (constr->separate || constr->conislocal || tbinfo->ispartition)
 					continue;
 
-				if (firstitem)
-					appendPQExpBufferStr(q, "\n-- For binary upgrade, set up inherited constraints.\n");
+				appendPQExpBufferStr(q, "\n-- For binary upgrade, set up inherited constraint.\n");
 				appendPQExpBuffer(q, "ALTER %sTABLE ONLY %s ADD CONSTRAINT %s %s;\n",
 								  foreign, qualrelname,
 								  fmtId(constr->dobj.name),
 								  constr->condef);
-				/* Update pg_constraint after all the ALTER TABLEs */
-				if (firstitem)
-				{
-					appendPQExpBufferStr(extra, "UPDATE pg_catalog.pg_constraint\n"
-										 "SET conislocal = false\n"
-										 "WHERE contype = 'c' AND conrelid = ");
-					appendStringLiteralAH(extra, qualrelname, fout);
-					appendPQExpBufferStr(extra, "::pg_catalog.regclass\n");
-					appendPQExpBufferStr(extra, "  AND conname IN (");
-					firstitem = false;
-				}
-				else
-					appendPQExpBufferStr(extra, ", ");
-				appendStringLiteralAH(extra, constr->dobj.name, fout);
-			}
-			if (!firstitem)
-			{
-				appendPQExpBufferStr(extra, ");\n");
-				appendBinaryPQExpBuffer(q, extra->data, extra->len);
+				appendPQExpBufferStr(q, "UPDATE pg_catalog.pg_constraint\n"
+									 "SET conislocal = false\n"
+									 "WHERE contype = 'c' AND conname = ");
+				appendStringLiteralAH(q, constr->dobj.name, fout);
+				appendPQExpBufferStr(q, "\n  AND conrelid = ");
+				appendStringLiteralAH(q, qualrelname, fout);
+				appendPQExpBufferStr(q, "::pg_catalog.regclass;\n");
 			}
 
 			if (numParents > 0 && !tbinfo->ispartition)
@@ -16455,11 +16445,22 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			 * we have to mark it separately.
 			 */
 			if (!shouldPrintColumn(dopt, tbinfo, j) &&
-				tbinfo->notnull[j] && !tbinfo->inhNotNull[j])
-				appendPQExpBuffer(q,
-								  "ALTER %sTABLE ONLY %s ALTER COLUMN %s SET NOT NULL;\n",
-								  foreign, qualrelname,
-								  fmtId(tbinfo->attnames[j]));
+				tbinfo->notnull_constrs[j] != NULL &&
+				(!tbinfo->notnull_inh[j] && !tbinfo->ispartition && !dopt->binary_upgrade))
+			{
+				/* No constraint name desired? */
+				if (tbinfo->notnull_constrs[j][0] == '\0')
+					appendPQExpBuffer(q,
+									  "ALTER %sTABLE ONLY %s ALTER COLUMN %s SET NOT NULL;\n",
+									  foreign, qualrelname,
+									  fmtId(tbinfo->attnames[j]));
+				else
+					appendPQExpBuffer(q,
+									  "ALTER %sTABLE ONLY %s ADD CONSTRAINT %s NOT NULL %s;\n",
+									  foreign, qualrelname,
+									  tbinfo->notnull_constrs[j],
+									  fmtId(tbinfo->attnames[j]));
+			}
 
 			/*
 			 * Dump per-column statistics information. We only issue an ALTER
@@ -16548,7 +16549,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			if (tbinfo->relkind == RELKIND_FOREIGN_TABLE &&
 				tbinfo->attfdwoptions[j][0] != '\0')
 				appendPQExpBuffer(q,
-								  "ALTER FOREIGN TABLE ONLY %s ALTER COLUMN %s OPTIONS (\n"
+								  "ALTER FOREIGN TABLE %s ALTER COLUMN %s OPTIONS (\n"
 								  "    %s\n"
 								  ");\n",
 								  qualrelname,
@@ -16609,8 +16610,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 		if (RELKIND_HAS_TABLESPACE(tbinfo->relkind))
 			tablespace = tbinfo->reltablespace;
 
-		if (RELKIND_HAS_TABLE_AM(tbinfo->relkind) ||
-			tbinfo->relkind == RELKIND_PARTITIONED_TABLE)
+		if (RELKIND_HAS_TABLE_AM(tbinfo->relkind))
 			tableam = tbinfo->amname;
 
 		ArchiveEntry(fout, tbinfo->dobj.catId, tbinfo->dobj.dumpId,
@@ -16618,7 +16618,6 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 								  .namespace = tbinfo->dobj.namespace->dobj.name,
 								  .tablespace = tablespace,
 								  .tableam = tableam,
-								  .relkind = tbinfo->relkind,
 								  .owner = tbinfo->rolname,
 								  .description = reltypename,
 								  .section = tbinfo->postponed_def ?
@@ -16649,7 +16648,6 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 
 	destroyPQExpBuffer(q);
 	destroyPQExpBuffer(delq);
-	destroyPQExpBuffer(extra);
 	free(qrelname);
 	free(qualrelname);
 }
@@ -17041,7 +17039,8 @@ dumpStatisticsExt(Archive *fout, const StatsExtInfo *statsextinfo)
 
 	/*
 	 * We only issue an ALTER STATISTICS statement if the stxstattarget entry
-	 * for this statistics object is not the default value.
+	 * for this statistics object is non-negative (i.e. it's not the default
+	 * value).
 	 */
 	if (statsextinfo->stattarget >= 0)
 	{
@@ -17159,6 +17158,8 @@ dumpConstraint(Archive *fout, const ConstraintInfo *coninfo)
 								  (k == 0) ? "" : ", ",
 								  fmtId(attname));
 			}
+			if (coninfo->conwithoutoverlaps)
+				appendPQExpBufferStr(q, " WITHOUT OVERLAPS");
 
 			if (indxinfo->indnkeyattrs < indxinfo->indnattrs)
 				appendPQExpBufferStr(q, ") INCLUDE (");
@@ -17201,6 +17202,14 @@ dumpConstraint(Archive *fout, const ConstraintInfo *coninfo)
 		 * only have ALTER TABLE syntax for.  Keep this in sync with the
 		 * similar code in dumpIndex!
 		 */
+
+		/* Drop any not-null constraints that were added to support the PK */
+		if (coninfo->contype == 'p')
+			for (int i = 0; i < tbinfo->numatts; i++)
+				if (tbinfo->notnull_throwaway[i])
+					appendPQExpBuffer(q, "\nALTER TABLE ONLY %s DROP CONSTRAINT %s;",
+									  fmtQualifiedDumpable(tbinfo),
+									  tbinfo->notnull_constrs[i]);
 
 		/* If the index is clustered, we need to record that. */
 		if (indxinfo->indisclustered)
@@ -17538,15 +17547,6 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
 			appendPQExpBufferStr(query, "BY DEFAULT");
 		appendPQExpBuffer(query, " AS IDENTITY (\n    SEQUENCE NAME %s\n",
 						  fmtQualifiedDumpable(tbinfo));
-
-		/*
-		 * Emit persistence option only if it's different from the owning
-		 * table's.  This avoids using this new syntax unnecessarily.
-		 */
-		if (tbinfo->relpersistence != owning_tab->relpersistence)
-			appendPQExpBuffer(query, "    %s\n",
-							  tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED ?
-							  "UNLOGGED" : "LOGGED");
 	}
 	else
 	{
@@ -17579,7 +17579,15 @@ dumpSequence(Archive *fout, const TableInfo *tbinfo)
 					  cache, (cycled ? "\n    CYCLE" : ""));
 
 	if (tbinfo->is_identity_sequence)
+	{
 		appendPQExpBufferStr(query, "\n);\n");
+		if (tbinfo->relpersistence != owning_tab->relpersistence)
+			appendPQExpBuffer(query,
+							  "ALTER SEQUENCE %s SET %s;\n",
+							  fmtQualifiedDumpable(tbinfo),
+							  tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED ?
+							  "UNLOGGED" : "LOGGED");
+	}
 	else
 		appendPQExpBufferStr(query, ";\n");
 
@@ -18232,15 +18240,6 @@ processExtensionTables(Archive *fout, ExtensionInfo extinfo[],
 									curext->dobj.catId.oid))
 			continue;
 
-		/*
-		 * Check if this extension is listed as to exclude in the dump.  If
-		 * yes, any table data associated with it is discarded.
-		 */
-		if (extension_exclude_oids.head != NULL &&
-			simple_oid_list_member(&extension_exclude_oids,
-								   curext->dobj.catId.oid))
-			continue;
-
 		if (strlen(extconfig) != 0 || strlen(extcondition) != 0)
 		{
 			int			j;
@@ -18587,12 +18586,12 @@ addBoundaryDependencies(DumpableObject **dobjs, int numObjs,
 			case DO_FDW:
 			case DO_FOREIGN_SERVER:
 			case DO_TRANSFORM:
+			case DO_LARGE_OBJECT:
 				/* Pre-data objects: must come before the pre-data boundary */
 				addObjectDependency(preDataBound, dobj->dumpId);
 				break;
 			case DO_TABLE_DATA:
 			case DO_SEQUENCE_SET:
-			case DO_LARGE_OBJECT:
 			case DO_LARGE_OBJECT_DATA:
 				/* Data objects: must come between the boundaries */
 				addObjectDependency(dobj, preDataBound->dumpId);
@@ -18941,6 +18940,7 @@ read_dump_filters(const char *filename, DumpOptions *dopt)
 				case FILTER_OBJECT_TYPE_FUNCTION:
 				case FILTER_OBJECT_TYPE_INDEX:
 				case FILTER_OBJECT_TYPE_TRIGGER:
+				case FILTER_OBJECT_TYPE_EXTENSION:
 				case FILTER_OBJECT_TYPE_FOREIGN_DATA:
 					pg_log_filter_error(&fstate, _("%s filter for \"%s\" is not allowed"),
 										"exclude",
@@ -18948,9 +18948,6 @@ read_dump_filters(const char *filename, DumpOptions *dopt)
 					exit_nicely(1);
 					break;
 
-				case FILTER_OBJECT_TYPE_EXTENSION:
-					simple_string_list_append(&extension_exclude_patterns, objname);
-					break;
 				case FILTER_OBJECT_TYPE_TABLE_DATA:
 					simple_string_list_append(&tabledata_exclude_patterns,
 											  objname);

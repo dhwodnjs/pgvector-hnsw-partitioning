@@ -885,9 +885,6 @@ destroy_ssl_system(void)
 #endif
 }
 
-/* See pqcomm.h comments on OpenSSL implementation of ALPN (RFC 7301) */
-static unsigned char alpn_protos[] = PG_ALPN_PROTOCOL_VECTOR;
-
 /*
  *	Create per-connection SSL object, and load the client certificate,
  *	private key, and trusted CA certs.
@@ -905,6 +902,7 @@ initialize_SSL(PGconn *conn)
 	bool		have_homedir;
 	bool		have_cert;
 	bool		have_rootcert;
+	EVP_PKEY   *pkey = NULL;
 
 	/*
 	 * We'll need the home directory if any of the relevant parameters are
@@ -1236,22 +1234,6 @@ initialize_SSL(PGconn *conn)
 		}
 	}
 
-	/* Set ALPN */
-	{
-		int			retval;
-
-		retval = SSL_set_alpn_protos(conn->ssl, alpn_protos, sizeof(alpn_protos));
-
-		if (retval != 0)
-		{
-			char	   *err = SSLerrmessage(ERR_get_error());
-
-			libpq_append_conn_error(conn, "could not set SSL ALPN extension: %s", err);
-			SSLerrfree(err);
-			return -1;
-		}
-	}
-
 	/*
 	 * Read the SSL key. If a key is specified, treat it as an engine:key
 	 * combination if there is colon present - we don't support files with
@@ -1270,7 +1252,6 @@ initialize_SSL(PGconn *conn)
 			/* Colon, but not in second character, treat as engine:key */
 			char	   *engine_str = strdup(conn->sslkey);
 			char	   *engine_colon;
-			EVP_PKEY   *pkey;
 
 			if (engine_str == NULL)
 			{
@@ -1585,34 +1566,6 @@ open_client_SSL(PGconn *conn)
 		}
 	}
 
-	/* ALPN is mandatory with direct SSL connections */
-	if (conn->current_enc_method == ENC_SSL && conn->sslnegotiation[0] == 'd')
-	{
-		const unsigned char *selected;
-		unsigned int len;
-
-		SSL_get0_alpn_selected(conn->ssl, &selected, &len);
-
-		if (selected == NULL)
-		{
-			libpq_append_conn_error(conn, "direct SSL connection was established without ALPN protocol negotiation extension");
-			pgtls_close(conn);
-			return PGRES_POLLING_FAILED;
-		}
-
-		/*
-		 * We only support one protocol so that's what the negotiation should
-		 * always choose, but doesn't hurt to check.
-		 */
-		if (len != strlen(PG_ALPN_PROTOCOL) ||
-			memcmp(selected, PG_ALPN_PROTOCOL, strlen(PG_ALPN_PROTOCOL)) != 0)
-		{
-			libpq_append_conn_error(conn, "SSL connection was established with unexpected ALPN protocol");
-			pgtls_close(conn);
-			return PGRES_POLLING_FAILED;
-		}
-	}
-
 	/*
 	 * We already checked the server certificate in initialize_SSL() using
 	 * SSL_CTX_set_verify(), if root.crt exists.
@@ -1659,7 +1612,6 @@ pgtls_close(PGconn *conn)
 			SSL_free(conn->ssl);
 			conn->ssl = NULL;
 			conn->ssl_in_use = false;
-			conn->ssl_handshake_started = false;
 
 			destroy_needed = true;
 		}
@@ -1683,7 +1635,7 @@ pgtls_close(PGconn *conn)
 	{
 		/*
 		 * In the non-SSL case, just remove the crypto callbacks if the
-		 * connection has them loaded.  This code path has no dependency on
+		 * connection has then loaded.  This code path has no dependency on
 		 * any pending SSL calls.
 		 */
 		if (conn->crypto_loaded)
@@ -1710,11 +1662,10 @@ pgtls_close(PGconn *conn)
  * Obtain reason string for passed SSL errcode
  *
  * ERR_get_error() is used by caller to get errcode to pass here.
- * The result must be freed after use, using SSLerrfree.
  *
- * Some caution is needed here since ERR_reason_error_string will return NULL
- * if it doesn't recognize the error code, or (in OpenSSL >= 3) if the code
- * represents a system errno value.  We don't want to return NULL ever.
+ * Some caution is needed here since ERR_reason_error_string will
+ * return NULL if it doesn't recognize the error code.  We don't
+ * want to return NULL ever.
  */
 static char ssl_nomem[] = "out of memory allocating error description";
 
@@ -1740,40 +1691,6 @@ SSLerrmessage(unsigned long ecode)
 		strlcpy(errbuf, errreason, SSL_ERR_LEN);
 		return errbuf;
 	}
-
-	/*
-	 * Server aborted the connection with TLS "no_application_protocol" alert.
-	 * The ERR_reason_error_string() function doesn't give any error string
-	 * for that for some reason, so do it ourselves.  See
-	 * https://github.com/openssl/openssl/issues/24300.  This is available in
-	 * OpenSSL 1.1.0 and later, as well as in LibreSSL 3.4.3 (OpenBSD 7.0) and
-	 * later.
-	 */
-#ifdef SSL_AD_NO_APPLICATION_PROTOCOL
-	if (ERR_GET_LIB(ecode) == ERR_LIB_SSL &&
-		ERR_GET_REASON(ecode) == SSL_AD_REASON_OFFSET + SSL_AD_NO_APPLICATION_PROTOCOL)
-	{
-		snprintf(errbuf, SSL_ERR_LEN, "no application protocol");
-		return errbuf;
-	}
-#endif
-
-	/*
-	 * In OpenSSL 3.0.0 and later, ERR_reason_error_string does not map system
-	 * errno values anymore.  (See OpenSSL source code for the explanation.)
-	 * We can cover that shortcoming with this bit of code.  Older OpenSSL
-	 * versions don't have the ERR_SYSTEM_ERROR macro, but that's okay because
-	 * they don't have the shortcoming either.
-	 */
-#ifdef ERR_SYSTEM_ERROR
-	if (ERR_SYSTEM_ERROR(ecode))
-	{
-		strerror_r(ERR_GET_REASON(ecode), errbuf, SSL_ERR_LEN);
-		return errbuf;
-	}
-#endif
-
-	/* No choice but to report the numeric ecode */
 	snprintf(errbuf, SSL_ERR_LEN, libpq_gettext("SSL error code %lu"), ecode);
 	return errbuf;
 }
@@ -1819,7 +1736,6 @@ PQsslAttributeNames(PGconn *conn)
 		"cipher",
 		"compression",
 		"protocol",
-		"alpn",
 		NULL
 	};
 	static const char *const empty_attrs[] = {NULL};
@@ -1874,21 +1790,6 @@ PQsslAttribute(PGconn *conn, const char *attribute_name)
 	if (strcmp(attribute_name, "protocol") == 0)
 		return SSL_get_version(conn->ssl);
 
-	if (strcmp(attribute_name, "alpn") == 0)
-	{
-		const unsigned char *data;
-		unsigned int len;
-		static char alpn_str[256];	/* alpn doesn't support longer than 255
-									 * bytes */
-
-		SSL_get0_alpn_selected(conn->ssl, &data, &len);
-		if (data == NULL || len == 0 || len > sizeof(alpn_str) - 1)
-			return "";
-		memcpy(alpn_str, data, len);
-		alpn_str[len] = 0;
-		return alpn_str;
-	}
-
 	return NULL;				/* unknown attribute */
 }
 
@@ -1907,10 +1808,9 @@ static BIO_METHOD *my_bio_methods;
 static int
 my_sock_read(BIO *h, char *buf, int size)
 {
-	PGconn	   *conn = (PGconn *) BIO_get_app_data(h);
 	int			res;
 
-	res = pqsecure_raw_read(conn, buf, size);
+	res = pqsecure_raw_read((PGconn *) BIO_get_app_data(h), buf, size);
 	BIO_clear_retry_flags(h);
 	if (res < 0)
 	{
@@ -1931,9 +1831,6 @@ my_sock_read(BIO *h, char *buf, int size)
 				break;
 		}
 	}
-
-	if (res > 0)
-		conn->ssl_handshake_started = true;
 
 	return res;
 }

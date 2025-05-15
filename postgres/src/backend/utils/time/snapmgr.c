@@ -51,6 +51,8 @@
 #include "access/subtrans.h"
 #include "access/transam.h"
 #include "access/xact.h"
+#include "access/xlog.h"
+#include "catalog/catalog.h"
 #include "datatype/timestamp.h"
 #include "lib/pairingheap.h"
 #include "miscadmin.h"
@@ -59,11 +61,16 @@
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "storage/sinval.h"
+#include "storage/sinvaladt.h"
+#include "storage/spin.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/rel.h"
 #include "utils/resowner.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/timestamp.h"
 
 
 /*
@@ -920,7 +927,7 @@ SnapshotResetXmin(void)
 
 	if (pairingheap_is_empty(&RegisteredSnapshots))
 	{
-		MyProc->xmin = TransactionXmin = InvalidTransactionId;
+		MyProc->xmin = InvalidTransactionId;
 		return;
 	}
 
@@ -928,7 +935,7 @@ SnapshotResetXmin(void)
 										pairingheap_first(&RegisteredSnapshots));
 
 	if (TransactionIdPrecedes(MyProc->xmin, minSnapshot->xmin))
-		MyProc->xmin = TransactionXmin = minSnapshot->xmin;
+		MyProc->xmin = minSnapshot->xmin;
 }
 
 /*

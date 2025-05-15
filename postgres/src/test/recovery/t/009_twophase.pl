@@ -45,10 +45,6 @@ $node_london->backup('london_backup');
 my $node_paris = PostgreSQL::Test::Cluster->new('paris');
 $node_paris->init_from_backup($node_london, 'london_backup',
 	has_streaming => 1);
-$node_paris->append_conf(
-	'postgresql.conf', qq(
-	subtransaction_buffers = 32
-));
 $node_paris->start;
 
 # Switch to synchronous replication in both directions
@@ -313,55 +309,6 @@ $cur_standby->start;
 $cur_primary->psql('postgres', "COMMIT PREPARED 'xact_009_12'");
 
 ###############################################################################
-# Check visibility of prepared transactions in standby after a restart while
-# primary is down.
-###############################################################################
-
-$cur_primary->psql(
-	'postgres', "
-	SET synchronous_commit='remote_apply'; -- To ensure the standby is caught up
-	CREATE TABLE t_009_tbl_standby_mvcc (id int, msg text);
-	BEGIN;
-	INSERT INTO t_009_tbl_standby_mvcc VALUES (1, 'issued to ${cur_primary_name}');
-	SAVEPOINT s1;
-	INSERT INTO t_009_tbl_standby_mvcc VALUES (2, 'issued to ${cur_primary_name}');
-	PREPARE TRANSACTION 'xact_009_standby_mvcc';
-	");
-$cur_primary->stop;
-$cur_standby->restart;
-
-# Acquire a snapshot in standby, before we commit the prepared transaction
-my $standby_session =
-  $cur_standby->background_psql('postgres', on_error_die => 1);
-$standby_session->query_safe("BEGIN ISOLATION LEVEL REPEATABLE READ");
-$psql_out =
-  $standby_session->query_safe("SELECT count(*) FROM t_009_tbl_standby_mvcc");
-is($psql_out, '0',
-	"Prepared transaction not visible in standby before commit");
-
-# Commit the transaction in primary
-$cur_primary->start;
-$cur_primary->psql(
-	'postgres', "
-SET synchronous_commit='remote_apply'; -- To ensure the standby is caught up
-COMMIT PREPARED 'xact_009_standby_mvcc';
-");
-
-# Still not visible to the old snapshot
-$psql_out =
-  $standby_session->query_safe("SELECT count(*) FROM t_009_tbl_standby_mvcc");
-is($psql_out, '0',
-	"Committed prepared transaction not visible to old snapshot in standby");
-
-# Is visible to a new snapshot
-$standby_session->query_safe("COMMIT");
-$psql_out =
-  $standby_session->query_safe("SELECT count(*) FROM t_009_tbl_standby_mvcc");
-is($psql_out, '2',
-	"Committed prepared transaction is visible to new snapshot in standby");
-$standby_session->quit;
-
-###############################################################################
 # Check for a lock conflict between prepared transaction with DDL inside and
 # replay of XLOG_STANDBY_LOCK wal record.
 ###############################################################################
@@ -533,77 +480,5 @@ $cur_standby->psql(
 is( $psql_out,
 	qq{27|issued to paris},
 	"Check expected t_009_tbl2 data on standby");
-
-
-# Exercise the 2PC recovery code in StartupSUBTRANS, which is concerned with
-# ensuring that enough pg_subtrans pages exist on disk to cover the range of
-# prepared transactions at server start time.  There's not much we can verify
-# directly, but let's at least get the code to run.
-$cur_standby->stop();
-configure_and_reload($cur_primary, "synchronous_standby_names = ''");
-
-$cur_primary->safe_psql('postgres', "CHECKPOINT");
-
-my $start_lsn =
-  $cur_primary->safe_psql('postgres', 'select pg_current_wal_insert_lsn()');
-$cur_primary->safe_psql('postgres',
-	"CREATE TABLE test(); BEGIN; CREATE TABLE test1(); PREPARE TRANSACTION 'foo';"
-);
-my $osubtrans = $cur_primary->safe_psql('postgres',
-	"select 'pg_subtrans/'||f, s.size from pg_ls_dir('pg_subtrans') f, pg_stat_file('pg_subtrans/'||f) s"
-);
-$cur_primary->pgbench(
-	'--no-vacuum --client=5 --transactions=1000',
-	0,
-	[],
-	[],
-	'pgbench run to cause pg_subtrans traffic',
-	{
-		'009_twophase.pgb' => 'insert into test default values'
-	});
-# StartupSUBTRANS is exercised with a wide range of visible XIDs in this
-# stop/start sequence, because we left a prepared transaction open above.
-# Also, setting subtransaction_buffers to 32 above causes to switch SLRU
-# bank, for additional code coverage.
-$cur_primary->stop;
-$cur_primary->start;
-my $nsubtrans = $cur_primary->safe_psql('postgres',
-	"select 'pg_subtrans/'||f, s.size from pg_ls_dir('pg_subtrans') f, pg_stat_file('pg_subtrans/'||f) s"
-);
-isnt($osubtrans, $nsubtrans, "contents of pg_subtrans/ have changed");
-
-###############################################################################
-# Check handling of orphaned 2PC files at recovery.
-###############################################################################
-
-$cur_standby->teardown_node;
-$cur_primary->teardown_node;
-
-# Grab location in logs of primary
-my $log_offset = -s $cur_primary->logfile;
-
-# Create fake files with a transaction ID large or low enough to be in the
-# future or the past, in different epochs, then check that the primary is able
-# to start and remove these files at recovery.
-
-# First bump the epoch with pg_resetwal.
-$cur_primary->command_ok(
-	[ 'pg_resetwal', '-e', 256, '-f', $cur_primary->data_dir ],
-	'bump epoch of primary');
-
-my $future_2pc_file =
-  $cur_primary->data_dir . '/pg_twophase/000001FF00000FFF';
-append_to_file $future_2pc_file, "";
-my $past_2pc_file = $cur_primary->data_dir . '/pg_twophase/000000EE00000FFF';
-append_to_file $past_2pc_file, "";
-
-$cur_primary->start;
-$cur_primary->log_check(
-	"two-phase files removed at recovery",
-	$log_offset,
-	log_like => [
-		qr/removing past two-phase state file of epoch 238 for transaction 4095/,
-		qr/removing future two-phase state file of epoch 511 for transaction 4095/
-	]);
 
 done_testing();

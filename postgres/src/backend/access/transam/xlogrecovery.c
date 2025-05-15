@@ -55,10 +55,11 @@
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/pmsignal.h"
+#include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/spin.h"
+#include "utils/builtins.h"
 #include "utils/datetime.h"
-#include "utils/fmgrprotos.h"
 #include "utils/guc_hooks.h"
 #include "utils/pg_lsn.h"
 #include "utils/ps_status.h"
@@ -646,8 +647,7 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 				if (!ReadRecord(xlogprefetcher, LOG, false,
 								checkPoint.ThisTimeLineID))
 					ereport(FATAL,
-							(errmsg("could not find redo location %X/%X referenced by checkpoint record at %X/%X",
-									LSN_FORMAT_ARGS(checkPoint.redo), LSN_FORMAT_ARGS(CheckPointLoc)),
+							(errmsg("could not find redo location referenced by checkpoint record"),
 							 errhint("If you are restoring from a backup, touch \"%s/recovery.signal\" or \"%s/standby.signal\" and add required recovery options.\n"
 									 "If you are not restoring from a backup, try removing the file \"%s/backup_label\".\n"
 									 "Be careful: removing \"%s/backup_label\" will result in a corrupt cluster if restoring from a backup.",
@@ -657,8 +657,7 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 		else
 		{
 			ereport(FATAL,
-					(errmsg("could not locate required checkpoint record at %X/%X",
-							LSN_FORMAT_ARGS(CheckPointLoc)),
+					(errmsg("could not locate required checkpoint record"),
 					 errhint("If you are restoring from a backup, touch \"%s/recovery.signal\" or \"%s/standby.signal\" and add required recovery options.\n"
 							 "If you are not restoring from a backup, try removing the file \"%s/backup_label\".\n"
 							 "Be careful: removing \"%s/backup_label\" will result in a corrupt cluster if restoring from a backup.",
@@ -792,8 +791,7 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 			 * simplify processing around checkpoints.
 			 */
 			ereport(PANIC,
-					(errmsg("could not locate a valid checkpoint record at %X/%X",
-							LSN_FORMAT_ARGS(CheckPointLoc))));
+					(errmsg("could not locate a valid checkpoint record")));
 		}
 		memcpy(&checkPoint, XLogRecGetData(xlogreader), sizeof(CheckPoint));
 		wasShutdown = ((record->xl_info & ~XLR_INFO_MASK) == XLOG_CHECKPOINT_SHUTDOWN);
@@ -1119,7 +1117,7 @@ validateRecoveryParameters(void)
 		if ((PrimaryConnInfo == NULL || strcmp(PrimaryConnInfo, "") == 0) &&
 			(recoveryRestoreCommand == NULL || strcmp(recoveryRestoreCommand, "") == 0))
 			ereport(WARNING,
-					(errmsg("specified neither \"primary_conninfo\" nor \"restore_command\""),
+					(errmsg("specified neither primary_conninfo nor restore_command"),
 					 errhint("The database server will regularly poll the pg_wal subdirectory to check for files placed there.")));
 	}
 	else
@@ -1128,7 +1126,7 @@ validateRecoveryParameters(void)
 			strcmp(recoveryRestoreCommand, "") == 0)
 			ereport(FATAL,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("must specify \"restore_command\" when standby mode is not enabled")));
+					 errmsg("must specify restore_command when standby mode is not enabled")));
 	}
 
 	/*
@@ -2162,7 +2160,7 @@ CheckTablespaceDirectory(void)
 					 errmsg("unexpected directory entry \"%s\" found in %s",
 							de->d_name, "pg_tblspc/"),
 					 errdetail("All directory entries in pg_tblspc/ should be symbolic links."),
-					 errhint("Remove those directories, or set \"allow_in_place_tablespaces\" to ON transiently to let recovery complete.")));
+					 errhint("Remove those directories, or set allow_in_place_tablespaces to ON transiently to let recovery complete.")));
 	}
 }
 
@@ -4771,7 +4769,7 @@ error_multiple_recovery_targets(void)
 	ereport(ERROR,
 			(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 			 errmsg("multiple recovery targets specified"),
-			 errdetail("At most one of \"recovery_target\", \"recovery_target_lsn\", \"recovery_target_name\", \"recovery_target_time\", \"recovery_target_xid\" may be set.")));
+			 errdetail("At most one of recovery_target, recovery_target_lsn, recovery_target_name, recovery_target_time, recovery_target_xid may be set.")));
 }
 
 /*
@@ -4855,7 +4853,7 @@ check_recovery_target_name(char **newval, void **extra, GucSource source)
 	/* Use the value of newval directly */
 	if (strlen(*newval) >= MAXFNAMELEN)
 	{
-		GUC_check_errdetail("\"%s\" is too long (maximum %d characters).",
+		GUC_check_errdetail("%s is too long (maximum %d characters).",
 							"recovery_target_name", MAXFNAMELEN - 1);
 		return false;
 	}
@@ -4979,7 +4977,7 @@ check_recovery_target_timeline(char **newval, void **extra, GucSource source)
 		strtoul(*newval, NULL, 0);
 		if (errno == EINVAL || errno == ERANGE)
 		{
-			GUC_check_errdetail("\"recovery_target_timeline\" is not a valid number.");
+			GUC_check_errdetail("recovery_target_timeline is not a valid number.");
 			return false;
 		}
 	}

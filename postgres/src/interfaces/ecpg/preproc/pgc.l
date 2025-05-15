@@ -69,20 +69,15 @@ char *token_start;
 static int state_before_str_start;
 static int state_before_str_stop;
 
-/*
- * State for handling include files and macro expansion.  We use a new
- * flex input buffer for each level of include or macro, and create a
- * struct _yy_buffer to remember the previous level.  There is not a struct
- * for the currently active input source; that state is kept in the global
- * variables YY_CURRENT_BUFFER, yylineno, and input_filename.
- */
-static struct _yy_buffer
+struct _yy_buffer
 {
 	YY_BUFFER_STATE		buffer;
 	long				lineno;
 	char			   *filename;
 	struct _yy_buffer  *next;
 } *yy_buffer = NULL;
+
+static char *old;
 
 /*
  * Vars for handling ifdef/elif/endif constructs.  preproc_tos is the current
@@ -376,35 +371,20 @@ octfail			0[oO]_?
 binfail			0[bB]_?
 
 numeric			(({decinteger}\.{decinteger}?)|(\.{decinteger}))
-numericfail		{decinteger}\.\.
+numericfail		{decdigit}+\.\.
 
 real			({decinteger}|{numeric})[Ee][-+]?{decinteger}
 realfail		({decinteger}|{numeric})[Ee][-+]
 
-/* Positional parameters don't accept underscores. */
-param			\${decdigit}+
+decinteger_junk	{decinteger}{ident_start}
+hexinteger_junk	{hexinteger}{ident_start}
+octinteger_junk	{octinteger}{ident_start}
+bininteger_junk	{bininteger}{ident_start}
+numeric_junk	{numeric}{ident_start}
+real_junk		{real}{ident_start}
 
-/*
- * An identifier immediately following an integer literal is disallowed because
- * in some cases it's ambiguous what is meant: for example, 0x1234 could be
- * either a hexinteger or a decinteger "0" and an identifier "x1234".  We can
- * detect such problems by seeing if integer_junk matches a longer substring
- * than any of the XXXinteger patterns (decinteger, hexinteger, octinteger,
- * bininteger).  One "junk" pattern is sufficient because
- * {decinteger}{identifier} will match all the same strings we'd match with
- * {hexinteger}{identifier} etc.
- *
- * Note that the rule for integer_junk must appear after the ones for
- * XXXinteger to make this work correctly: 0x1234 will match both hexinteger
- * and integer_junk, and we need hexinteger to be chosen in that case.
- *
- * Also disallow strings matched by numeric_junk, real_junk and param_junk
- * for consistency.
- */
-integer_junk	{decinteger}{identifier}
-numeric_junk	{numeric}{identifier}
-real_junk		{real}{identifier}
-param_junk		\${decdigit}+{identifier}
+param			\${decinteger}
+param_junk		\${decinteger}{ident_start}
 
 /* special characters for other dbms */
 /* we have to react differently in compat mode */
@@ -464,8 +444,6 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 
 %{
 		/* code to execute during start of each call of yylex() */
-		char *newdefsymbol = NULL;
-
 		token_start = NULL;
 %}
 
@@ -1007,7 +985,16 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 	 * Note that some trailing junk is valid in C (such as 100LL), so we
 	 * contain this to SQL mode.
 	 */
-{integer_junk}	{
+{decinteger_junk}	{
+					mmfatal(PARSE_ERROR, "trailing junk after numeric literal");
+				}
+{hexinteger_junk}	{
+					mmfatal(PARSE_ERROR, "trailing junk after numeric literal");
+				}
+{octinteger_junk}	{
+					mmfatal(PARSE_ERROR, "trailing junk after numeric literal");
+				}
+{bininteger_junk}	{
 					mmfatal(PARSE_ERROR, "trailing junk after numeric literal");
 				}
 {numeric_junk}	{
@@ -1023,7 +1010,6 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 				}
 
 {identifier}	{
-					/* First check to see if it's a define symbol to expand */
 					if (!isdefine())
 					{
 						int		kwvalue;
@@ -1212,23 +1198,17 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 					yytext[i+1] = '\0';
 
 
-					/* Find and unset any matching define; should be only 1 */
-					for (ptr = defines; ptr; ptr2 = ptr, ptr = ptr->next)
+					for (ptr = defines; ptr != NULL; ptr2 = ptr, ptr = ptr->next)
 					{
-						if (strcmp(yytext, ptr->name) == 0)
+						if (strcmp(yytext, ptr->olddef) == 0)
 						{
-							free(ptr->value);
-							ptr->value = NULL;
-							/* We cannot forget it if there's a cmdvalue */
-							if (ptr->cmdvalue == NULL)
-							{
-								if (ptr2 == NULL)
-									defines = ptr->next;
-								else
-									ptr2->next = ptr->next;
-								free(ptr->name);
-								free(ptr);
-							}
+							if (ptr2 == NULL)
+								defines = ptr->next;
+							else
+								ptr2->next = ptr->next;
+							free(ptr->newdef);
+							free(ptr->olddef);
+							free(ptr);
 							break;
 						}
 					}
@@ -1433,17 +1413,11 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 							;
 						yytext[i+1] = '\0';
 
-						/* Does a definition exist? */
-						for (defptr = defines; defptr; defptr = defptr->next)
-						{
-							if (strcmp(yytext, defptr->name) == 0)
-							{
-								/* Found it, but is it currently undefined? */
-								if (defptr->value == NULL)
-									defptr = NULL; /* pretend it's not found */
-								break;
-							}
-						}
+						for (defptr = defines;
+							 defptr != NULL &&
+							 strcmp(yytext, defptr->olddef) != 0;
+							 defptr = defptr->next)
+							/* skip */ ;
 
 						this_active = (defptr ? ifcond : !ifcond);
 						stacked_if_value[preproc_tos].active =
@@ -1464,7 +1438,7 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 				yyterminate();
 			}
 <def_ident>{identifier} {
-				newdefsymbol = mm_strdup(yytext);
+				old = mm_strdup(yytext);
 				BEGIN(def);
 				startlit();
 			}
@@ -1473,31 +1447,26 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 				yyterminate();
 			}
 <def>{space}*";"	{
-						struct _defines *ptr;
+						struct _defines *ptr, *this;
 
-						/* Does it already exist? */
 						for (ptr = defines; ptr != NULL; ptr = ptr->next)
 						{
-							if (strcmp(newdefsymbol, ptr->name) == 0)
-							{
-								free(ptr->value);
-								ptr->value = mm_strdup(literalbuf);
-								/* Don't leak newdefsymbol */
-								free(newdefsymbol);
-								break;
-							}
+							 if (strcmp(old, ptr->olddef) == 0)
+							 {
+								free(ptr->newdef);
+								ptr->newdef = mm_strdup(literalbuf);
+							 }
 						}
 						if (ptr == NULL)
 						{
-							/* Not present, make a new entry */
-							ptr = (struct _defines *) mm_alloc(sizeof(struct _defines));
+							this = (struct _defines *) mm_alloc(sizeof(struct _defines));
 
-							ptr->name = newdefsymbol;
-							ptr->value = mm_strdup(literalbuf);
-							ptr->cmdvalue = NULL;
-							ptr->used = NULL;
-							ptr->next = defines;
-							defines = ptr;
+							/* initial definition */
+							this->olddef = old;
+							this->newdef = mm_strdup(literalbuf);
+							this->next = defines;
+							this->used = NULL;
+							defines = this;
 						}
 
 						BEGIN(C);
@@ -1514,7 +1483,6 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 <<EOF>>				{
 					if (yy_buffer == NULL)
 					{
-						/* No more input */
 						if (preproc_tos > 0)
 						{
 							preproc_tos = 0;
@@ -1524,20 +1492,16 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 					}
 					else
 					{
-						/* Revert to previous input source */
 						struct _yy_buffer *yb = yy_buffer;
 						int i;
 						struct _defines *ptr;
 
-						/* Check to see if we are exiting a macro value */
 						for (ptr = defines; ptr; ptr = ptr->next)
-						{
 							if (ptr->used == yy_buffer)
 							{
 								ptr->used = NULL;
-								break; /* there can't be multiple matches */
+								break;
 							}
-						}
 
 						if (yyin != NULL)
 							fclose(yyin);
@@ -1763,24 +1727,15 @@ ecpg_isspace(char ch)
 	return false;
 }
 
-/*
- * If yytext matches a define symbol, begin scanning the symbol's value
- * and return true
- */
-static bool
-isdefine(void)
+static bool isdefine(void)
 {
 	struct _defines *ptr;
 
 	/* is it a define? */
 	for (ptr = defines; ptr; ptr = ptr->next)
 	{
-		/* notice we do not match anything being actively expanded */
-		if (strcmp(yytext, ptr->name) == 0 &&
-			ptr->value != NULL &&
-			ptr->used == NULL)
+		if (strcmp(yytext, ptr->olddef) == 0 && ptr->used == NULL)
 		{
-			/* Save state associated with the current buffer */
 			struct _yy_buffer *yb;
 
 			yb = mm_alloc(sizeof(struct _yy_buffer));
@@ -1789,17 +1744,10 @@ isdefine(void)
 			yb->lineno = yylineno;
 			yb->filename = mm_strdup(input_filename);
 			yb->next = yy_buffer;
-			yy_buffer = yb;
 
-			/* Mark symbol as being actively expanded */
-			ptr->used = yb;
+			ptr->used = yy_buffer = yb;
 
-			/*
-			 * We use yy_scan_string which will copy the value, so there's
-			 * no need to worry about a possible undef happening while we
-			 * are still scanning it.
-			 */
-			yy_scan_string(ptr->value);
+			yy_scan_string(ptr->newdef);
 			return true;
 		}
 	}
@@ -1807,12 +1755,7 @@ isdefine(void)
 	return false;
 }
 
-/*
- * Handle replacement of INFORMIX built-in defines.  This works just
- * like isdefine() except for the source of the string to scan.
- */
-static bool
-isinformixdefine(void)
+static bool isinformixdefine(void)
 {
 	const char *new = NULL;
 

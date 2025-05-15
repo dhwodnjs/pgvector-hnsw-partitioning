@@ -22,6 +22,7 @@
 
 #include "access/genam.h"
 #include "access/htup_details.h"
+#include "access/sysattr.h"
 #include "access/table.h"
 #include "access/transam.h"
 #include "catalog/catalog.h"
@@ -41,6 +42,7 @@
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_type.h"
 #include "miscadmin.h"
+#include "storage/fd.h"
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
 #include "utils/rel.h"
@@ -133,36 +135,6 @@ IsCatalogRelationOid(Oid relid)
 	 * OIDs; see GetNewObjectId().
 	 */
 	return (relid < (Oid) FirstUnpinnedObjectId);
-}
-
-/*
- * IsInplaceUpdateRelation
- *		True iff core code performs inplace updates on the relation.
- *
- *		This is used for assertions and for making the executor follow the
- *		locking protocol described at README.tuplock section "Locking to write
- *		inplace-updated tables".  Extensions may inplace-update other heap
- *		tables, but concurrent SQL UPDATE on the same table may overwrite
- *		those modifications.
- *
- *		The executor can assume these are not partitions or partitioned and
- *		have no triggers.
- */
-bool
-IsInplaceUpdateRelation(Relation relation)
-{
-	return IsInplaceUpdateOid(RelationGetRelid(relation));
-}
-
-/*
- * IsInplaceUpdateOid
- *		Like the above, but takes an OID as argument.
- */
-bool
-IsInplaceUpdateOid(Oid relid)
-{
-	return (relid == RelationRelationId ||
-			relid == DatabaseRelationId);
 }
 
 /*

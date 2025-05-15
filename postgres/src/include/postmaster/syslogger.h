@@ -86,7 +86,9 @@ extern int	SysLogger_Start(void);
 
 extern void write_syslogger_file(const char *buffer, int count, int destination);
 
-extern void SysLoggerMain(char *startup_data, size_t startup_data_len) pg_attribute_noreturn();
+#ifdef EXEC_BACKEND
+extern void SysLoggerMain(int argc, char *argv[]) pg_attribute_noreturn();
+#endif
 
 extern bool CheckLogrotateSignal(void);
 extern void RemoveLogrotateSignalFiles(void);

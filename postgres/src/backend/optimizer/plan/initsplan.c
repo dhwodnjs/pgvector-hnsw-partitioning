@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "catalog/pg_class.h"
 #include "catalog/pg_type.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
@@ -27,11 +28,11 @@
 #include "optimizer/placeholder.h"
 #include "optimizer/planmain.h"
 #include "optimizer/planner.h"
+#include "optimizer/prep.h"
 #include "optimizer/restrictinfo.h"
 #include "parser/analyze.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
-#include "utils/rel.h"
 #include "utils/typcache.h"
 
 /* These parameters are set by GUC */
@@ -2630,59 +2631,32 @@ add_base_clause_to_rel(PlannerInfo *root, Index relid,
 					   RestrictInfo *restrictinfo)
 {
 	RelOptInfo *rel = find_base_rel(root, relid);
-	RangeTblEntry *rte = root->simple_rte_array[relid];
 
 	Assert(bms_membership(restrictinfo->required_relids) == BMS_SINGLETON);
 
+	/* Don't add the clause if it is always true */
+	if (restriction_is_always_true(root, restrictinfo))
+		return;
+
 	/*
-	 * For inheritance parent tables, we must always record the RestrictInfo
-	 * in baserestrictinfo as is.  If we were to transform or skip adding it,
-	 * then the original wouldn't be available in apply_child_basequals. Since
-	 * there are two RangeTblEntries for inheritance parents, one with
-	 * inh==true and the other with inh==false, we're still able to apply this
-	 * optimization to the inh==false one.  The inh==true one is what
-	 * apply_child_basequals() sees, whereas the inh==false one is what's used
-	 * for the scan node in the final plan.
-	 *
-	 * We make an exception to this for partitioned tables.  For these, we
-	 * always apply the constant-TRUE and constant-FALSE transformations.  A
-	 * qual which is either of these for a partitioned table must also be that
-	 * for all of its child partitions.
+	 * Substitute the origin qual with constant-FALSE if it is provably always
+	 * false.  Note that we keep the same rinfo_serial.
 	 */
-	if (!rte->inh || rte->relkind == RELKIND_PARTITIONED_TABLE)
+	if (restriction_is_always_false(root, restrictinfo))
 	{
-		/* Don't add the clause if it is always true */
-		if (restriction_is_always_true(root, restrictinfo))
-			return;
+		int			save_rinfo_serial = restrictinfo->rinfo_serial;
 
-		/*
-		 * Substitute the origin qual with constant-FALSE if it is provably
-		 * always false.
-		 *
-		 * Note that we need to keep the same rinfo_serial, since it is in
-		 * practice the same condition.  We also need to reset the
-		 * last_rinfo_serial counter, which is essential to ensure that the
-		 * RestrictInfos for the "same" qual condition get identical serial
-		 * numbers (see deconstruct_distribute_oj_quals).
-		 */
-		if (restriction_is_always_false(root, restrictinfo))
-		{
-			int			save_rinfo_serial = restrictinfo->rinfo_serial;
-			int			save_last_rinfo_serial = root->last_rinfo_serial;
-
-			restrictinfo = make_restrictinfo(root,
-											 (Expr *) makeBoolConst(false, false),
-											 restrictinfo->is_pushed_down,
-											 restrictinfo->has_clone,
-											 restrictinfo->is_clone,
-											 restrictinfo->pseudoconstant,
-											 0, /* security_level */
-											 restrictinfo->required_relids,
-											 restrictinfo->incompatible_relids,
-											 restrictinfo->outer_relids);
-			restrictinfo->rinfo_serial = save_rinfo_serial;
-			root->last_rinfo_serial = save_last_rinfo_serial;
-		}
+		restrictinfo = make_restrictinfo(root,
+										 (Expr *) makeBoolConst(false, false),
+										 restrictinfo->is_pushed_down,
+										 restrictinfo->has_clone,
+										 restrictinfo->is_clone,
+										 restrictinfo->pseudoconstant,
+										 0, /* security_level */
+										 restrictinfo->required_relids,
+										 restrictinfo->incompatible_relids,
+										 restrictinfo->outer_relids);
+		restrictinfo->rinfo_serial = save_rinfo_serial;
 	}
 
 	/* Add clause to rel's restriction list */

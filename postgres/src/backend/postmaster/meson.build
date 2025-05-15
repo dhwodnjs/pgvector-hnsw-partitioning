@@ -8,7 +8,6 @@ backend_sources += files(
   'checkpointer.c',
   'fork_process.c',
   'interrupt.c',
-  'launch_backend.c',
   'pgarch.c',
   'postmaster.c',
   'startup.c',

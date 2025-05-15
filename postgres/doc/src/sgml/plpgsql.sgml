@@ -1043,8 +1043,8 @@ INSERT INTO mytable VALUES (1,'one'), (2,'two');
     </para>
 
     <para>
-     If the command does return rows (for example <command>SELECT</command>, or
-     <command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command>/<command>MERGE</command>
+     If the command does return rows (for example <command>SELECT</command>,
+     or <command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command>
      with <literal>RETURNING</literal>), there are two ways to proceed.
      When the command will return at most one row, or you only care about
      the first row of output, write the command as usual but add
@@ -1172,7 +1172,6 @@ SELECT <replaceable>select_expressions</replaceable> INTO <optional>STRICT</opti
 INSERT ... RETURNING <replaceable>expressions</replaceable> INTO <optional>STRICT</optional> <replaceable>target</replaceable>;
 UPDATE ... RETURNING <replaceable>expressions</replaceable> INTO <optional>STRICT</optional> <replaceable>target</replaceable>;
 DELETE ... RETURNING <replaceable>expressions</replaceable> INTO <optional>STRICT</optional> <replaceable>target</replaceable>;
-MERGE ... RETURNING <replaceable>expressions</replaceable> INTO <optional>STRICT</optional> <replaceable>target</replaceable>;
 </synopsis>
 
      where <replaceable>target</replaceable> can be a record variable, a row
@@ -1183,8 +1182,8 @@ MERGE ... RETURNING <replaceable>expressions</replaceable> INTO <optional>STRICT
      <literal>INTO</literal> clause) just as described above,
      and the plan is cached in the same way.
      This works for <command>SELECT</command>,
-     <command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command>/<command>MERGE</command>
-     with <literal>RETURNING</literal>, and certain utility commands
+     <command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command> with
+     <literal>RETURNING</literal>, and certain utility commands
      that return row sets, such as <command>EXPLAIN</command>.
      Except for the <literal>INTO</literal> clause, the SQL command is the same
      as it would be written outside <application>PL/pgSQL</application>.
@@ -1260,7 +1259,7 @@ END;
     </para>
 
     <para>
-     For <command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command>/<command>MERGE</command> with
+     For <command>INSERT</command>/<command>UPDATE</command>/<command>DELETE</command> with
      <literal>RETURNING</literal>, <application>PL/pgSQL</application> reports
      an error for more than one returned row, even when
      <literal>STRICT</literal> is not specified.  This is because there
@@ -1295,7 +1294,7 @@ $$ LANGUAGE plpgsql;
      On failure, this function might produce an error message such as
 <programlisting>
 ERROR:  query returned no rows
-DETAIL:  parameters: username = 'nosuchuser'
+DETAIL:  parameters: $1 = 'nosuchuser'
 CONTEXT:  PL/pgSQL function get_userid(text) line 6 at SQL statement
 </programlisting>
     </para>
@@ -2658,9 +2657,8 @@ $$ LANGUAGE plpgsql;
      The <replaceable>query</replaceable> used in this type of <literal>FOR</literal>
      statement can be any SQL command that returns rows to the caller:
      <command>SELECT</command> is the most common case,
-     but you can also use <command>INSERT</command>, <command>UPDATE</command>,
-     <command>DELETE</command>, or <command>MERGE</command> with a
-     <literal>RETURNING</literal> clause.  Some utility
+     but you can also use <command>INSERT</command>, <command>UPDATE</command>, or
+     <command>DELETE</command> with a <literal>RETURNING</literal> clause.  Some utility
      commands such as <command>EXPLAIN</command> will work too.
     </para>
 
@@ -3409,16 +3407,13 @@ FETCH <optional> <replaceable>direction</replaceable> { FROM | IN } </optional> 
 </synopsis>
 
     <para>
-     <command>FETCH</command> retrieves the next row (in the indicated
-     direction) from the
+     <command>FETCH</command> retrieves the next row from the
      cursor into a target, which might be a row variable, a record
      variable, or a comma-separated list of simple variables, just like
-     <command>SELECT INTO</command>.  If there is no suitable row, the
+     <command>SELECT INTO</command>.  If there is no next row, the
      target is set to NULL(s).  As with <command>SELECT
      INTO</command>, the special variable <literal>FOUND</literal> can
-     be checked to see whether a row was obtained or not.  If no row is
-     obtained, the cursor is positioned after the last row or before the
-     first row, depending on the movement direction.
+     be checked to see whether a row was obtained or not.
     </para>
 
     <para>
@@ -3470,25 +3465,11 @@ MOVE <optional> <replaceable>direction</replaceable> { FROM | IN } </optional> <
 
     <para>
      <command>MOVE</command> repositions a cursor without retrieving
-     any data. <command>MOVE</command> works like the
+     any data. <command>MOVE</command> works exactly like the
      <command>FETCH</command> command, except it only repositions the
-     cursor and does not return the row moved to.
-     The <replaceable>direction</replaceable> clause can be any of the
-     variants allowed in the SQL <xref linkend="sql-fetch"/>
-     command, including those that can fetch more than one row;
-     the cursor is positioned to the last such row.
-     (However, the case in which the <replaceable>direction</replaceable>
-     clause is simply a <replaceable>count</replaceable> expression with
-     no key word is deprecated in <application>PL/pgSQL</application>.
-     That syntax is ambiguous with the case where
-     the <replaceable>direction</replaceable> clause is omitted
-     altogether, and hence it may fail if
-     the <replaceable>count</replaceable> is not a constant.)
-     As with <command>SELECT
+     cursor and does not return the row moved to. As with <command>SELECT
      INTO</command>, the special variable <literal>FOUND</literal> can
-     be checked to see whether there was a row to move to.  If there is no
-     such row, the cursor is positioned after the last row or before the
-     first row, depending on the movement direction.
+     be checked to see whether there was a next row to move to.
     </para>
 
     <para>
@@ -3763,17 +3744,6 @@ CALL transaction_test1();
    </para>
 
    <para>
-    <application>PL/pgSQL</application> does not support savepoints
-    (<command>SAVEPOINT</command>/<command>ROLLBACK TO
-    SAVEPOINT</command>/<command>RELEASE SAVEPOINT</command> commands).
-    Typical usage patterns for savepoints can be replaced by blocks with
-    exception handlers (see <xref linkend="plpgsql-error-trapping"/>).
-    Under the hood, a block with exception handlers forms a
-    subtransaction, which means that transactions cannot be ended inside
-    such a block.
-   </para>
-
-   <para>
     Special considerations apply to cursor loops.  Consider this example:
 <programlisting>
 CREATE PROCEDURE transaction_test2()
@@ -3798,16 +3768,17 @@ CALL transaction_test2();
     evaluated at the first <command>COMMIT</command> or
     <command>ROLLBACK</command> rather than row by row.  The cursor is still
     removed automatically after the loop, so this is mostly invisible to the
-    user.  But one must keep in mind that any table or row locks taken by
-    the cursor's query will no longer be held after the
-    first <command>COMMIT</command> or
-    <command>ROLLBACK</command>.
+    user.
    </para>
 
    <para>
     Transaction commands are not allowed in cursor loops driven by commands
     that are not read-only (for example <command>UPDATE
     ... RETURNING</command>).
+   </para>
+
+   <para>
+    A transaction cannot be ended inside a block with exception handlers.
    </para>
   </sect1>
 

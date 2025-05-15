@@ -23,22 +23,15 @@
 /*
  * Typedef for callback function launched by an injection point.
  */
-typedef void (*InjectionPointCallback) (const char *name,
-										const void *private_data);
+typedef void (*InjectionPointCallback) (const char *name);
 
 extern Size InjectionPointShmemSize(void);
 extern void InjectionPointShmemInit(void);
 
 extern void InjectionPointAttach(const char *name,
 								 const char *library,
-								 const char *function,
-								 const void *private_data,
-								 int private_data_size);
+								 const char *function);
 extern void InjectionPointRun(const char *name);
-extern bool InjectionPointDetach(const char *name);
-
-#ifdef EXEC_BACKEND
-extern PGDLLIMPORT struct InjectionPointsCtl *ActiveInjectionPoints;
-#endif
+extern void InjectionPointDetach(const char *name);
 
 #endif							/* INJECTION_POINT_H */

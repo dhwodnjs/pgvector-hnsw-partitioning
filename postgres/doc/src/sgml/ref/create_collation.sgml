@@ -96,11 +96,6 @@ CREATE COLLATION [ IF NOT EXISTS ] <replaceable>name</replaceable> FROM <replace
        <replaceable>locale</replaceable>, you cannot specify either of those
        parameters.
       </para>
-      <para>
-       If <replaceable>provider</replaceable> is <literal>builtin</literal>,
-       then <replaceable>locale</replaceable> must be specified and set to
-       either <literal>C</literal> or <literal>C.UTF-8</literal>.
-      </para>
      </listitem>
     </varlistentry>
 
@@ -134,9 +129,9 @@ CREATE COLLATION [ IF NOT EXISTS ] <replaceable>name</replaceable> FROM <replace
      <listitem>
       <para>
        Specifies the provider to use for locale services associated with this
-       collation.  Possible values are <literal>builtin</literal>,
-       <literal>icu</literal><indexterm><primary>ICU</primary></indexterm> (if
-       the server was built with ICU support) or <literal>libc</literal>.
+       collation.  Possible values are
+       <literal>icu</literal><indexterm><primary>ICU</primary></indexterm>
+       (if the server was built with ICU support) or <literal>libc</literal>.
        <literal>libc</literal> is the default.  See <xref
        linkend="locale-providers"/> for details.
       </para>
@@ -154,7 +149,7 @@ CREATE COLLATION [ IF NOT EXISTS ] <replaceable>name</replaceable> FROM <replace
        logically equal by the comparison.  PostgreSQL breaks ties using a
        byte-wise comparison.  Comparison that is not deterministic can make the
        collation be, say, case- or accent-insensitive.  For that, you need to
-       choose an appropriate <literal>LOCALE</literal> setting
+       choose an appropriate <literal>LC_COLLATE</literal> setting
        <emphasis>and</emphasis> set the collation to not deterministic here.
       </para>
 

@@ -1865,39 +1865,6 @@ SELECT NOT(ROW(table.*) IS NOT NULL) FROM TABLE; -- detect at least one null in 
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
-         <primary>random</primary>
-        </indexterm>
-        <function>random</function> ( <parameter>min</parameter> <type>integer</type>, <parameter>max</parameter> <type>integer</type> )
-        <returnvalue>integer</returnvalue>
-       </para>
-       <para role="func_signature">
-        <function>random</function> ( <parameter>min</parameter> <type>bigint</type>, <parameter>max</parameter> <type>bigint</type> )
-        <returnvalue>bigint</returnvalue>
-       </para>
-       <para role="func_signature">
-        <function>random</function> ( <parameter>min</parameter> <type>numeric</type>, <parameter>max</parameter> <type>numeric</type> )
-        <returnvalue>numeric</returnvalue>
-       </para>
-       <para>
-        Returns a random value in the range
-        <parameter>min</parameter> &lt;= x &lt;= <parameter>max</parameter>.
-        For type <type>numeric</type>, the result will have the same number of
-        fractional decimal digits as <parameter>min</parameter> or
-        <parameter>max</parameter>, whichever has more.
-       </para>
-       <para>
-        <literal>random(1, 10)</literal>
-        <returnvalue>7</returnvalue>
-       </para>
-       <para>
-        <literal>random(-0.499, 0.499)</literal>
-        <returnvalue>0.347</returnvalue>
-       </para></entry>
-      </row>
-
-      <row>
-       <entry role="func_table_entry"><para role="func_signature">
-        <indexterm>
          <primary>random_normal</primary>
         </indexterm>
 
@@ -1939,19 +1906,19 @@ SELECT NOT(ROW(table.*) IS NOT NULL) FROM TABLE; -- detect at least one null in 
    </table>
 
   <para>
-   The <function>random()</function> and <function>random_normal()</function>
-   functions listed in <xref linkend="functions-math-random-table"/> use a
-   deterministic pseudo-random number generator.
+   The <function>random()</function> function uses a deterministic
+   pseudo-random number generator.
    It is fast but not suitable for cryptographic
    applications; see the <xref linkend="pgcrypto"/> module for a more
    secure alternative.
    If <function>setseed()</function> is called, the series of results of
-   subsequent calls to these functions in the current session
+   subsequent <function>random()</function> calls in the current session
    can be repeated by re-issuing <function>setseed()</function> with the same
    argument.
    Without any prior <function>setseed()</function> call in the same
-   session, the first call to any of these functions obtains a seed
+   session, the first <function>random()</function> call obtains a seed
    from a platform-dependent source of random bits.
+   These remarks hold equally for <function>random_normal()</function>.
   </para>
 
   <para>
@@ -2910,7 +2877,7 @@ SELECT NOT(ROW(table.*) IS NOT NULL) FROM TABLE; -- detect at least one null in 
          <primary>unicode_assigned</primary>
         </indexterm>
         <function>unicode_assigned</function> ( <type>text</type> )
-        <returnvalue>boolean</returnvalue>
+        <returnvalue>text</returnvalue>
        </para>
        <para>
         Returns <literal>true</literal> if all characters in the string are
@@ -4901,7 +4868,7 @@ SELECT format('Testing %3$s, %2$s, %s', 'one', 'two', 'three');
      <listitem>
       <para>
        The <literal>base64</literal> format is that
-       of <ulink url="https://datatracker.ietf.org/doc/html/rfc2045#section-6.8">RFC
+       of <ulink url="https://tools.ietf.org/html/rfc2045#section-6.8">RFC
        2045 Section 6.8</ulink>.  As per the <acronym>RFC</acronym>, encoded lines are
        broken at 76 characters.  However instead of the MIME CRLF
        end-of-line marker, only a newline is used for end-of-line.
@@ -8401,11 +8368,11 @@ SELECT regexp_match('abc01234xyz', '(?:(.*?)(\d+)(.*)){1,1}');
        use some non-digit character or template after <literal>YYYY</literal>,
        otherwise the year is always interpreted as 4 digits. For example
        (with the year 20000):
-       <literal>to_date('200001130', 'YYYYMMDD')</literal> will be
+       <literal>to_date('200001131', 'YYYYMMDD')</literal> will be
        interpreted as a 4-digit year; instead use a non-digit
        separator after the year, like
-       <literal>to_date('20000-1130', 'YYYY-MMDD')</literal> or
-       <literal>to_date('20000Nov30', 'YYYYMonDD')</literal>.
+       <literal>to_date('20000-1131', 'YYYY-MMDD')</literal> or
+       <literal>to_date('20000Nov31', 'YYYYMonDD')</literal>.
       </para>
      </listitem>
 
@@ -14160,14 +14127,6 @@ CREATE TYPE rainbow AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'purple
    <primary>gen_random_uuid</primary>
   </indexterm>
 
-  <indexterm>
-   <primary>uuid_extract_timestamp</primary>
-  </indexterm>
-
-  <indexterm>
-   <primary>uuid_extract_version</primary>
-  </indexterm>
-
   <para>
    <productname>PostgreSQL</productname> includes one function to generate a UUID:
 <synopsis>
@@ -14180,28 +14139,6 @@ CREATE TYPE rainbow AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'purple
   <para>
    The <xref linkend="uuid-ossp"/> module provides additional functions that
    implement other standard algorithms for generating UUIDs.
-  </para>
-
-  <para>
-   There are also functions to extract data from UUIDs:
-<synopsis>
-<function>uuid_extract_timestamp</function> (uuid) <returnvalue>timestamp with time zone</returnvalue>
-</synopsis>
-   This function extracts a <type>timestamp with time zone</type> from UUID
-   version 1.  For other versions, this function returns null.  Note that the
-   extracted timestamp is not necessarily exactly equal to the time the UUID
-   was generated; this depends on the implementation that generated the UUID.
-  </para>
-
-  <para>
-<synopsis>
-<function>uuid_extract_version</function> (uuid) <returnvalue>smallint</returnvalue>
-</synopsis>
-   This function extracts the version from a UUID of the variant described by
-   <ulink url="https://datatracker.ietf.org/doc/html/rfc4122">RFC 4122</ulink>.  For
-   other variants, this function returns null.  For example, for a UUID
-   generated by <function>gen_random_uuid</function>, this function will
-   return 4.
   </para>
 
   <para>
@@ -15521,11 +15458,6 @@ table2-mapping
       the SQL/JSON path language
      </para>
     </listitem>
-    <listitem>
-     <para>
-      the SQL/JSON query functions
-     </para>
-    </listitem>
    </itemizedlist>
   </para>
 
@@ -15537,7 +15469,7 @@ table2-mapping
    values, with an additional SQL/JSON null value, and composite data structures
    that use JSON arrays and objects. The model is a formalization of the implied
    data model in the JSON specification
-   <ulink url="https://datatracker.ietf.org/doc/html/rfc7159">RFC 7159</ulink>.
+   <ulink url="https://tools.ietf.org/html/rfc7159">RFC 7159</ulink>.
   </para>
 
   <para>
@@ -16004,8 +15936,8 @@ table2-mapping
    Some functions in this table have a <literal>RETURNING</literal> clause,
    which specifies the data type returned.  It must be one of <type>json</type>,
    <type>jsonb</type>, <type>bytea</type>, a character string type (<type>text</type>,
-   <type>char</type>, or <type>varchar</type>), or a type
-   that can be cast to <type>json</type>.
+   <type>char</type>, <type>varchar</type>, or <type>nchar</type>), or a type
+   for which there is a cast from <type>json</type> to that type.
    By default, the <type>json</type> type is returned.
   </para>
 
@@ -17125,8 +17057,8 @@ ERROR:  value too long for type character(2)
         <returnvalue>boolean</returnvalue>
        </para>
        <para>
-        Returns the SQL boolean result of a JSON path predicate check
-        for the specified JSON value.
+        Returns the result of a JSON path predicate check for the specified
+        JSON value.
         (This is useful only
         with <link linkend="functions-sqljson-check-expressions">predicate
         check expressions</link>, not SQL-standard JSON path expressions,
@@ -17593,9 +17525,9 @@ SELECT '{
      Boolean predicate, whereas the SQL standard allows predicates only within
      filters. While SQL-standard path expressions return the relevant
      element(s) of the queried JSON value, predicate check expressions
-     return the single three-valued <type>jsonb</type> result of the
+     return the single three-valued result of the
      predicate: <literal>true</literal>,
-     <literal>false</literal>, or <literal>null</literal>.
+     <literal>false</literal>, or <literal>unknown</literal>.
      For example, we could write this SQL-standard filter expression:
 <screen>
 <prompt>=&gt;</prompt> <userinput>select jsonb_path_query(:'json', '$.track.segments ?(@[*].HR &gt; 130)');</userinput>
@@ -17725,28 +17657,28 @@ ERROR:  jsonpath member accessor can only be applied to an object
     The unwrapping behavior of lax mode can lead to surprising results. For
     instance, the following query using the <literal>.**</literal> accessor
     selects every <literal>HR</literal> value twice:
-<screen>
-<prompt>=&gt;</prompt> <userinput>select jsonb_path_query(:'json', 'lax $.**.HR');</userinput>
- jsonb_path_query
-------------------
- 73
- 135
- 73
- 135
-</screen>
+ <screen>
+ <prompt>=&gt;</prompt> <userinput>select jsonb_path_query(:'json', 'lax $.**.HR');</userinput>
+  jsonb_path_query
+ ------------------
+  73
+  135
+  73
+  135
+ </screen>
     This happens because the <literal>.**</literal> accessor selects both
     the <literal>segments</literal> array and each of its elements, while
     the <literal>.HR</literal> accessor automatically unwraps arrays when
     using lax mode. To avoid surprising results, we recommend using
     the <literal>.**</literal> accessor only in strict mode. The
     following query selects each <literal>HR</literal> value just once:
-<screen>
-<prompt>=&gt;</prompt> <userinput>select jsonb_path_query(:'json', 'strict $.**.HR');</userinput>
- jsonb_path_query
-------------------
- 73
- 135
-</screen>
+ <screen>
+ <prompt>=&gt;</prompt> <userinput>select jsonb_path_query(:'json', 'strict $.**.HR');</userinput>
+  jsonb_path_query
+ ------------------
+  73
+  135
+ </screen>
    </para>
 
    <para>
@@ -17792,10 +17724,7 @@ ERROR:  jsonpath member accessor can only be applied to an object
     methods available in <type>jsonpath</type>.  Note that while the unary
     operators and methods can be applied to multiple values resulting from a
     preceding path step, the binary operators (addition etc.) can only be
-    applied to single values.  In lax mode, methods applied to an array will be
-    executed for each value in the array.  The exceptions are
-    <literal>.type()</literal> and <literal>.size()</literal>, which apply to
-    the array itself.
+    applied to single values.
    </para>
 
    <table id="functions-sqljson-op-table">
@@ -17965,16 +17894,15 @@ ERROR:  jsonpath member accessor can only be applied to an object
         <returnvalue><replaceable>string</replaceable></returnvalue>
        </para>
        <para>
-        String value converted from a JSON boolean, number, string, or
-        datetime
+        String value converted from a JSON boolean, number, string, or datetime
        </para>
        <para>
         <literal>jsonb_path_query_array('[1.23, "xyz", false]', '$[*].string()')</literal>
         <returnvalue>["1.23", "xyz", "false"]</returnvalue>
        </para>
        <para>
-        <literal>jsonb_path_query('"2023-08-15 12:34:56"', '$.timestamp().string()')</literal>
-        <returnvalue>"2023-08-15T12:34:56"</returnvalue>
+        <literal>jsonb_path_query('"2023-08-15"', '$.datetime().string()')</literal>
+        <returnvalue>"2023-08-15"</returnvalue>
        </para></entry>
       </row>
 
@@ -18055,9 +17983,7 @@ ERROR:  jsonpath member accessor can only be applied to an object
         <returnvalue><replaceable>decimal</replaceable></returnvalue>
        </para>
        <para>
-        Rounded decimal value converted from a JSON number or string
-        (<literal>precision</literal> and <literal>scale</literal> must be
-        integer values)
+        Rounded decimal value converted from a JSON number or string. <literal>precision</literal> and <literal>scale</literal> must be integer values.
        </para>
        <para>
         <literal>jsonb_path_query('1234.5678', '$.decimal(6, 2)')</literal>
@@ -18159,7 +18085,7 @@ ERROR:  jsonpath member accessor can only be applied to an object
        </para>
        <para>
         Time without time zone value converted from a string, with fractional
-        seconds adjusted to the given precision
+        seconds adjusted to the given precision.
        </para>
        <para>
         <literal>jsonb_path_query('"12:34:56.789"', '$.time(2)')</literal>
@@ -18188,7 +18114,7 @@ ERROR:  jsonpath member accessor can only be applied to an object
        </para>
        <para>
         Time with time zone value converted from a string, with fractional
-        seconds adjusted to the given precision
+        seconds adjusted to the given precision.
        </para>
        <para>
         <literal>jsonb_path_query('"12:34:56.789 +05:30"', '$.time_tz(2)')</literal>
@@ -18217,7 +18143,7 @@ ERROR:  jsonpath member accessor can only be applied to an object
        </para>
        <para>
         Timestamp without time zone value converted from a string, with
-        fractional seconds adjusted to the given precision
+        fractional seconds adjusted to the given precision.
        </para>
        <para>
         <literal>jsonb_path_query('"2023-08-15 12:34:56.789"', '$.timestamp(2)')</literal>
@@ -18246,7 +18172,7 @@ ERROR:  jsonpath member accessor can only be applied to an object
        </para>
        <para>
         Timestamp with time zone value converted from a string, with fractional
-        seconds adjusted to the given precision
+        seconds adjusted to the given precision.
        </para>
        <para>
         <literal>jsonb_path_query('"2023-08-15 12:34:56.789 +05:30"', '$.timestamp_tz(2)')</literal>
@@ -18659,778 +18585,6 @@ $.* ? (@ like_regex "^\\d+$")
 </programlisting>
     </para>
    </sect3>
-  </sect2>
-
-   <sect2 id="sqljson-query-functions">
-    <title>SQL/JSON Query Functions</title>
-  <para>
-   SQL/JSON functions <literal>JSON_EXISTS()</literal>,
-   <literal>JSON_QUERY()</literal>, and <literal>JSON_VALUE()</literal>
-   described in <xref linkend="functions-sqljson-querying"/> can be used
-   to query JSON documents.  Each of these functions apply a
-   <replaceable>path_expression</replaceable> (an SQL/JSON path query) to a
-   <replaceable>context_item</replaceable> (the document).  See
-   <xref linkend="functions-sqljson-path"/> for more details on what
-   the <replaceable>path_expression</replaceable> can contain. The
-   <replaceable>path_expression</replaceable> can also reference variables,
-   whose values are specified with their respective names in the
-   <literal>PASSING</literal> clause that is supported by each function.
-   <replaceable>context_item</replaceable> can be a <type>jsonb</type> value
-   or a character string that can be successfully cast to <type>jsonb</type>.
-  </para>
-
-  <table id="functions-sqljson-querying">
-   <title>SQL/JSON Query Functions</title>
-   <tgroup cols="1">
-    <thead>
-     <row>
-      <entry role="func_table_entry"><para role="func_signature">
-        Function signature
-       </para>
-       <para>
-        Description
-       </para>
-       <para>
-        Example(s)
-      </para></entry>
-     </row>
-    </thead>
-    <tbody>
-     <row>
-      <entry role="func_table_entry"><para role="func_signature">
-        <indexterm><primary>json_exists</primary></indexterm>
-<synopsis>
-<function>JSON_EXISTS</function> (
-<replaceable>context_item</replaceable>, <replaceable>path_expression</replaceable>
-<optional> <literal>PASSING</literal> { <replaceable>value</replaceable> <literal>AS</literal> <replaceable>varname</replaceable> } <optional>, ...</optional></optional>
-<optional>{ <literal>TRUE</literal> | <literal>FALSE</literal> |<literal> UNKNOWN</literal> | <literal>ERROR</literal> } <literal>ON ERROR</literal> </optional>) <returnvalue>boolean</returnvalue>
-</synopsis>
-       </para>
-     <itemizedlist>
-      <listitem>
-       <para>
-        Returns true if the SQL/JSON <replaceable>path_expression</replaceable>
-        applied to the <replaceable>context_item</replaceable> yields any
-        items, false otherwise.
-       </para>
-      </listitem>
-      <listitem>
-       <para>
-        The <literal>ON ERROR</literal> clause specifies the behavior if
-        an error occurs during <replaceable>path_expression</replaceable>
-        evaluation.  Specifying <literal>ERROR</literal> will cause an error to
-        be thrown with the appropriate message.  Other options include
-        returning <type>boolean</type> values <literal>FALSE</literal> or
-        <literal>TRUE</literal> or the value <literal>UNKNOWN</literal> which
-        is actually an SQL NULL. The default when no <literal>ON ERROR</literal>
-        clause is specified is to return the <type>boolean</type> value
-        <literal>FALSE</literal>.
-       </para>
-      </listitem>
-      </itemizedlist>
-       <para>
-        Examples:
-       </para>
-       <para>
-        <literal>JSON_EXISTS(jsonb '{"key1": [1,2,3]}', 'strict $.key1[*] ? (@ > $x)' PASSING 2 AS x)</literal>
-        <returnvalue>t</returnvalue>
-       </para>
-       <para>
-        <literal>JSON_EXISTS(jsonb '{"a": [1,2,3]}', 'lax $.a[5]' ERROR ON ERROR)</literal>
-        <returnvalue>f</returnvalue>
-       </para>
-       <para>
-        <literal>JSON_EXISTS(jsonb '{"a": [1,2,3]}', 'strict $.a[5]' ERROR ON ERROR)</literal>
-        <returnvalue></returnvalue>
-<programlisting>
-ERROR:  jsonpath array subscript is out of bounds
-</programlisting>
-      </para></entry>
-     </row>
-     <row>
-      <entry role="func_table_entry"><para role="func_signature">
-        <indexterm><primary>json_query</primary></indexterm>
-<synopsis>
-<function>JSON_QUERY</function> (
-<replaceable>context_item</replaceable>, <replaceable>path_expression</replaceable>
-<optional> <literal>PASSING</literal> { <replaceable>value</replaceable> <literal>AS</literal> <replaceable>varname</replaceable> } <optional>, ...</optional></optional>
-<optional> <literal>RETURNING</literal> <replaceable>data_type</replaceable> <optional> <literal>FORMAT JSON</literal> <optional> <literal>ENCODING UTF8</literal> </optional> </optional> </optional>
-<optional> { <literal>WITHOUT</literal> | <literal>WITH</literal> { <literal>CONDITIONAL</literal> | <optional><literal>UNCONDITIONAL</literal></optional> } } <optional> <literal>ARRAY</literal> </optional> <literal>WRAPPER</literal> </optional>
-<optional> { <literal>KEEP</literal> | <literal>OMIT</literal> } <literal>QUOTES</literal> <optional> <literal>ON SCALAR STRING</literal> </optional> </optional>
-<optional> { <literal>ERROR</literal> | <literal>NULL</literal> | <literal>EMPTY</literal> { <optional> <literal>ARRAY</literal> </optional> | <literal>OBJECT</literal> } | <literal>DEFAULT</literal> <replaceable>expression</replaceable> } <literal>ON EMPTY</literal> </optional>
-<optional> { <literal>ERROR</literal> | <literal>NULL</literal> | <literal>EMPTY</literal> { <optional> <literal>ARRAY</literal> </optional> | <literal>OBJECT</literal> } | <literal>DEFAULT</literal> <replaceable>expression</replaceable> } <literal>ON ERROR</literal> </optional>) <returnvalue>jsonb</returnvalue>
-</synopsis>
-      </para>
-     <itemizedlist>
-      <listitem>
-       <para>
-        Returns the result of applying the SQL/JSON
-        <replaceable>path_expression</replaceable> to the
-        <replaceable>context_item</replaceable>.
-       </para>
-      </listitem>
-      <listitem>
-       <para>
-         By default, the result is returned as a value of type <type>jsonb</type>,
-         though the <literal>RETURNING</literal> clause can be used to return
-         as some other type to which it can be successfully coerced.
-       </para>
-      </listitem>
-      <listitem>
-       <para>
-        If the path expression may return multiple values, it might be necessary
-        to wrap those values using the <literal>WITH WRAPPER</literal> clause to
-        make it a valid JSON string, because the default behavior is to not wrap
-        them, as if <literal>WITHOUT WRAPPER</literal> were specified. The
-        <literal>WITH WRAPPER</literal> clause is by default taken to mean
-        <literal>WITH UNCONDITIONAL WRAPPER</literal>, which means that even a
-        single result value will be wrapped. To apply the wrapper only when
-        multiple values are present, specify <literal>WITH CONDITIONAL WRAPPER</literal>.
-        Getting multiple values in result will be treated as an error if
-        <literal>WITHOUT WRAPPER</literal> is specified.
-       </para>
-      </listitem>
-      <listitem>
-       <para>
-        If the result is a scalar string, by default, the returned value will
-        be surrounded by quotes, making it a valid JSON value.  It can be made
-        explicit by specifying <literal>KEEP QUOTES</literal>.  Conversely,
-        quotes can be omitted by specifying <literal>OMIT QUOTES</literal>.
-        To ensure that the result is a valid JSON value, <literal>OMIT QUOTES</literal>
-        cannot be specified when <literal>WITH WRAPPER</literal> is also
-        specified.
-       </para>
-      </listitem>
-      <listitem>
-       <para>
-        The <literal>ON EMPTY</literal> clause specifies the behavior if
-        evaluating <replaceable>path_expression</replaceable> yields an empty
-        set. The <literal>ON ERROR</literal> clause specifies the behavior
-        if an error occurs when evaluating <replaceable>path_expression</replaceable>,
-        when coercing the result value to the <literal>RETURNING</literal> type,
-        or when evaluating the <literal>ON EMPTY</literal> expression if the
-        <replaceable>path_expression</replaceable> evaluation returns an empty
-        set.
-       </para>
-      </listitem>
-      <listitem>
-       <para>
-        For both <literal>ON EMPTY</literal> and <literal>ON ERROR</literal>,
-        specifying <literal>ERROR</literal> will cause an error to be thrown with
-        the appropriate message. Other options include returning an SQL NULL, an
-        empty array (<literal>EMPTY <optional>ARRAY</optional></literal>),
-        an empty object (<literal>EMPTY OBJECT</literal>), or a user-specified
-        expression (<literal>DEFAULT</literal> <replaceable>expression</replaceable>)
-        that can be coerced to jsonb or the type specified in <literal>RETURNING</literal>.
-        The default when <literal>ON EMPTY</literal> or <literal>ON ERROR</literal>
-        is not specified is to return an SQL NULL value.
-       </para>
-      </listitem>
-     </itemizedlist>
-       <para>
-        Examples:
-       </para>
-       <para>
-        <literal>JSON_QUERY(jsonb '[1,[2,3],null]', 'lax $[*][$off]' PASSING 1 AS off WITH CONDITIONAL WRAPPER)</literal>
-        <returnvalue>3</returnvalue>
-       </para>
-       <para>
-        <literal>JSON_QUERY(jsonb '{"a": "[1, 2]"}', 'lax $.a' OMIT QUOTES)</literal>
-        <returnvalue>[1, 2]</returnvalue>
-       </para>
-       <para>
-        <literal>JSON_QUERY(jsonb '{"a": "[1, 2]"}', 'lax $.a' RETURNING int[] OMIT QUOTES ERROR ON ERROR)</literal>
-        <returnvalue></returnvalue>
-<programlisting>
-ERROR:  malformed array literal: "[1, 2]"
-DETAIL:  Missing "]" after array dimensions.
-</programlisting>
-       </para>
-      </entry>
-     </row>
-     <row>
-      <entry role="func_table_entry"><para role="func_signature">
-        <indexterm><primary>json_value</primary></indexterm>
-<synopsis>
-<function>JSON_VALUE</function> (
-<replaceable>context_item</replaceable>, <replaceable>path_expression</replaceable>
-<optional> <literal>PASSING</literal> { <replaceable>value</replaceable> <literal>AS</literal> <replaceable>varname</replaceable> } <optional>, ...</optional></optional>
-<optional> <literal>RETURNING</literal> <replaceable>data_type</replaceable> </optional>
-<optional> { <literal>ERROR</literal> | <literal>NULL</literal> | <literal>DEFAULT</literal> <replaceable>expression</replaceable> } <literal>ON EMPTY</literal> </optional>
-<optional> { <literal>ERROR</literal> | <literal>NULL</literal> | <literal>DEFAULT</literal> <replaceable>expression</replaceable> } <literal>ON ERROR</literal> </optional>) <returnvalue>text</returnvalue>
-</synopsis>
-       </para>
-     <itemizedlist>
-      <listitem>
-       <para>
-        Returns the result of applying the SQL/JSON
-        <replaceable>path_expression</replaceable> to the
-        <replaceable>context_item</replaceable>.
-       </para>
-      </listitem>
-      <listitem>
-       <para>
-        Only use <function>JSON_VALUE()</function> if the extracted value is
-        expected to be a single <acronym>SQL/JSON</acronym> scalar item;
-        getting multiple values will be treated as an error. If you expect that
-        extracted value might be an object or an array, use the
-        <function>JSON_QUERY</function> function instead.
-       </para>
-      </listitem>
-      <listitem>
-       <para>
-        By default, the result, which must be a single scalar value, is
-        returned as a value of type <type>text</type>, though the
-        <literal>RETURNING</literal> clause can be used to return as some
-        other type to which it can be successfully coerced.
-       </para>
-      </listitem>
-      <listitem>
-       <para>
-        The <literal>ON ERROR</literal> and <literal>ON EMPTY</literal>
-        clauses have similar semantics as mentioned in the description of
-        <function>JSON_QUERY</function>, except the set of values returned in
-        lieu of throwing an error is different.
-       </para>
-      </listitem>
-      <listitem>
-       <para>
-        Note that scalar strings returned by <function>JSON_VALUE</function>
-        always have their quotes removed, equivalent to specifying
-        <literal>OMIT QUOTES</literal> in <function>JSON_QUERY</function>.
-       </para>
-      </listitem>
-     </itemizedlist>
-       <para>
-        Examples:
-       </para>
-       <para>
-        <literal>JSON_VALUE(jsonb '"123.45"', '$' RETURNING float)</literal>
-        <returnvalue>123.45</returnvalue>
-       </para>
-       <para>
-        <literal>JSON_VALUE(jsonb '"03:04 2015-02-01"', '$.datetime("HH24:MI&nbsp;YYYY-MM-DD")' RETURNING date)</literal>
-        <returnvalue>2015-02-01</returnvalue>
-       </para>
-       <para>
-        <literal>JSON_VALUE(jsonb '[1,2]', 'strict $[$off]' PASSING 1 as off)</literal>
-        <returnvalue>2</returnvalue>
-       </para>
-       <para>
-        <literal>JSON_VALUE(jsonb '[1,2]', 'strict $[*]' DEFAULT 9 ON ERROR)</literal>
-        <returnvalue>9</returnvalue>
-       </para>
-      </entry>
-     </row>
-    </tbody>
-   </tgroup>
-  </table>
-  <note>
-   <para>
-    The <replaceable>context_item</replaceable> expression is converted to
-    <type>jsonb</type> by an implicit cast if the expression is not already of
-    type <type>jsonb</type>. Note, however, that any parsing errors that occur
-    during that conversion are thrown unconditionally, that is, are not
-    handled according to the (specified or implicit) <literal>ON ERROR</literal>
-    clause.
-   </para>
-  </note>
-  <note>
-   <para>
-    <function>JSON_VALUE()</function> returns an SQL NULL if
-    <replaceable>path_expression</replaceable> returns a JSON
-    <literal>null</literal>, whereas <function>JSON_QUERY()</function> returns
-    the JSON <literal>null</literal> as is.
-   </para>
-  </note>
-  </sect2>
-
- <sect2 id="functions-sqljson-table">
-  <title>JSON_TABLE</title>
-  <indexterm>
-   <primary>json_table</primary>
-  </indexterm>
-
-  <para>
-   <function>JSON_TABLE</function> is an SQL/JSON function which
-   queries <acronym>JSON</acronym> data
-   and presents the results as a relational view, which can be accessed as a
-   regular SQL table. You can use <function>JSON_TABLE</function> inside
-   the <literal>FROM</literal> clause of a <literal>SELECT</literal>,
-   <literal>UPDATE</literal>, or <literal>DELETE</literal> and as data source
-   in a <literal>MERGE</literal> statement.
-  </para>
-
-  <para>
-   Taking JSON data as input, <function>JSON_TABLE</function> uses a JSON path
-   expression to extract a part of the provided data to use as a
-   <firstterm>row pattern</firstterm> for the constructed view.  Each SQL/JSON
-   value given by the row pattern serves as source for a separate row in the
-   constructed view.
-  </para>
-
-  <para>
-   To split the row pattern into columns, <function>JSON_TABLE</function>
-   provides the <literal>COLUMNS</literal> clause that defines the
-   schema of the created view. For each column, a separate JSON path expression
-   can be specified to be evaluated against the row pattern to get an SQL/JSON
-   value that will become the value for the specified column in a given output
-   row.
-  </para>
-
-  <para>
-   JSON data stored at a nested level of the row pattern can be extracted using
-   the <literal>NESTED PATH</literal> clause.  Each
-   <literal>NESTED PATH</literal> clause can be used to generate one or more
-   columns using the data from a nested level of the row pattern.  Those
-   columns can be specified using a <literal>COLUMNS</literal> clause that
-   looks similar to the top-level COLUMNS clause.  Rows constructed from
-   NESTED COLUMNS are called <firstterm>child rows</firstterm> and are joined
-   against the row constructed from the columns specified in the parent
-   <literal>COLUMNS</literal> clause to get the row in the final view.  Child
-   columns themselves may contain a <literal>NESTED PATH</literal>
-   specification thus allowing to extract data located at arbitrary nesting
-   levels.  Columns produced by multiple <literal>NESTED PATH</literal>s at the
-   same level are considered to be <firstterm>siblings</firstterm> of each
-   other and their rows after joining with the parent row are combined using
-   UNION.
-  </para>
-
-  <para>
-   The rows produced by <function>JSON_TABLE</function> are laterally
-   joined to the row that generated them, so you do not have to explicitly join
-   the constructed view with the original table holding <acronym>JSON</acronym>
-   data.
-  </para>
-
-  <para>
-   The syntax is:
-  </para>
-
-<synopsis>
-JSON_TABLE (
-    <replaceable>context_item</replaceable>, <replaceable>path_expression</replaceable> <optional> AS <replaceable>json_path_name</replaceable> </optional> <optional> PASSING { <replaceable>value</replaceable> AS <replaceable>varname</replaceable> } <optional>, ...</optional> </optional>
-    COLUMNS ( <replaceable class="parameter">json_table_column</replaceable> <optional>, ...</optional> )
-    <optional> { <literal>ERROR</literal> | <literal>EMPTY</literal> <optional>ARRAY</optional>} <literal>ON ERROR</literal> </optional>
-)
-
-<phrase>
-where <replaceable class="parameter">json_table_column</replaceable> is:
-</phrase>
-  <replaceable>name</replaceable> FOR ORDINALITY
-  | <replaceable>name</replaceable> <replaceable>type</replaceable>
-        <optional> FORMAT JSON <optional>ENCODING <literal>UTF8</literal></optional></optional>
-        <optional> PATH <replaceable>path_expression</replaceable> </optional>
-        <optional> { WITHOUT | WITH { CONDITIONAL | <optional>UNCONDITIONAL</optional> } } <optional> ARRAY </optional> WRAPPER </optional>
-        <optional> { KEEP | OMIT } QUOTES <optional> ON SCALAR STRING </optional> </optional>
-        <optional> { ERROR | NULL | EMPTY { <optional>ARRAY</optional> | OBJECT } | DEFAULT <replaceable>expression</replaceable> } ON EMPTY </optional>
-        <optional> { ERROR | NULL | EMPTY { <optional>ARRAY</optional> | OBJECT } | DEFAULT <replaceable>expression</replaceable> } ON ERROR </optional>
-  | <replaceable>name</replaceable> <replaceable>type</replaceable> EXISTS <optional> PATH <replaceable>path_expression</replaceable> </optional>
-        <optional> { ERROR | TRUE | FALSE | UNKNOWN } ON ERROR </optional>
-  | NESTED <optional> PATH </optional> <replaceable>path_expression</replaceable> <optional> AS <replaceable>json_path_name</replaceable> </optional> COLUMNS ( <replaceable>json_table_column</replaceable> <optional>, ...</optional> )
-</synopsis>
-
-  <para>
-   Each syntax element is described below in more detail.
-  </para>
-
-  <variablelist>
-   <varlistentry>
-    <term>
-     <literal><replaceable>context_item</replaceable>, <replaceable>path_expression</replaceable> <optional> <literal>AS</literal> <replaceable>json_path_name</replaceable> </optional> <optional> <literal>PASSING</literal> { <replaceable>value</replaceable> <literal>AS</literal> <replaceable>varname</replaceable> } <optional>, ...</optional></optional></literal>
-    </term>
-    <listitem>
-    <para>
-     The <replaceable>context_item</replaceable> specifies the input document
-     to query, the <replaceable>path_expression</replaceable> is an SQL/JSON
-     path expression defining the query, and <replaceable>json_path_name</replaceable>
-     is an optional name for the <replaceable>path_expression</replaceable>.
-     The optional <literal>PASSING</literal> clause provides data values for
-     the variables mentioned in the <replaceable>path_expression</replaceable>.
-     The result of the input data evaluation using the aforementioned elements
-     is called the <firstterm>row pattern</firstterm>, which is used as the
-     source for row values in the constructed view.
-    </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term>
-     <literal>COLUMNS</literal> ( <replaceable>json_table_column</replaceable> <optional>, ...</optional> )
-    </term>
-    <listitem>
-
-    <para>
-     The <literal>COLUMNS</literal> clause defining the schema of the
-     constructed view. In this clause, you can specify each column to be
-     filled with an SQL/JSON value obtained by applying a JSON path expression
-     against the row pattern.  <replaceable>json_table_column</replaceable> has
-     the following variants:
-    </para>
-
-  <variablelist>
-   <varlistentry>
-    <term>
-     <replaceable>name</replaceable> <literal>FOR ORDINALITY</literal>
-    </term>
-    <listitem>
-    <para>
-     Adds an ordinality column that provides sequential row numbering starting
-     from 1.  Each <literal>NESTED PATH</literal> (see below) gets its own
-     counter for any nested ordinality columns.
-    </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term>
-     <literal><replaceable>name</replaceable> <replaceable>type</replaceable>
-          <optional><literal>FORMAT JSON</literal> <optional>ENCODING <literal>UTF8</literal></optional></optional>
-          <optional> <literal>PATH</literal> <replaceable>path_expression</replaceable> </optional></literal>
-    </term>
-    <listitem>
-    <para>
-     Inserts an SQL/JSON value obtained by applying
-     <replaceable>path_expression</replaceable> against the row pattern into
-     the view's output row after coercing it to specified
-     <replaceable>type</replaceable>.
-    </para>
-    <para>
-     Specifying <literal>FORMAT JSON</literal> makes it explicit that you
-     expect the value to be a valid <type>json</type> object.  It only
-     makes sense to specify <literal>FORMAT JSON</literal> if
-     <replaceable>type</replaceable> is one of <type>bpchar</type>,
-     <type>bytea</type>, <type>character varying</type>, <type>name</type>,
-     <type>json</type>, <type>jsonb</type>, <type>text</type>, or a domain over
-     these types.
-    </para>
-    <para>
-     Optionally, you can specify <literal>WRAPPER</literal> and
-     <literal>QUOTES</literal> clauses to format the output. Note that
-     specifying <literal>OMIT QUOTES</literal> overrides
-     <literal>FORMAT JSON</literal> if also specified, because unquoted
-     literals do not constitute valid <type>json</type> values.
-    </para>
-    <para>
-     Optionally, you can use <literal>ON EMPTY</literal> and
-     <literal>ON ERROR</literal> clauses to specify whether to throw the error
-     or return the specified value when the result of JSON path evaluation is
-     empty and when an error occurs during JSON path evaluation or when
-     coercing the SQL/JSON value to the specified type, respectively.  The
-     default for both is to return a <literal>NULL</literal> value.
-    </para>
-    <note>
-     <para>
-      This clause is internally turned into and has the same semantics as
-      <function>JSON_VALUE</function> or <function>JSON_QUERY</function>.
-      The latter if the specified type is not a scalar type or if either of
-      <literal>FORMAT JSON</literal>, <literal>WRAPPER</literal>, or
-      <literal>QUOTES</literal> clause is present.
-     </para>
-    </note>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term>
-       <replaceable>name</replaceable> <replaceable>type</replaceable>
-       <literal>EXISTS</literal> <optional> <literal>PATH</literal> <replaceable>path_expression</replaceable> </optional>
-    </term>
-    <listitem>
-    <para>
-     Inserts a boolean value obtained by applying
-     <replaceable>path_expression</replaceable> against the row pattern
-     into the view's output row after coercing it to specified
-     <replaceable>type</replaceable>.
-    </para>
-    <para>
-     The value corresponds to whether applying the <literal>PATH</literal>
-     expression to the row pattern yields any values.
-    </para>
-    <para>
-     The specified <replaceable>type</replaceable> should have a cast from the
-     <type>boolean</type> type.
-    </para>
-    <para>
-     Optionally, you can use <literal>ON ERROR</literal> to specify whether to
-     throw the error or return the specified value when an error occurs during
-     JSON path evaluation or when coercing SQL/JSON value to the specified
-     type.  The default is to return a boolean value
-     <literal>FALSE</literal>.
-    </para>
-    <note>
-     <para>
-      This clause is internally turned into and has the same semantics as
-      <function>JSON_EXISTS</function>.
-     </para>
-    </note>
-      </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term>
-      <literal>NESTED <optional> PATH </optional></literal> <replaceable>path_expression</replaceable> <optional> <literal>AS</literal> <replaceable>json_path_name</replaceable> </optional>
-          <literal>COLUMNS</literal> ( <replaceable>json_table_column</replaceable> <optional>, ...</optional> )
-    </term>
-    <listitem>
-
-    <para>
-     Extracts SQL/JSON values from nested levels of the row pattern,
-     generates one or more columns as defined by the <literal>COLUMNS</literal>
-     subclause, and inserts the extracted SQL/JSON values into those
-     columns.  The <replaceable>json_table_column</replaceable>
-     expression in the <literal>COLUMNS</literal> subclause uses the same
-     syntax as in the parent <literal>COLUMNS</literal> clause.
-    </para>
-
-    <para>
-     The <literal>NESTED PATH</literal> syntax is recursive,
-     so you can go down multiple nested levels by specifying several
-     <literal>NESTED PATH</literal> subclauses within each other.
-     It allows to unnest the hierarchy of JSON objects and arrays
-     in a single function invocation rather than chaining several
-     <function>JSON_TABLE</function> expressions in an SQL statement.
-    </para>
-    </listitem>
-   </varlistentry>
-  </variablelist>
-
-   <note>
-     <para>
-      In each variant of <replaceable>json_table_column</replaceable> described
-      above, if the <literal>PATH</literal> clause is omitted, path expression
-      <literal>$.<replaceable>name</replaceable></literal> is used, where
-      <replaceable>name</replaceable> is the provided column name.
-     </para>
-    </note>
-
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term>
-     <literal>AS</literal> <replaceable>json_path_name</replaceable>
-    </term>
-    <listitem>
-
-    <para>
-     The optional <replaceable>json_path_name</replaceable> serves as an
-     identifier of the provided <replaceable>path_expression</replaceable>.
-     The name must be unique and distinct from the column names.
-    </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term>
-     { <literal>ERROR</literal> | <literal>EMPTY</literal> } <literal>ON ERROR</literal>
-    </term>
-    <listitem>
-
-    <para>
-     The optional <literal>ON ERROR</literal> can be used to specify how to
-     handle errors when evaluating the top-level
-     <replaceable>path_expression</replaceable>.  Use <literal>ERROR</literal>
-     if you want the errors to be thrown and <literal>EMPTY</literal> to
-     return an empty table, that is, a table containing 0 rows.  Note that
-     this clause does not affect the errors that occur when evaluating
-     columns, for which the behavior depends on whether the
-     <literal>ON ERROR</literal> clause is specified against a given column.
-    </para>
-    </listitem>
-   </varlistentry>
-  </variablelist>
-
-  <para>Examples</para>
-
-     <para>
-      In the examples that follow, the following table containing JSON data
-      will be used:
-
-<programlisting>
-CREATE TABLE my_films ( js jsonb );
-
-INSERT INTO my_films VALUES (
-'{ "favorites" : [
-   { "kind" : "comedy", "films" : [
-     { "title" : "Bananas",
-       "director" : "Woody Allen"},
-     { "title" : "The Dinner Game",
-       "director" : "Francis Veber" } ] },
-   { "kind" : "horror", "films" : [
-     { "title" : "Psycho",
-       "director" : "Alfred Hitchcock" } ] },
-   { "kind" : "thriller", "films" : [
-     { "title" : "Vertigo",
-       "director" : "Alfred Hitchcock" } ] },
-   { "kind" : "drama", "films" : [
-     { "title" : "Yojimbo",
-       "director" : "Akira Kurosawa" } ] }
-  ] }');
-</programlisting>
-
-     </para>
-     <para>
-      The following query shows how to use <function>JSON_TABLE</function> to
-      turn the JSON objects in the <structname>my_films</structname> table
-      to a view containing columns for the keys <literal>kind</literal>,
-      <literal>title</literal>, and <literal>director</literal> contained in
-      the original JSON along with an ordinality column:
-
-<programlisting>
-SELECT jt.* FROM
- my_films,
- JSON_TABLE (js, '$.favorites[*]' COLUMNS (
-   id FOR ORDINALITY,
-   kind text PATH '$.kind',
-   title text PATH '$.films[*].title' WITH WRAPPER,
-   director text PATH '$.films[*].director' WITH WRAPPER)) AS jt;
-</programlisting>
-
-<screen>
- id |   kind   |             title              |             director
-----+----------+--------------------------------+----------------------------------
-  1 | comedy   | ["Bananas", "The Dinner Game"] | ["Woody Allen", "Francis Veber"]
-  2 | horror   | ["Psycho"]                     | ["Alfred Hitchcock"]
-  3 | thriller | ["Vertigo"]                    | ["Alfred Hitchcock"]
-  4 | drama    | ["Yojimbo"]                    | ["Akira Kurosawa"]
-(4 rows)
-</screen>
-
-     </para>
-     <para>
-      The following is a modified version of the above query to show the
-      usage of <literal>PASSING</literal> arguments in the filter specified in
-      the top-level JSON path expression and the various options for the
-      individual columns:
-
-<programlisting>
-SELECT jt.* FROM
- my_films,
- JSON_TABLE (js, '$.favorites[*] ? (@.films[*].director == $filter)'
-   PASSING 'Alfred Hitchcock' AS filter, 'Vertigo' AS filter2
-     COLUMNS (
-     id FOR ORDINALITY,
-     kind text PATH '$.kind',
-     title text FORMAT JSON PATH '$.films[*].title' OMIT QUOTES,
-     director text PATH '$.films[*].director' KEEP QUOTES)) AS jt;
-</programlisting>
-
-<screen>
- id |   kind   |  title  |      director
-----+----------+---------+--------------------
-  1 | horror   | Psycho  | "Alfred Hitchcock"
-  2 | thriller | Vertigo | "Alfred Hitchcock"
-(2 rows)
-</screen>
-
-     </para>
-     <para>
-      The following is a modified version of the above query to show the usage
-      of <literal>NESTED PATH</literal> for populating title and director
-      columns, illustrating how they are joined to the parent columns id and
-      kind:
-
-<programlisting>
-SELECT jt.* FROM
- my_films,
- JSON_TABLE ( js, '$.favorites[*] ? (@.films[*].director == $filter)'
-   PASSING 'Alfred Hitchcock' AS filter
-   COLUMNS (
-    id FOR ORDINALITY,
-    kind text PATH '$.kind',
-    NESTED PATH '$.films[*]' COLUMNS (
-      title text FORMAT JSON PATH '$.title' OMIT QUOTES,
-      director text PATH '$.director' KEEP QUOTES))) AS jt;
-</programlisting>
-
-<screen>
- id |   kind   |  title  |      director
-----+----------+---------+--------------------
-  1 | horror   | Psycho  | "Alfred Hitchcock"
-  2 | thriller | Vertigo | "Alfred Hitchcock"
-(2 rows)
-</screen>
-
-     </para>
-
-     <para>
-      The following is the same query but without the filter in the root
-      path:
-
-<programlisting>
-SELECT jt.* FROM
- my_films,
- JSON_TABLE ( js, '$.favorites[*]'
-   COLUMNS (
-    id FOR ORDINALITY,
-    kind text PATH '$.kind',
-    NESTED PATH '$.films[*]' COLUMNS (
-      title text FORMAT JSON PATH '$.title' OMIT QUOTES,
-      director text PATH '$.director' KEEP QUOTES))) AS jt;
-</programlisting>
-
-<screen>
- id |   kind   |      title      |      director
-----+----------+-----------------+--------------------
-  1 | comedy   | Bananas         | "Woody Allen"
-  1 | comedy   | The Dinner Game | "Francis Veber"
-  2 | horror   | Psycho          | "Alfred Hitchcock"
-  3 | thriller | Vertigo         | "Alfred Hitchcock"
-  4 | drama    | Yojimbo         | "Akira Kurosawa"
-(5 rows)
-</screen>
-
-     </para>
-
-     <para>
-      The following shows another query using a different <type>JSON</type>
-      object as input.  It shows the UNION "sibling join" between
-      <literal>NESTED</literal> paths <literal>$.movies[*]</literal> and
-      <literal>$.books[*]</literal> and also the usage of
-      <literal>FOR ORDINALITY</literal> column at <literal>NESTED</literal>
-      levels (columns <literal>movie_id</literal>, <literal>book_id</literal>,
-      and <literal>author_id</literal>):
-
-<programlisting>
-SELECT * FROM JSON_TABLE (
-'{"favorites":
-    {"movies":
-      [{"name": "One", "director": "John Doe"},
-       {"name": "Two", "director": "Don Joe"}],
-     "books":
-      [{"name": "Mystery", "authors": [{"name": "Brown Dan"}]},
-       {"name": "Wonder", "authors": [{"name": "Jun Murakami"}, {"name":"Craig Doe"}]}]
-}}'::json, '$.favorites[*]'
-COLUMNS (
-  user_id FOR ORDINALITY,
-  NESTED '$.movies[*]'
-    COLUMNS (
-    movie_id FOR ORDINALITY,
-    mname text PATH '$.name',
-    director text),
-  NESTED '$.books[*]'
-    COLUMNS (
-      book_id FOR ORDINALITY,
-      bname text PATH '$.name',
-      NESTED '$.authors[*]'
-        COLUMNS (
-          author_id FOR ORDINALITY,
-          author_name text PATH '$.name'))));
-</programlisting>
-
-<screen>
- user_id | movie_id | mname | director | book_id |  bname  | author_id | author_name
----------+----------+-------+----------+---------+---------+-----------+--------------
-       1 |        1 | One   | John Doe |         |         |           |
-       1 |        2 | Two   | Don Joe  |         |         |           |
-       1 |          |       |          |       1 | Mystery |         1 | Brown Dan
-       1 |          |       |          |       2 | Wonder  |         1 | Jun Murakami
-       1 |          |       |          |       2 | Wonder  |         2 | Craig Doe
-(5 rows)
-</screen>
-
-     </para>
   </sect2>
  </sect1>
 
@@ -21875,54 +21029,6 @@ SELECT NULLIF(value, '(none)') ...
 
       <row>
        <entry role="func_table_entry"><para role="func_signature">
-        <indexterm>
-         <primary>json_agg_strict</primary>
-        </indexterm>
-        <function>json_agg_strict</function> ( <type>anyelement</type> )
-        <returnvalue>json</returnvalue>
-       </para>
-       <para role="func_signature">
-        <indexterm>
-         <primary>jsonb_agg_strict</primary>
-        </indexterm>
-        <function>jsonb_agg_strict</function> ( <type>anyelement</type> )
-        <returnvalue>jsonb</returnvalue>
-       </para>
-       <para>
-        Collects all the input values, skipping nulls, into a JSON array.
-        Values are converted to JSON as per <function>to_json</function>
-        or <function>to_jsonb</function>.
-       </para></entry>
-       <entry>No</entry>
-      </row>
-
-      <row>
-       <entry role="func_table_entry"><para role="func_signature">
-        <indexterm><primary>json_arrayagg</primary></indexterm>
-        <function>json_arrayagg</function> (
-        <optional> <replaceable>value_expression</replaceable> </optional>
-        <optional> <literal>ORDER BY</literal> <replaceable>sort_expression</replaceable> </optional>
-        <optional> { <literal>NULL</literal> | <literal>ABSENT</literal> } <literal>ON NULL</literal> </optional>
-        <optional> <literal>RETURNING</literal> <replaceable>data_type</replaceable> <optional> <literal>FORMAT JSON</literal> <optional> <literal>ENCODING UTF8</literal> </optional> </optional> </optional>)
-       </para>
-       <para>
-        Behaves in the same way as <function>json_array</function>
-        but as an aggregate function so it only takes one
-        <replaceable>value_expression</replaceable> parameter.
-        If <literal>ABSENT ON NULL</literal> is specified, any NULL
-        values are omitted.
-        If <literal>ORDER BY</literal> is specified, the elements will
-        appear in the array in that order rather than in the input order.
-       </para>
-       <para>
-        <literal>SELECT json_arrayagg(v) FROM (VALUES(2),(1)) t(v)</literal>
-        <returnvalue>[2, 1]</returnvalue>
-       </para></entry>
-       <entry>No</entry>
-      </row>
-
-      <row>
-       <entry role="func_table_entry"><para role="func_signature">
          <indexterm><primary>json_objectagg</primary></indexterm>
          <function>json_objectagg</function> (
          <optional> { <replaceable>key_expression</replaceable> { <literal>VALUE</literal> | ':' } <replaceable>value_expression</replaceable> } </optional>
@@ -22033,6 +21139,31 @@ SELECT NULLIF(value, '(none)') ...
 
       <row>
        <entry role="func_table_entry"><para role="func_signature">
+        <indexterm><primary>json_arrayagg</primary></indexterm>
+        <function>json_arrayagg</function> (
+        <optional> <replaceable>value_expression</replaceable> </optional>
+        <optional> <literal>ORDER BY</literal> <replaceable>sort_expression</replaceable> </optional>
+        <optional> { <literal>NULL</literal> | <literal>ABSENT</literal> } <literal>ON NULL</literal> </optional>
+        <optional> <literal>RETURNING</literal> <replaceable>data_type</replaceable> <optional> <literal>FORMAT JSON</literal> <optional> <literal>ENCODING UTF8</literal> </optional> </optional> </optional>)
+       </para>
+       <para>
+        Behaves in the same way as <function>json_array</function>
+        but as an aggregate function so it only takes one
+        <replaceable>value_expression</replaceable> parameter.
+        If <literal>ABSENT ON NULL</literal> is specified, any NULL
+        values are omitted.
+        If <literal>ORDER BY</literal> is specified, the elements will
+        appear in the array in that order rather than in the input order.
+       </para>
+       <para>
+        <literal>SELECT json_arrayagg(v) FROM (VALUES(2),(1)) t(v)</literal>
+        <returnvalue>[2, 1]</returnvalue>
+       </para></entry>
+       <entry>No</entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
          <primary>json_object_agg_unique_strict</primary>
         </indexterm>
@@ -22135,6 +21266,29 @@ SELECT NULLIF(value, '(none)') ...
        </para>
        <para>
         Computes the intersection of the non-null input values.
+       </para></entry>
+       <entry>No</entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>json_agg_strict</primary>
+        </indexterm>
+        <function>json_agg_strict</function> ( <type>anyelement</type> )
+        <returnvalue>json</returnvalue>
+       </para>
+       <para role="func_signature">
+        <indexterm>
+         <primary>jsonb_agg_strict</primary>
+        </indexterm>
+        <function>jsonb_agg_strict</function> ( <type>anyelement</type> )
+        <returnvalue>jsonb</returnvalue>
+       </para>
+       <para>
+        Collects all the input values, skipping nulls, into a JSON array.
+        Values are converted to JSON as per <function>to_json</function>
+        or <function>to_jsonb</function>.
        </para></entry>
        <entry>No</entry>
       </row>
@@ -23264,85 +22418,6 @@ SELECT count(*) FROM sometable;
     ordering.)
    </para>
   </note>
-
- </sect1>
-
- <sect1 id="functions-merge-support">
-  <title>Merge Support Functions</title>
-
-  <indexterm>
-   <primary>MERGE</primary>
-   <secondary>RETURNING</secondary>
-  </indexterm>
-
-  <para>
-   <productname>PostgreSQL</productname> includes one merge support function
-   that may be used in the <literal>RETURNING</literal> list of a
-   <xref linkend="sql-merge"/> command to identify the action taken for each
-   row; see <xref linkend="functions-merge-support-table"/>.
-  </para>
-
-  <table id="functions-merge-support-table">
-   <title>Merge Support Functions</title>
-
-   <tgroup cols="1">
-    <thead>
-     <row>
-      <entry role="func_table_entry"><para role="func_signature">
-       Function
-      </para>
-      <para>
-       Description
-      </para></entry>
-     </row>
-    </thead>
-
-    <tbody>
-     <row>
-      <entry id="merge-action" role="func_table_entry"><para role="func_signature">
-       <indexterm>
-        <primary>merge_action</primary>
-       </indexterm>
-       <function>merge_action</function> ( )
-       <returnvalue>text</returnvalue>
-      </para>
-      <para>
-       Returns the merge action command executed for the current row.  This
-       will be <literal>'INSERT'</literal>, <literal>'UPDATE'</literal>, or
-       <literal>'DELETE'</literal>.
-      </para></entry>
-     </row>
-    </tbody>
-   </tgroup>
-  </table>
-
-  <para>
-   Example:
-<screen><![CDATA[
-MERGE INTO products p
-  USING stock s ON p.product_id = s.product_id
-  WHEN MATCHED AND s.quantity > 0 THEN
-    UPDATE SET in_stock = true, quantity = s.quantity
-  WHEN MATCHED THEN
-    UPDATE SET in_stock = false, quantity = 0
-  WHEN NOT MATCHED THEN
-    INSERT (product_id, in_stock, quantity)
-      VALUES (s.product_id, true, s.quantity)
-  RETURNING merge_action(), p.*;
-
- merge_action | product_id | in_stock | quantity
---------------+------------+----------+----------
- UPDATE       |       1001 | t        |       50
- UPDATE       |       1002 | f        |        0
- INSERT       |       1003 | t        |       10
-]]></screen>
-  </para>
-
-  <para>
-   Note that this function can only be used in the <literal>RETURNING</literal>
-   list of a <command>MERGE</command> command.  It is an error to use it in any
-   other part of a query.
-  </para>
 
  </sect1>
 
@@ -25157,7 +24232,7 @@ SELECT has_function_privilege('joeuser', 'myfunc(int, text)', 'execute');
         are <literal>SELECT</literal>, <literal>INSERT</literal>,
         <literal>UPDATE</literal>, <literal>DELETE</literal>,
         <literal>TRUNCATE</literal>, <literal>REFERENCES</literal>,
-        <literal>TRIGGER</literal>, and <literal>MAINTAIN</literal>.
+        and <literal>TRIGGER</literal>.
        </para></entry>
       </row>
 
@@ -25220,10 +24295,6 @@ SELECT has_function_privilege('joeuser', 'myfunc(int, text)', 'execute');
         are immediately available without doing <command>SET ROLE</command>,
         while <literal>SET</literal> denotes whether it is possible to change
         to the role using the <literal>SET ROLE</literal> command.
-        <literal>WITH ADMIN OPTION</literal> or <literal>WITH GRANT
-        OPTION</literal> can be added to any of these privilege types to
-        test whether the <literal>ADMIN</literal> privilege is held (all
-        six spellings test the same thing).
         This function does not allow the special case of
         setting <parameter>user</parameter> to <literal>public</literal>,
         because the PUBLIC pseudo-role can never be a member of real roles.
@@ -25692,7 +24763,7 @@ SELECT pg_type_is_visible('myschema.widget'::regtype);
 
      <tbody>
       <row>
-       <entry id="format-type" xreflabel="format_type" role="func_table_entry"><para role="func_signature">
+       <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
          <primary>format_type</primary>
         </indexterm>
@@ -25703,30 +24774,6 @@ SELECT pg_type_is_visible('myschema.widget'::regtype);
         Returns the SQL name for a data type that is identified by its type
         OID and possibly a type modifier.  Pass NULL for the type modifier if
         no specific modifier is known.
-       </para></entry>
-      </row>
-
-      <row>
-       <entry role="func_table_entry"><para role="func_signature">
-        <indexterm>
-         <primary>pg_basetype</primary>
-        </indexterm>
-        <function>pg_basetype</function> ( <type>regtype</type> )
-        <returnvalue>regtype</returnvalue>
-       </para>
-       <para>
-        Returns the OID of the base type of a domain identified by its
-        type OID.  If the argument is the OID of a non-domain type,
-        returns the argument as-is.  Returns NULL if the argument is
-        not a valid type OID.  If there's a chain of domain dependencies,
-        it will recurse until finding the base type.
-       </para>
-       <para>
-        Assuming <literal>CREATE DOMAIN mytext AS text</literal>:
-       </para>
-       <para>
-        <literal>pg_basetype('mytext'::regtype)</literal>
-        <returnvalue>text</returnvalue>
        </para></entry>
       </row>
 
@@ -26231,8 +25278,18 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
         OID for comparison purposes but displays as a type name.
        </para>
        <para>
-        <literal>pg_typeof(33)</literal>
-        <returnvalue>integer</returnvalue>
+        For example:
+<programlisting>
+SELECT pg_typeof(33);
+ pg_typeof
+-----------
+ integer
+
+SELECT typlen FROM pg_type WHERE oid = pg_typeof(33);
+ typlen
+--------
+      4
+</programlisting>
        </para></entry>
       </row>
 
@@ -26252,12 +25309,18 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
         collatable data type, then an error is raised.
        </para>
        <para>
-        <literal>collation for ('foo'::text)</literal>
-        <returnvalue>"default"</returnvalue>
-       </para>
-       <para>
-        <literal>collation for ('foo' COLLATE "de_DE")</literal>
-        <returnvalue>"de_DE"</returnvalue>
+        For example:
+<programlisting>
+SELECT collation for (description) FROM pg_description LIMIT 1;
+ pg_collation_for
+------------------
+ "default"
+
+SELECT collation for ('foo' COLLATE "de_DE");
+ pg_collation_for
+------------------
+ "de_DE"
+</programlisting>
        </para></entry>
       </row>
 
@@ -26398,7 +25461,7 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
       </row>
 
       <row>
-       <entry id="to-regtype" xreflabel="to_regtype" role="func_table_entry"><para role="func_signature">
+       <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
          <primary>to_regtype</primary>
         </indexterm>
@@ -26406,42 +25469,11 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
         <returnvalue>regtype</returnvalue>
        </para>
        <para>
-        Parses a string of text, extracts a potential type name from it,
-        and translates that name into a type OID.  A syntax error in the
-        string will result in an error; but if the string is a
-        syntactically valid type name that happens not to be found in the
-        catalogs, the result is <literal>NULL</literal>.  A similar result
-        is obtained by casting the string to type <type>regtype</type>
-        (see <xref linkend="datatype-oid"/>), except that that will throw
-        error for name not found.
-       </para></entry>
-      </row>
-
-      <row>
-       <entry role="func_table_entry"><para role="func_signature">
-        <indexterm>
-         <primary>to_regtypemod</primary>
-        </indexterm>
-        <function>to_regtypemod</function> ( <type>text</type> )
-        <returnvalue>integer</returnvalue>
-       </para>
-       <para>
-        Parses a string of text, extracts a potential type name from it,
-        and translates its type modifier, if any.  A syntax error in the
-        string will result in an error; but if the string is a
-        syntactically valid type name that happens not to be found in the
-        catalogs, the result is <literal>NULL</literal>.  The result is
-        <literal>-1</literal> if no type modifier is present.
-       </para>
-       <para>
-        <function>to_regtypemod</function> can be combined with
-        <xref linkend="to-regtype"/> to produce appropriate inputs for
-        <xref linkend="format-type"/>, allowing a string representing a
-        type name to be canonicalized.
-       </para>
-       <para>
-        <literal>format_type(to_regtype('varchar(32)'), to_regtypemod('varchar(32)'))</literal>
-        <returnvalue>character varying(32)</returnvalue>
+        Translates a textual type name to its OID.  A similar result is
+        obtained by casting the string to type <type>regtype</type> (see
+        <xref linkend="datatype-oid"/>); however, this function will return
+        <literal>NULL</literal> rather than throwing an error if the name is
+        not found.
        </para></entry>
       </row>
      </tbody>
@@ -26969,12 +26001,21 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
         directly.
        </para>
        <para>
-        <literal>SELECT * FROM pg_input_error_info('42000000000', 'integer')</literal>
+        <literal>select * from pg_input_error_info('42000000000', 'integer')</literal>
         <returnvalue></returnvalue>
 <programlisting>
                        message                        | detail | hint | sql_error_code
 ------------------------------------------------------+--------+------+----------------
  value "42000000000" is out of range for type integer |        |      | 22003
+</programlisting>
+       </para>
+       <para>
+        <literal>select message, detail from pg_input_error_info('1234.567', 'numeric(7,4)')</literal>
+        <returnvalue></returnvalue>
+<programlisting>
+        message         |                                      detail
+------------------------+----------------------------------&zwsp;-------------------------------------------------
+ numeric field overflow | A field with precision 7, scale 4 must round to an absolute value less than 10^3.
 </programlisting>
        </para></entry>
       </row>
@@ -27009,34 +26050,6 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
      </thead>
 
      <tbody>
-      <row>
-       <entry role="func_table_entry"><para role="func_signature">
-        <indexterm>
-         <primary>age</primary>
-        </indexterm>
-        <function>age</function>  ( <type>xid</type> )
-        <returnvalue>integer</returnvalue>
-       </para>
-       <para>
-        Returns the number of transactions between the supplied
-        transaction id and the current transaction counter.
-       </para></entry>
-      </row>
-
-      <row>
-       <entry role="func_table_entry"><para role="func_signature">
-        <indexterm>
-         <primary>mxid_age</primary>
-        </indexterm>
-        <function>mxid_age</function>  ( <type>xid</type> )
-        <returnvalue>integer</returnvalue>
-       </para>
-       <para>
-        Returns the number of multixacts IDs between the supplied
-        multixact ID and the current multixacts counter.
-       </para></entry>
-      </row>
-
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
@@ -27181,8 +26194,7 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
    <para>
     The internal transaction ID type <type>xid</type> is 32 bits wide and
     wraps around every 4 billion transactions.  However,
-    the functions shown in <xref linkend="functions-pg-snapshot"/>, except
-    <function>age</function> and <function>mxid_age</function>, use a
+    the functions shown in <xref linkend="functions-pg-snapshot"/> use a
     64-bit type <type>xid8</type> that does not wrap around during the life
     of an installation and can be converted to <type>xid</type> by casting if
     required;  see <xref linkend="transaction-id"/> for details.
@@ -27264,6 +26276,33 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
      </thead>
 
      <tbody>
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>age</primary>
+        </indexterm>
+        <function>age</function>  ( <type>xid</type> )
+        <returnvalue>integer</returnvalue>
+       </para>
+       <para>
+        Returns the number of transactions between the supplied
+        transaction id and the current transaction counter.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>mxid_age</primary>
+        </indexterm>
+        <function>mxid_age</function>  ( <type>xid</type> )
+        <returnvalue>integer</returnvalue>
+       </para>
+       <para>
+        Returns the number of multixacts IDs between the supplied
+        multixact ID and the current multixacts counter.
+       </para></entry>
+      </row>
 
       <row>
        <entry role="func_table_entry"><para role="func_signature">
@@ -27969,17 +27008,6 @@ SELECT currval(pg_get_serial_sequence('sometable', 'id'));
         not running, it will be equal to <literal>summarized_lsn</literal>.
         <literal>summarizer_pid</literal> is the PID of the WAL summarizer
         process, if it is running, and otherwise NULL.
-       </para>
-       <para>
-        As a special exception, the WAL summarizer will refuse to generate
-        WAL summary files if run on WAL generated under
-        <literal>wal_level=minimal</literal>, since such summaries would be
-        unsafe to use as the basis for an incremental backup. In this case,
-        the fields above will continue to advance as if summaries were being
-        generated, but nothing will be written to disk. Once the summarizer
-        reaches WAL generated while <literal>wal_level</literal> was set
-        to <literal>replica</literal> or higher, it will resume writing
-        summaries to disk.
        </para></entry>
       </row>
      </tbody>
@@ -29122,7 +28150,7 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
       </row>
 
       <row>
-       <entry id="pg-logical-slot-get-changes" role="func_table_entry"><para role="func_signature">
+       <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
          <primary>pg_logical_slot_get_changes</primary>
         </indexterm>
@@ -29145,15 +28173,11 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         the specified value.  Note, however, that the actual number of
         rows returned may be larger, since this limit is only checked after
         adding the rows produced when decoding each new transaction commit.
-        If the specified slot is a logical failover slot then the function will
-        not return until all physical slots specified in
-        <link linkend="guc-synchronized-standby-slots"><varname>synchronized_standby_slots</varname></link>
-        have confirmed WAL receipt.
        </para></entry>
       </row>
 
       <row>
-       <entry id="pg-logical-slot-peek-changes" role="func_table_entry"><para role="func_signature">
+       <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
          <primary>pg_logical_slot_peek_changes</primary>
         </indexterm>
@@ -29208,7 +28232,7 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
       </row>
 
       <row>
-       <entry id="pg-replication-slot-advance" role="func_table_entry"><para role="func_signature">
+       <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
          <primary>pg_replication_slot_advance</primary>
         </indexterm>
@@ -29224,11 +28248,7 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         the name of the slot and the actual position that it was advanced to.
         The updated slot position information is written out at the next
         checkpoint if any advancing is done. So in the event of a crash, the
-        slot may return to an earlier position. If the specified slot is a
-        logical failover slot then the function will not return until all
-        physical slots specified in
-        <link linkend="guc-synchronized-standby-slots"><varname>synchronized_standby_slots</varname></link>
-        have confirmed WAL receipt.
+        slot may return to an earlier position.
        </para></entry>
       </row>
 
@@ -29443,10 +28463,6 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         standby server. Temporary synced slots, if any, cannot be used for
         logical decoding and must be dropped after promotion. See
         <xref linkend="logicaldecoding-replication-slots-synchronization"/> for details.
-        Note that this function cannot be executed if
-        <link linkend="guc-sync-replication-slots"><varname>
-        sync_replication_slots</varname></link> is enabled and the slotsync
-        worker is already running to perform the synchronization of slots.
        </para>
 
        <caution>
@@ -29525,23 +28541,6 @@ postgres=# SELECT '0/0'::pg_lsn + pd.segment_number * ps.setting::int + :offset 
         Shows the compression algorithm that was used to compress
         an individual variable-length value. Returns <literal>NULL</literal>
         if the value is not compressed.
-       </para></entry>
-      </row>
-
-      <row>
-       <entry role="func_table_entry"><para role="func_signature">
-        <indexterm>
-         <primary>pg_column_toast_chunk_id</primary>
-        </indexterm>
-        <function>pg_column_toast_chunk_id</function> ( <type>"any"</type> )
-        <returnvalue>oid</returnvalue>
-       </para>
-       <para>
-        Shows the <structfield>chunk_id</structfield> of an on-disk
-        <acronym>TOAST</acronym>ed value.  Returns <literal>NULL</literal>
-        if the value is un-<acronym>TOAST</acronym>ed or not on-disk.  See
-        <xref linkend="storage-toast"/> for more information about
-        <acronym>TOAST</acronym>.
        </para></entry>
       </row>
 
@@ -31112,12 +30111,8 @@ CREATE EVENT TRIGGER test_event_trigger_for_drops
         <returnvalue>integer</returnvalue>
        </para>
        <para>
-        Returns a code explaining the reason(s) for rewriting. The value is
-        a bitmap built from the following values: <literal>1</literal>
-        (the table has changed its persistence), <literal>2</literal>
-        (default value of a column has changed), <literal>4</literal>
-        (a column has a new data type) and <literal>8</literal>
-        (the table access method has changed).
+        Returns a code explaining the reason(s) for rewriting.  The exact
+        meaning of the codes is release dependent.
        </para></entry>
       </row>
      </tbody>
