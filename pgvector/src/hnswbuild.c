@@ -806,7 +806,7 @@ SelectPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPa
         }
     }
 
-    elog(WARNING, "maxScore: %d", maxScore);
+//    elog(WARNING, "maxScore: %d", maxScore);
 
 
 
