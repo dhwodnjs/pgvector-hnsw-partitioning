@@ -117,7 +117,7 @@
 #define MAX_PARTITION_ENTRIES 1000
 #define MAX_NODES_PER_PARTITION 64
 #define INSERT_PAGE_PER_PARTITION 0.3
-#define LDG_ITERATION 20
+#define LDG_ITERATION 1
 
 #define HnswGetPartition(membername, ptr) pairingheap_container(HnswPartition, membername, ptr)
 #define HnswGetPartitionConst(membername, ptr) pairingheap_const_container(HnswPartition, membername, ptr)
