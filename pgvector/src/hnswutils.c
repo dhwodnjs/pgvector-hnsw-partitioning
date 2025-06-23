@@ -278,6 +278,9 @@ HnswInitElement(char *base, ItemPointer heaptid, int m, double ml, int maxLevel,
 
     element->pid = -1;
     element->nextPid = -1;
+    element->inNeighborCount = 0;
+    element->inNeighborCapacity = 600;
+//    element->inNeighbors = malloc(sizeof(HnswElementPtr) * 600);
 
 	return element;
 }

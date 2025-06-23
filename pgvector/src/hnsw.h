@@ -162,6 +162,11 @@ struct HnswElementData
     int pid;
     int nextPid;
 
+	int inNeighborCount;
+	int inNeighborCapacity;
+	HnswElementPtr inNeighbors[600];
+
+
 	HnswElementPtr next;
 	ItemPointerData heaptids[HNSW_HEAPTIDS];
 	uint8		heaptidsLength;

@@ -409,7 +409,7 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
     for (unsigned i = 0; i < partitionstate->numPartitions; i++) {
         HnswPartition *partition = &partitionstate->partitions[i];
 
-        elog(WARNING, "partition Id: %d, partition Size: %d", partition->pid, partition->size);
+//        elog(WARNING, "partition Id: %d, partition Size: %d", partition->pid, partition->size);
 //        elog(WARNING, "Elements per page %d: %d",BufferGetBlockNumber(buf), element_per_page_counter);
 
         for (unsigned j = 0; j < partition->size; j++) {
@@ -438,7 +438,7 @@ CreateGraphPagesWithPartitions(HnswBuildState * buildstate, HnswPartitionState *
 
             /* Keep element and neighbors on the same page if possible */
             if (PageGetFreeSpace(page) < etupSize || (combinedSize <= maxSize && PageGetFreeSpace(page) < combinedSize)){
-                elog(WARNING, "Elements per page %d: %d",BufferGetBlockNumber(buf), element_per_page_counter);
+//                elog(WARNING, "Elements per page %d: %d",BufferGetBlockNumber(buf), element_per_page_counter);
                 element_per_page_counter = 0;
                 HnswBuildAppendPage(index, &buf, &page, forkNum);
             }
@@ -792,6 +792,14 @@ SelectPartition(HnswPartitionState *oldPartitionstate, HnswPartitionState *newPa
     HnswElement element = HnswPtrAccess(base, elementPtr);
     HnswNeighborArray *neighbors = HnswGetNeighbors(base, element, 0);
 
+//    // in-neighbor 점수 추가
+//    for (int z = 0; z < element->inNeighborCount; z++){
+//        HnswElementPtr inNeighborPtr = element->inNeighbors[z];
+//        HnswElement inNeighborElement = HnswPtrAccess(base, inNeighborPtr);
+//        int pid = inNeighborElement->pid;
+//        partitionScores[pid]++;
+//    }
+
     // neighbor page 하나씩 확인하면서, neighbor가 가장 많은 페이지에 노드 할당
     for (int j = 0; j < neighbors->length; j++)
     {
@@ -1099,6 +1107,35 @@ HnswPartitionGraph(HnswBuildState *buildstate)
 
         iter = element->next;
     }
+
+    iter = graph->head;
+    while (!HnswPtrIsNull(base, iter))
+    {
+        HnswElement element = HnswPtrAccess(base, iter);
+
+        HnswNeighborArray *neighbors = HnswGetNeighbors(base, element, 0);
+        for (int i = 0; i < neighbors->length; i++)
+        {
+
+            HnswElementPtr neighborPtr = neighbors->items[i].element;
+            HnswElement neighborElement = HnswPtrAccess(base, neighborPtr);
+
+
+            if (neighborElement->inNeighborCount >= neighborElement->inNeighborCapacity){
+                elog(WARNING, "inNeighborCount: %d", neighborElement->inNeighborCount);
+//                int newCapacity = neighborElement->inNeighborCapacity * 2;
+//                neighborElement->inNeighbors = realloc(neighborElement->inNeighbors, sizeof(HnswElementPtr) * newCapacity);
+//                neighborElement->inNeighborCapacity = newCapacity;
+            }
+
+            neighborElement->inNeighbors[neighborElement->inNeighborCount] = iter;
+            neighborElement->inNeighborCount++;
+
+        }
+        iter = element->next;
+    }
+
+    // 일단 메모리 왕창 줘서 ,, 저장은 해봄 .. ㅋㅋ 이게 맞나 ..
 
     elog(WARNING, "Initial partitioning completed. Total nodes: %d, Assigned nodes: %d", cnt, enterCnt);
 
